@@ -1,0 +1,38 @@
+[
+  {
+    "id": "redis-rdbsaverio-callers",
+    "question": "No codigo do redis (src/), quais funcoes chamam rdbSaveRio, e por que uma delas esta em aof.c?",
+    "must_contain": ["rewriteAppendOnlyFile", "rdbSaveInternal"],
+    "reference": "Tres chamadores: rdbSaveRioWithEOFMark (rdb.c:~2101, replicacao diskless), rdbSaveInternal (rdb.c:~2122, caminho do SAVE/BGSAVE em disco) e rewriteAppendOnlyFile (aof.c:~2913) — o AOF rewrite grava um preambulo RDB no inicio do arquivo AOF (RDBFLAGS_AOF_PREAMBLE)."
+  },
+  {
+    "id": "redis-evictions-callers",
+    "question": "Quem chama performEvictions no redis e em quais dois cenarios distintos a evicao e disparada?",
+    "must_contain": ["processCommand", "evictionTimeProc"],
+    "reference": "processCommand (server.c:~4632): antes de executar um comando, se server.maxmemory esta setado, tenta liberar memoria e rejeita comandos que escrevem se falhar (OOM). evictionTimeProc (evict.c:~442): time event que continua evictando incrementalmente quando uma passada anterior retornou EVICT_RUNNING (nao terminou dentro do limite de tempo)."
+  },
+  {
+    "id": "redis-servercron-subsystems",
+    "question": "Quais funcoes *Cron de subsistemas o serverCron do redis aciona diretamente? Liste as principais.",
+    "must_contain": ["clientsCron", "databasesCron", "replicationCron"],
+    "reference": "serverCron (server.c:~1562) aciona: cronUpdateMemoryStats, clientsCron, databasesCron, backupCron, replicationCron (via run_with_period), clusterCron, asmCron, pendingCommandPoolCron, hashTemplatesCron e modulesCron."
+  },
+  {
+    "id": "redis-expire-cycle",
+    "question": "De onde activeExpireCycle e chamado no redis, e qual variante (FAST ou SLOW) cada chamador usa?",
+    "must_contain": ["beforeSleep", "databasesCron"],
+    "reference": "databasesCron (server.c:~1315) chama com ACTIVE_EXPIRE_CYCLE_SLOW (ciclo periodico do serverCron); beforeSleep (server.c:~2004) chama com ACTIVE_EXPIRE_CYCLE_FAST (passada rapida antes de cada iteracao do event loop)."
+  },
+  {
+    "id": "redis-aof-rewrite-chain",
+    "question": "Trace a cadeia de chamadas desde o serverCron ate a escrita do preambulo RDB quando um AOF rewrite automatico e disparado no redis.",
+    "must_contain": ["rewriteAppendOnlyFileBackground", "rewriteAppendOnlyFile"],
+    "reference": "serverCron (server.c:~1696/~1741, quando aof_rewrite_perc e atingido) -> rewriteAppendOnlyFileBackground (aof.c:~2993) -> redisFork; no filho, rewriteAppendOnlyFile (aof.c:~2913) -> rdbSaveRio com RDBFLAGS_AOF_PREAMBLE (aof.c:~2938) grava o preambulo RDB."
+  },
+  {
+    "id": "redis-bgsave-chain",
+    "question": "Quando o comando BGSAVE e executado no redis, qual funcao implementa o comando e qual o caminho de chamadas ate o RDB ser efetivamente escrito?",
+    "must_contain": ["rdbSaveBackground", "rdbSave"],
+    "reference": "bgsaveCommand (rdb.c:~5477) -> rdbSaveBackground (rdb.c:~2236) -> redisFork; no processo filho, rdbSave (rdb.c:~2193) -> rdbSaveInternal (rdb.c:~2122) -> rdbSaveRio (rdb.c:~2034) serializa o dataset."
+  }
+]

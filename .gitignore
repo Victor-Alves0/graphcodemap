@@ -1,0 +1,23 @@
+# CodeGraph
+.codegraph/
+
+# Segredos
+.env
+
+# Repos externos de teste/benchmark
+benchrepos/
+
+# Toolchain local (node portátil + typescript p/ resolver L1)
+tools/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

@@ -1,0 +1,23 @@
+[
+  {
+    "id": "gin-handle-debug",
+    "entry": "gin.Engine.handleHTTPRequest",
+    "target": "IsDebugging",
+    "sink_regex": "IsDebugging",
+    "gold_chain": ["handleHTTPRequest", "serveError", "debugPrint"]
+  },
+  {
+    "id": "gin-mapform-setvalue",
+    "entry": "binding.form_mapping.mapForm",
+    "target": "tryToSetValue",
+    "sink_regex": "tryToSetValue",
+    "gold_chain": ["mapForm", "mapFormByTag", "mappingByPtr", "mapping"]
+  },
+  {
+    "id": "gin-serve-error",
+    "entry": "gin.Engine.ServeHTTP",
+    "target": "serveError",
+    "sink_regex": "serveError",
+    "gold_chain": ["ServeHTTP", "handleHTTPRequest"]
+  }
+]

@@ -1,0 +1,38 @@
+[
+  {
+    "id": "flask-route-def",
+    "question": "No código do Flask, o decorator `route` (usado como app.route ou blueprint.route) é definido de verdade em qual classe e arquivo?",
+    "must_contain": ["Scaffold", "scaffold.py"],
+    "reference": "Em Scaffold.route, src/flask/sansio/scaffold.py (~linha 336). Flask (via sansio.app.App) e Blueprint herdam de Scaffold, por isso ambos têm .route."
+  },
+  {
+    "id": "flask-urlfor-two",
+    "question": "Existem duas definições de url_for no pacote flask (fora de testes). Onde está cada uma e como elas se relacionam?",
+    "must_contain": ["helpers.py", "app.py"],
+    "reference": "Flask.url_for em src/flask/app.py (~1102) contém a lógica real; a função url_for em src/flask/helpers.py (~200) é o atalho que delega para current_app.url_for."
+  },
+  {
+    "id": "flask-make-response-callers",
+    "question": "Quem chama o método Flask.make_response dentro do código do pacote flask (ignore os testes)?",
+    "must_contain": ["finalize_request", "helpers"],
+    "reference": "Flask.finalize_request (src/flask/app.py:~1039) e a função make_response de src/flask/helpers.py (~197), que delega para current_app.make_response."
+  },
+  {
+    "id": "flask-blueprint-inherit",
+    "question": "De qual classe herda a Blueprint definida em src/flask/blueprints.py, e onde essa classe base está definida?",
+    "must_contain": ["sansio"],
+    "reference": "Herda de sansio.blueprints.Blueprint (import em src/flask/blueprints.py:~18); a base está em src/flask/sansio/blueprints.py (~119) e por sua vez herda de Scaffold."
+  },
+  {
+    "id": "flask-current-app",
+    "question": "Onde current_app é definido e que mecanismo faz ele apontar para a aplicação certa?",
+    "must_contain": ["globals.py"],
+    "reference": "src/flask/globals.py: current_app é um proxy (LocalProxy sobre contextvars/app context) que resolve para o app do contexto ativo no momento do acesso."
+  },
+  {
+    "id": "flask-scaffold-purpose",
+    "question": "Qual classe é a base comum de Flask e Blueprint, e que responsabilidades ela centraliza?",
+    "must_contain": ["Scaffold"],
+    "reference": "Scaffold (src/flask/sansio/scaffold.py): centraliza registro de rotas e decorators (route, get/post/..., errorhandler, before/after request), static/template folder e afins, compartilhados por app e blueprints."
+  }
+]

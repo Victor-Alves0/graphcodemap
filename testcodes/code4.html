@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>Complex Dashboard</title>
+
+<style>
+
+/* ========================================================= */
+/* VARIABLES */
+/* ========================================================= */
+
+:root{
+    --primary:#3b82f6;
+    --secondary:#1e293b;
+    --background:#f4f6f8;
+    --card:#ffffff;
+    --success:#22c55e;
+    --warning:#f59e0b;
+    --danger:#ef4444;
+    --radius:12px;
+    --shadow:0 8px 20px rgba(0,0,0,.08);
+}
+
+/* ========================================================= */
+
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+}
+
+/* ========================================================= */
+
+body{
+
+    font-family:Arial,Helvetica,sans-serif;
+    background:var(--background);
+
+    display:grid;
+
+    grid-template-columns:260px 1fr;
+
+    min-height:100vh;
+}
+
+/* ========================================================= */
+/* SIDEBAR */
+/* ========================================================= */
+
+.sidebar{
+
+    background:var(--secondary);
+
+    color:white;
+
+    display:flex;
+
+    flex-direction:column;
+}
+
+.sidebar header{
+
+    padding:30px;
+
+    font-size:24px;
+
+    font-weight:bold;
+}
+
+.sidebar nav{
+
+    display:flex;
+
+    flex-direction:column;
+}
+
+.sidebar a{
+
+    color:white;
+
+    text-decoration:none;
+
+    padding:16px 28px;
+
+    transition:.3s;
+}
+
+.sidebar a:hover{
+
+    background:rgba(255,255,255,.1);
+
+    padding-left:40px;
+}
+
+/* ========================================================= */
+/* MAIN */
+/* ========================================================= */
+
+main{
+
+    display:flex;
+
+    flex-direction:column;
+}
+
+/* ========================================================= */
+/* TOPBAR */
+/* ========================================================= */
+
+.topbar{
+
+    height:70px;
+
+    background:white;
+
+    display:flex;
+
+    align-items:center;
+
+    justify-content:space-between;
+
+    padding:0 25px;
+
+    box-shadow:var(--shadow);
+}
+
+.search input{
+
+    padding:12px;
+
+    width:280px;
+}
+
+.profile{
+
+    display:flex;
+
+    gap:15px;
+
+    align-items:center;
+}
+
+/* ========================================================= */
+/* GRID */
+/* ========================================================= */
+
+.dashboard{
+
+    padding:25px;
+
+    display:grid;
+
+    gap:20px;
+
+    grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+}
+
+/* ========================================================= */
+/* CARD */
+/* ========================================================= */
+
+.card{
+
+    background:var(--card);
+
+    border-radius:var(--radius);
+
+    box-shadow:var(--shadow);
+
+    padding:20px;
+
+    transition:.25s;
+}
+
+.card:hover{
+
+    transform:translateY(-6px);
+}
+
+.card h2{
+
+    margin-bottom:20px;
+}
+
+/* ========================================================= */
+/* TABLE */
+/* ========================================================= */
+
+table{
+
+    width:100%;
+
+    border-collapse:collapse;
+}
+
+th,td{
+
+    padding:12px;
+
+    text-align:left;
+}
+
+tbody tr:nth-child(even){
+
+    background:#fafafa;
+}
+
+tbody tr:hover{
+
+    background:#eef5ff;
+}
+
+/* ========================================================= */
+/* BUTTONS */
+/* ========================================================= */
+
+.btn{
+
+    border:none;
+
+    cursor:pointer;
+
+    padding:10px 20px;
+
+    border-radius:6px;
+}
+
+.btn.primary{
+
+    background:var(--primary);
+
+    color:white;
+}
+
+.btn.success{
+
+    background:var(--success);
+
+    color:white;
+}
+
+.btn.warning{
+
+    background:var(--warning);
+}
+
+.btn.danger{
+
+    background:var(--danger);
+
+    color:white;
+}
+
+/* ========================================================= */
+/* FORM */
+/* ========================================================= */
+
+form{
+
+    display:flex;
+
+    flex-direction:column;
+
+    gap:12px;
+}
+
+input,
+textarea,
+select{
+
+    padding:12px;
+
+    border:1px solid #ddd;
+
+    border-radius:8px;
+}
+
+input:focus,
+textarea:focus{
+
+    outline:none;
+
+    border-color:var(--primary);
+}
+
+/* ========================================================= */
+/* STATS */
+/* ========================================================= */
+
+.stats{
+
+    display:flex;
+
+    gap:20px;
+}
+
+.stat{
+
+    flex:1;
+
+    text-align:center;
+
+    padding:25px;
+}
+
+.stat strong{
+
+    display:block;
+
+    font-size:36px;
+}
+
+/* ========================================================= */
+/* PROGRESS */
+/* ========================================================= */
+
+.progress{
+
+    width:100%;
+
+    background:#ddd;
+
+    height:14px;
+
+    border-radius:20px;
+}
+
+.progress div{
+
+    height:100%;
+
+    width:65%;
+
+    background:var(--primary);
+
+    border-radius:20px;
+}
+
+/* ========================================================= */
+/* TAGS */
+/* ========================================================= */
+
+.tag{
+
+    padding:6px 12px;
+
+    border-radius:20px;
+
+    display:inline-block;
+}
+
+.tag.success{
+
+    background:#d1fae5;
+}
+
+.tag.warning{
+
+    background:#fde68a;
+}
+
+.tag.danger{
+
+    background:#fecaca;
+}
+
+/* ========================================================= */
+/* LIST */
+/* ========================================================= */
+
+.list{
+
+    list-style:none;
+}
+
+.list li{
+
+    padding:14px;
+
+    border-bottom:1px solid #eee;
+}
+
+.list li:last-child{
+
+    border:none;
+}
+
+/* ========================================================= */
+/* ANIMATION */
+/* ========================================================= */
+
+@keyframes fade{
+
+    from{
+
+        opacity:0;
+
+        transform:translateY(20px);
+    }
+
+    to{
+
+        opacity:1;
+
+        transform:none;
+    }
+}
+
+.card{
+
+    animation:fade .6s;
+}
+
+/* ========================================================= */
+/* RESPONSIVE */
+/* ========================================================= */
+
+@media(max-width:900px){
+
+body{
+
+    grid-template-columns:1fr;
+}
+
+.sidebar{
+
+    display:none;
+}
+
+.dashboard{
+
+    grid-template-columns:1fr;
+}
+
+}
+
+/* ========================================================= */
+
+</style>
+
+</head>
+
+<body>
+
+<aside class="sidebar">
+
+<header>
+
+Dashboard
+
+</header>
+
+<nav>
+
+<a href="#">Home</a>
+<a href="#">Analytics</a>
+<a href="#">Projects</a>
+<a href="#">Users</a>
+<a href="#">Settings</a>
+
+</nav>
+
+</aside>
+
+<main>
+
+<header class="topbar">
+
+<div class="search">
+
+<input placeholder="Search">
+
+</div>
+
+<div class="profile">
+
+<img src="https://picsum.photos/50" alt="">
+<span>Administrator</span>
+
+</div>
+
+</header>
+
+<section class="dashboard">
+
+<div class="card stats">
+
+<div class="stat">
+
+<strong>125</strong>
+
+Projects
+
+</div>
+
+<div class="stat">
+
+<strong>985</strong>
+
+Users
+
+</div>
+
+<div class="stat">
+
+<strong>43</strong>
+
+Tasks
+
+</div>
+
+</div>
+
+<div class="card">
+
+<h2>Progress</h2>
+
+<div class="progress">
+
+<div></div>
+
+</div>
+
+</div>
+
+<div class="card">
+
+<h2>Users</h2>
+
+<table>
+
+<thead>
+
+<tr>
+
+<th>Name</th>
+<th>Status</th>
+
+</tr>
+
+</thead>
+
+<tbody>
+
+<tr>
+
+<td>John</td>
+
+<td><span class="tag success">Online</span></td>
+
+</tr>
+
+<tr>
+
+<td>Maria</td>
+
+<td><span class="tag warning">Away</span></td>
+
+</tr>
+
+<tr>
+
+<td>Lucas</td>
+
+<td><span class="tag danger">Offline</span></td>
+
+</tr>
+
+</tbody>
+
+</table>
+
+</div>
+
+<div class="card">
+
+<h2>Create Project</h2>
+
+<form>
+
+<input placeholder="Project">
+
+<input placeholder="Owner">
+
+<select>
+
+<option>Normal</option>
+<option>Important</option>
+
+</select>
+
+<textarea></textarea>
+
+<button class="btn primary">
+
+Save
+
+</button>
+
+</form>
+
+</div>
+
+<div class="card">
+
+<h2>Recent Activities</h2>
+
+<ul class="list">
+
+<li>Backup Completed</li>
+
+<li>User Created</li>
+
+<li>Database Updated</li>
+
+<li>New Login</li>
+
+<li>Report Generated</li>
+
+</ul>
+
+</div>
+
+<div class="card">
+
+<h2>Actions</h2>
+
+<button class="btn success">Approve</button>
+
+<button class="btn warning">Review</button>
+
+<button class="btn danger">Delete</button>
+
+</div>
+
+</section>
+
+</main>
+
+</body>
+
+</html>

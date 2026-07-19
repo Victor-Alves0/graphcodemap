@@ -1,0 +1,204 @@
+{
+  "model": "deepseek/deepseek-v4-pro",
+  "timestamp": 1784479263,
+  "repo": "benchrepos\\gin",
+  "n": 3,
+  "results": [
+    {
+      "id": "gin-handle-debug",
+      "arms": {
+        "baseline": {
+          "reach_ok": true,
+          "target_ok": true,
+          "chain_recall": 1.0,
+          "correct": true,
+          "pred_target": "IsDebugging",
+          "pred_chain": [
+            "gin.Engine.handleHTTPRequest",
+            "serveError",
+            "debugPrint",
+            "IsDebugging"
+          ],
+          "tokens": 50642,
+          "calls": 23,
+          "names": [
+            "grep",
+            "grep",
+            "read_file",
+            "read_file",
+            "read_file",
+            "grep",
+            "grep",
+            "grep",
+            "grep",
+            "grep",
+            "grep",
+            "read_file",
+            "read_file",
+            "read_file",
+            "read_file",
+            "read_file",
+            "grep",
+            "read_file",
+            "grep",
+            "read_file",
+            "read_file",
+            "read_file",
+            "read_file"
+          ],
+          "seconds": 41.0,
+          "answer": "eHeader` (line 70) → `debugPrint` → `IsDebugging`\n\nThe most direct and guaranteed path (without requiring a panic or error) is through `serveError` → `debugPrint` → `IsDebugging`, since `handleHTTPRequest` always calls `serveError` for 404/405 responses. But the Recovery middleware path is also valid.\n\nThe simplest guaranteed chain is through `serveError`:\n\n```json\n{\"reaches\": true, \"target\": \"IsDebugging\", \"chain\": [\"gin.Engine.handleHTTPRequest\", \"serveError\", \"debugPrint\", \"IsDebugging\"]}\n```"
+        },
+        "codegraph": {
+          "reach_ok": true,
+          "target_ok": true,
+          "chain_recall": 1.0,
+          "correct": true,
+          "pred_target": "IsDebugging",
+          "pred_chain": [
+            "handleHTTPRequest",
+            "serveError",
+            "debugPrint",
+            "IsDebugging"
+          ],
+          "tokens": 21079,
+          "calls": 9,
+          "names": [
+            "find_symbol",
+            "find_symbol",
+            "reaches",
+            "read_file",
+            "find_symbol",
+            "find_symbol",
+            "read_file",
+            "read_file",
+            "read_file"
+          ],
+          "seconds": 14.6,
+          "answer": "```json\n{\"reaches\": true, \"target\": \"IsDebugging\", \"chain\": [\"handleHTTPRequest\", \"serveError\", \"debugPrint\", \"IsDebugging\"]}\n```"
+        }
+      }
+    },
+    {
+      "id": "gin-mapform-setvalue",
+      "arms": {
+        "baseline": {
+          "reach_ok": true,
+          "target_ok": true,
+          "chain_recall": 0.5,
+          "correct": true,
+          "pred_target": "tryToSetValue",
+          "pred_chain": [
+            "mapForm",
+            "mapFormByTag",
+            "tryToSetValue"
+          ],
+          "tokens": 14156,
+          "calls": 9,
+          "names": [
+            "grep",
+            "grep",
+            "list_files",
+            "list_files",
+            "list_files",
+            "grep",
+            "grep",
+            "read_file",
+            "read_file"
+          ],
+          "seconds": 26.2,
+          "answer": "```json\n{\"reaches\": true, \"target\": \"tryToSetValue\", \"chain\": [\"mapForm\", \"mapFormByTag\", \"tryToSetValue\"]}\n```"
+        },
+        "codegraph": {
+          "reach_ok": true,
+          "target_ok": true,
+          "chain_recall": 1.0,
+          "correct": true,
+          "pred_target": "tryToSetValue",
+          "pred_chain": [
+            "mapForm",
+            "mapFormByTag",
+            "mappingByPtr",
+            "mapping",
+            "tryToSetValue"
+          ],
+          "tokens": 7330,
+          "calls": 2,
+          "names": [
+            "reaches",
+            "callees"
+          ],
+          "seconds": 20.1,
+          "answer": "```json\n{\"reaches\": true, \"target\": \"tryToSetValue\", \"chain\": [\"mapForm\", \"mapFormByTag\", \"mappingByPtr\", \"mapping\", \"tryToSetValue\"]}\n```"
+        }
+      }
+    },
+    {
+      "id": "gin-serve-error",
+      "arms": {
+        "baseline": {
+          "reach_ok": true,
+          "target_ok": true,
+          "chain_recall": 1.0,
+          "correct": true,
+          "pred_target": "serveError",
+          "pred_chain": [
+            "gin.Engine.ServeHTTP",
+            "gin.Engine.handleHTTPRequest",
+            "serveError"
+          ],
+          "tokens": 5465,
+          "calls": 3,
+          "names": [
+            "grep",
+            "grep",
+            "read_file"
+          ],
+          "seconds": 11.1,
+          "answer": "```json\n{\"reaches\": true, \"target\": \"serveError\", \"chain\": [\"gin.Engine.ServeHTTP\", \"gin.Engine.handleHTTPRequest\", \"serveError\"]}\n```"
+        },
+        "codegraph": {
+          "reach_ok": true,
+          "target_ok": true,
+          "chain_recall": 1.0,
+          "correct": true,
+          "pred_target": "gin.serveError",
+          "pred_chain": [
+            "gin.Engine.ServeHTTP",
+            "gin.Engine.handleHTTPRequest",
+            "gin.serveError"
+          ],
+          "tokens": 24182,
+          "calls": 9,
+          "names": [
+            "reaches",
+            "find_symbol",
+            "callers",
+            "callees",
+            "symbol_info",
+            "egao_graph",
+            "read_file",
+            "read_file",
+            "grep"
+          ],
+          "seconds": 33.4,
+          "answer": "```json\n{\"reaches\": true, \"target\": \"gin.serveError\", \"chain\": [\"gin.Engine.ServeHTTP\", \"gin.Engine.handleHTTPRequest\", \"gin.serveError\"]}\n```"
+        }
+      }
+    }
+  ],
+  "summary": {
+    "baseline": {
+      "correct": 1.0,
+      "chain_recall": 0.83,
+      "avg_tokens": 23421,
+      "avg_calls": 11.7
+    },
+    "codegraph": {
+      "correct": 1.0,
+      "chain_recall": 1.0,
+      "avg_tokens": 17530,
+      "avg_calls": 6.7
+    }
+  }
+}

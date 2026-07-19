@@ -1,0 +1,50 @@
+[
+  {
+    "id": "loc-reindex-skip",
+    "question": "Qual método decide pular a re-indexação de um arquivo cujo conteúdo não mudou, e em qual arquivo ele está? O que ele ainda atualiza nesse caso?",
+    "must_contain": ["index_file", "indexer.py"],
+    "reference": "Indexer.index_file em src/codegraph/indexer.py: compara o content_hash do arquivo com o registrado; se igual (e sem force), retorna False sem re-parsear, atualizando apenas mtime e size na tabela files."
+  },
+  {
+    "id": "callers-resolve-edges",
+    "question": "Quem chama o método resolve_edges do Indexer? Liste todos os call sites (arquivo e função).",
+    "must_contain": ["index_repo", "_repair", "_drain"],
+    "reference": "Três call sites: Indexer.index_repo (src/codegraph/indexer.py), QueryEngine._repair (src/codegraph/query.py) e Watcher._drain (src/codegraph/watcher.py)."
+  },
+  {
+    "id": "dangling-edges",
+    "question": "Quando um símbolo é removido do índice, o que acontece com as arestas de OUTROS arquivos que apontavam para ele? Que informação é preservada e para quê?",
+    "must_contain": ["dst_name"],
+    "reference": "O dst da aresta vira NULL (FK ON DELETE SET NULL) mas dst_name (o alvo textual) é sempre preservado — a aresta fica 'dangling' e pode ser religada depois pela resolução (resolve_edges processa arestas com dst IS NULL)."
+  },
+  {
+    "id": "pagerank-recompute",
+    "question": "Onde o PageRank dos símbolos é recomputado e o que dispara a recomputação?",
+    "must_contain": ["rank.py", "rank_dirty"],
+    "reference": "src/codegraph/rank.py (recompute/ensure_ranks). Lazy: index_file e remove_file marcam meta rank_dirty=1 (mark_dirty); ensure_ranks recomputa na próxima consulta que precisa de ranking (overview, impact)."
+  },
+  {
+    "id": "read-repair-flow",
+    "question": "Qual mecanismo garante que uma consulta nunca responde com dados de um arquivo que mudou no disco? Descreva o fluxo passo a passo.",
+    "must_contain": ["_repair"],
+    "reference": "Read-repair em QueryEngine._repair (src/codegraph/query.py): para cada arquivo envolvido na resposta, fast-path por size+mtime; divergiu, compara content_hash; mudou, re-indexa via index_file, roda resolve_edges e a consulta é re-executada; arquivo sumido é removido do índice. Buscas vazias disparam _repair_all (varredura de todos os arquivos). Tudo anotado no envelope de warnings."
+  },
+  {
+    "id": "confidence-layers",
+    "question": "Com qual confiança é marcada uma aresta de chamada resolvida apenas por match de nome, e qual componente promove arestas para 'certain'? Sob que condição?",
+    "must_contain": ["possible", "jedi"],
+    "reference": "Match por nome → 'possible' (até 5 candidatos, restrito à mesma linguagem). A camada L1 (JediResolver em src/codegraph/l1/python_jedi.py) promove para 'certain' quando o goto do jedi encontra exatamente UMA definição dentro do repo; clones possible do site promovido são removidos."
+  },
+  {
+    "id": "l3-stale",
+    "question": "Quando uma descrição L3 (describe) fica stale e o que o sistema faz com ela nesse caso? Ela sobrevive a uma re-indexação do arquivo?",
+    "must_contain": ["stale", "source_hash"],
+    "reference": "Fica stale quando o body_hash atual do símbolo difere do source_hash gravado na geração. É servida mesmo assim, mas marcada STALE no envelope (refresh=True re-gera). Sobrevive à re-indexação: index_file preserva as descrições (symbol ids são estáveis) mantendo o source_hash antigo para o stale continuar detectável."
+  },
+  {
+    "id": "watcher-full-rescan",
+    "question": "No watcher, quais eventos de arquivo disparam um rescan completo do repositório em vez de re-indexação por arquivo?",
+    "must_contain": ["HEAD"],
+    "reference": "Mudanças em .git/HEAD ou .git/refs (troca de branch, pull) e mudanças em .gitignore/.codegraphignore — Watcher._note seta _full_rescan e o drain chama index_repo completo."
+  }
+]

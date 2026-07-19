@@ -1,0 +1,234 @@
+{
+  "model": "deepseek/deepseek-v4-flash",
+  "root": "D:\\Projetos\\CodeGraph",
+  "max_steps": 12,
+  "timestamp": 1784376429,
+  "arms": {
+    "baseline": {
+      "tasks": [
+        {
+          "answer": "Agora tenho a resposta completa. O método é `index_file` na classe `Indexer`, no arquivo `src/codegraph/indexer.py`, linha 119. A condição que decide pular a re-indexação está na linha 134.\n\n**Resposta:**\n\nO método é **`Indexer.index_file`** no arquivo **`src/codegraph/indexer.py`**, linha 119.\n\nA decisão de pular a re-indexação está na **linha 134**:\n\n```python\nif row is not None and row[\"content_hash\"] == h and not force:\n```\n\nSe o arquivo já existe no banco (`row is not None`), o hash do conteúdo atual é igual ao armazenado (`row[\"content_hash\"] == h`), e `force` é `False`, ele **pula a re-indexação** e retorna `False`.\n\n**O que ele ainda atualiza nesse caso?** Mesmo pulando, ele atualiza **`mtime`** e **`size`** (tamanho) do arquivo na tabela `files` (linhas 135-138):\n\n```python\nself.conn.execute(\n    \"UPDATE files SET mtime=?, size=? WHERE id=?\",\n    (int(st.st_mtime), st.st_size, row[\"id\"]),\n)\n```\n\nOu seja, o timestamp de modificação e o tamanho são atualizados, mas o conteúdo indexado (símbolos, arestas, FTS) permanece inalterado.",
+          "tokens": 10303,
+          "tool_calls": 4,
+          "seconds": 85.9,
+          "contains_all": true,
+          "id": "loc-reindex-skip",
+          "question": "Qual método decide pular a re-indexação de um arquivo cujo conteúdo não mudou, e em qual arquivo ele está? O que ele ainda atualiza nesse caso?",
+          "judge": {
+            "score": 10,
+            "reason": "Identical to reference: correctly names Indexer.index_file in src/codegraph/indexer.py, explains content_hash comparison and force flag, and specifies that mtime and size are updated."
+          }
+        },
+        {
+          "answer": "Aqui estão todos os call sites do método `resolve_edges` do `Indexer`:\n\n| # | Arquivo | Função / Contexto | Linha |\n|---|---------|-------------------|-------|\n| 1 | `src/codegraph/indexer.py` | `Indexer.full_scan()` | 110 |\n| 2 | `src/codegraph/query.py` | `QueryEngine._repair()` | 74 |\n| 3 | `src/codegraph/watcher.py` | `Watcher._process_batch()` | 102 |\n\n**Detalhamento:**\n\n1. **`src/codegraph/indexer.py:110`** — dentro de `full_scan()`, após processar arquivos novos/removidos, chama `self.resolve_edges()` para religar arestas órfãs.\n\n2. **`src/codegraph/query.py:74`** — dentro de `_repair()` (método privado de `QueryEngine`), após re-indexar arquivos que mudaram desde a última indexação (read-repair), chama `self.ix.resolve_edges()`.\n\n3. **`src/codegraph/watcher.py:102`** — dentro de `_process_batch()` (método privado de `Watcher`), após processar um lote de eventos do sistema de arquivos (add/modify/remove), chama `self.ix.resolve_edges()` se houve mudanças.",
+          "tokens": 4595,
+          "tool_calls": 4,
+          "seconds": 60.3,
+          "contains_all": false,
+          "id": "callers-resolve-edges",
+          "question": "Quem chama o método resolve_edges do Indexer? Liste todos os call sites (arquivo e função).",
+          "judge": {
+            "score": 7,
+            "reason": "Dois dos três call sites estão corretos (indexer.py e query.py), mas o terceiro está errado: o candidato menciona Watcher._process_batch, enquanto o correto é Watcher._drain. Perde 3 pontos por esse erro."
+          }
+        },
+        {
+          "answer": "Agora entendo o fluxo completo. Vou responder.\n\n---\n\nQuando um símbolo é removido do índice (via `remove_file` em `src/codegraph/indexer.py:230`), o que acontece é:\n\n1. **O arquivo e seus símbolos são deletados** (`DELETE FROM files WHERE id=?` na linha 237). Como a tabela `symbols` tem `ON DELETE CASCADE` em `file_id`, todos os símbolos daquele arquivo são removidos automaticamente.\n\n2. **As arestas de OUTROS arquivos que apontavam para esses símbolos viram `dst=NULL`** — isso acontece automaticamente por causa da constraint `ON DELETE SET NULL` na coluna `dst` da tabela `edges` (`src/codegraph/db.py:56`). O SQLite aplica isso no momento do `DELETE` dos símbolos.\n\n3. **A informação preservada é o `dst_name`** (coluna `TEXT NOT NULL` na linha 57). Essa coluna guarda o **nome textual do alvo** (ex: `app.db.get_session`), que nunca é perdido. A aresta fica no estado **\"dangling\"** (solta).\n\n4. **Para quê?** Para permitir **re-resolução assíncrona**. Após cada re-indexação, o método `resolve_edges()` (`indexer.py:243`) consulta as arestas com `dst IS NULL` (usando o índice parcial `idx_edges_dangling` em `db.py:67`) e tenta religá-las a novos símbolos que tenham o mesmo `fqn` ou nome compatível. Isso é o que o `DESIGN.md` (linha 93) chama de **read-repair**: se um símbolo reaparecer (ex: arquivo renomeado e re-indexado), as arestas dangling são religadas automaticamente sem perder a referência textual original.",
+          "tokens": 13310,
+          "tool_calls": 7,
+          "seconds": 55.4,
+          "contains_all": true,
+          "id": "dangling-edges",
+          "question": "Quando um símbolo é removido do índice, o que acontece com as arestas de OUTROS arquivos que apontavam para ele? Que informação é preservada e para quê?",
+          "judge": {
+            "score": 10,
+            "reason": "The answer correctly describes that dst becomes NULL via ON DELETE SET NULL, dst_name is preserved, and the dangling edges are re-resolved by resolve_edges. It adds specific code references and details that align with the reference."
+          }
+        },
+        {
+          "answer": "Com isso, a resposta está completa.\n\n## Resposta\n\nO PageRank dos símbolos é recomputado em **`src/codegraph/rank.py`, função `recompute(conn)`** (linha 32). A recomputação é **lazy**:\n\n1. **O que dispara a marcação de \"sujo\" (dirty):**\n   - `index_file()` em `src/codegraph/indexer.py` (linha 223) — após indexar um arquivo.\n   - `remove_file()` em `src/codegraph/indexer.py` (linha 238) — após remover um arquivo.\n   - `refine()` em `src/codegraph/l1/__init__.py` (linha 48) — após promover arestas no nível L1.\n   \n   Todas chamam `rank.mark_dirty(conn)`, que seta `rank_dirty = '1'` na tabela `meta`.\n\n2. **O que dispara a recomputação de fato:**\n   As funções que precisam de ranking chamam `ensure_ranks(conn)` (linha 24 de `rank.py`). Se `rank_dirty` for `'1'`, ela chama `recompute()`. São elas:\n   - `overview()` em `src/codegraph/query.py` (linha 372) — mapa ranqueado do repositório.\n   - `impact()` em `src/codegraph/query.py` (linha 291) — análise de impacto.\n\n   Essas são expostas via MCP em `src/codegraph/mcp_server.py` (funções `overview` linha 68 e `impact`).\n\n**Resumo:** `index_file`/`remove_file`/`refine` marcam `rank_dirty=1`; na próxima chamada de `overview` ou `impact`, `ensure_ranks` detecta o dirty e chama `recompute()`.",
+          "tokens": 20519,
+          "tool_calls": 10,
+          "seconds": 63.0,
+          "contains_all": true,
+          "id": "pagerank-recompute",
+          "question": "Onde o PageRank dos símbolos é recomputado e o que dispara a recomputação?",
+          "judge": {
+            "score": 10,
+            "reason": "A resposta identifica corretamente o arquivo e função de recomputação, explica o mecanismo lazy com mark_dirty e ensure_ranks, e lista os gatilhos (index_file, remove_file, refine) e consumidores (overview, impact) com referências precisas ao código."
+          }
+        },
+        {
+          "answer": "Agora tenho todas as informações. Vou responder.\n\n---\n\n## Mecanismo: **Read-Repair na Query**\n\nO mecanismo que garante que uma consulta nunca responde com dados de um arquivo que mudou no disco é o **read-repair**, implementado no método `QueryEngine._repair` (`src/codegraph/query.py:52-75`).\n\n### Fluxo passo a passo\n\n1. **Identificação dos arquivos envolvidos** — A query engine coleta o conjunto de paths (`rels`) dos arquivos que apareceriam na resposta (ex.: arquivos que contêm os símbolos consultados).\n\n2. **Fast-path por `stat`** — Para cada arquivo, o método `_repair` faz:\n   - `path.stat()` no disco (`src/codegraph/query.py:67`)\n   - Compara `size` e `mtime` com os registrados no banco (`src/codegraph/query.py:68`)\n   - Se **iguais**: assume-se fresco, **pula** (sem custo de hash/parse).\n\n3. **Content-hash se divergiu** — Se `size` ou `mtime` diferirem, chama `self.ix.index_file(rel)` (`src/codegraph/query.py:70`), que:\n   - Lê o arquivo do disco (`src/codegraph/indexer.py:126`)\n   - Calcula `content_hash` via BLAKE2b (`src/codegraph/util.py:12-13`)\n   - Compara com o hash armazenado no banco (`src/codegraph/indexer.py:134`)\n   - Se o hash **mudou**: re-parseia o arquivo (tree-sitter), re-indexa símbolos e arestas, e retorna `True`\n   - Se o hash **não mudou** (só toque no mtime): apenas atualiza `mtime` e `size` no banco, retorna `False` (`src/codegraph/indexer.py:135-140`)\n\n4. **Arquivo removido** — Se o path não existe mais no disco (`src/codegraph/query.py:57`), chama `remove_file()` e emite aviso no envelope.\n\n5. **Re-resolução de arestas** — Se algo mudou (`changed == True`), chama `self.ix.resolve_edges()` (`src/codegraph/query.py:74`) para religar arestas quebradas.\n\n6. **Re-execução da consulta** — Após o read-repair, a query é re-executada sobre o índice já atualizado, garantindo que a resposta reflita o estado atual do disco.\n\n### Garantia documentada\n\nO princípio está explicitado em `docs/DESIGN.md` (princípio 2):\n\n> **Nenhuma resposta sem checagem de frescor.** Toda query verifica os hashes dos arquivos envolvidos antes de responder; divergência dispara read-repair (re-parse L0, milissegundos) ou marcação explícita de `stale`.\n\nE no docstring de `query.py:1-5:\n\n> Garantia: nenhuma resposta sai sem verificar o content-hash dos arquivos envolvidos. Divergiu → re-indexa (ms) e re-executa a consulta; arquivo sumiu → sai do índice; tudo anotado no envelope.",
+          "tokens": 19788,
+          "tool_calls": 7,
+          "seconds": 40.3,
+          "contains_all": true,
+          "id": "read-repair-flow",
+          "question": "Qual mecanismo garante que uma consulta nunca responde com dados de um arquivo que mudou no disco? Descreva o fluxo passo a passo.",
+          "judge": {
+            "score": 10,
+            "reason": "Resposta completa e específica, cobre todos os passos do read-repair, fast-path, content-hash, remoção, re-resolução e re-execução, com referências precisas ao código e documentação."
+          }
+        },
+        {
+          "answer": "",
+          "tokens": 47725,
+          "tool_calls": 15,
+          "seconds": 69.2,
+          "contains_all": false,
+          "id": "confidence-layers",
+          "question": "Com qual confiança é marcada uma aresta de chamada resolvida apenas por match de nome, e qual componente promove arestas para 'certain'? Sob que condição?",
+          "judge": {
+            "score": 0,
+            "reason": "The candidate answer is empty, providing no information to compare with the reference."
+          }
+        },
+        {
+          "answer": "Agora tenho o quadro completo. Vou responder.\n\n---\n\n**Quando uma descrição L3 fica stale e o que o sistema faz com ela?**\n\nUma descrição L3 fica **stale** quando o código-fonte original muda após a geração da descrição. A verificação é feita **na leitura** (lazy), comparando hashes:\n\n- Para **símbolo**: compara `cached[\"source_hash\"]` (hash do corpo do símbolo no momento da geração) com `sym[\"body_hash\"]` (hash atual do corpo do símbolo) — linha 48 de `src/codegraph/l3/__init__.py`.\n- Para **módulo**: compara `cached[\"source_hash\"]` com `frow[\"content_hash\"]` (hash atual do arquivo) — linha 91 do mesmo arquivo.\n\nQuando detectada stale, o sistema **serve a descrição do cache, mas marca `\"fresh\": false`** e emite um aviso (`\"stale\"` aparece em `env.warnings`). O conteúdo antigo não é descartado automaticamente — o agente/cliente vê a descrição mas sabe que está desatualizada. Para re-gerar, é necessário chamar com `refresh=True` (teste `test_describe_stale_is_declared_not_hidden` em `tests/test_l3.py:44-59`).\n\n**Ela sobrevive a uma re-indexação do arquivo?**\n\n**Sim, para símbolos.** No indexador (`src/codegraph/indexer.py:157-209`), antes de deletar e reinserir os símbolos de um arquivo, as descrições L3 daquele arquivo são salvas em `saved_descriptions`. Após a re-indexação, elas são reinseridas na tabela `descriptions` **se o `symbol_id` ainda existir** (linha 204: `if d[\"symbol_id\"] in all_uids`). O `source_hash` antigo é preservado, então a descrição continuará marcada como stale se o código mudou — exatamente como o design prevê (comentário na linha 157-158: *\"descrições L3 sobrevivem ao re-index (ids de símbolo são estáveis); source_hash antigo preservado → stale detectável\"*).\n\nPara **descrições de módulo** (`module_descriptions`), a tabela tem `ON DELETE CASCADE` referenciando `files(id)` (linha 80 de `src/codegraph/db.py`), mas o indexador não faz o mesmo salvamento explícito — como o `file_id` é preservado no `UPDATE` (linha 170-172), a linha em `module_descriptions` permanece na tabela, também sobrevivendo à re-indexação.",
+          "tokens": 71355,
+          "tool_calls": 15,
+          "seconds": 120.5,
+          "contains_all": true,
+          "id": "l3-stale",
+          "question": "Quando uma descrição L3 (describe) fica stale e o que o sistema faz com ela nesse caso? Ela sobrevive a uma re-indexação do arquivo?",
+          "judge": {
+            "score": 10,
+            "reason": "Fully correct and specific, matching reference and adding accurate implementation details."
+          }
+        },
+        {
+          "answer": "A resposta está clara no código. Vou confirmar os trechos relevantes.\n\n**Eventos que disparam rescan completo** (em vez de re-indexação por arquivo):\n\n1. **Mudanças em `.git/HEAD`** (linha 43-45)\n2. **Mudanças em `.git/refs/`** (qualquer arquivo dentro de `.git/refs/`, linha 43)\n3. **Mudanças em `.gitignore` ou `.codegraphignore`** (linha 51-54)\n\n**Mecanismo**: O método `_note` (linha 37) seta a flag `self._full_rescan = True` (linhas 45 e 54). No `_drain` (linha 75), quando `full` é `True` (linha 82), chama `self.ix.index_repo()` (linha 83) — que faz o rescan completo do repositório — em vez de processar arquivos individuais via `index_file`/`remove_file` (linhas 88-98).\n\n**Arquivo**: `src/codegraph/watcher.py`, linhas 37-59 (`_note`) e 75-86 (`_drain`).",
+          "tokens": 5893,
+          "tool_calls": 5,
+          "seconds": 31.5,
+          "contains_all": true,
+          "id": "watcher-full-rescan",
+          "question": "No watcher, quais eventos de arquivo disparam um rescan completo do repositório em vez de re-indexação por arquivo?",
+          "judge": {
+            "score": 10,
+            "reason": "The candidate answer correctly identifies all events (changes to .git/HEAD, .git/refs/, .gitignore/.codegraphignore) and explains the mechanism (_full_rescan flag and index_repo call), matching the reference exactly."
+          }
+        }
+      ],
+      "avg_score": 8.38,
+      "objective_rate": 0.75,
+      "avg_tokens": 24186,
+      "avg_tool_calls": 8.4,
+      "avg_seconds": 65.8
+    },
+    "codegraph": {
+      "tasks": [
+        {
+          "answer": "A resposta está clara no código.\n\n---\n\nO método é **`Indexer.index_file`**, localizado no arquivo **`src/codegraph/indexer.py`**, linha **119**.\n\nA decisão de pular a re-indexação está na **linha 134**:\n\n```python\nif row is not None and row[\"content_hash\"] == h and not force:\n```\n\nEla verifica se o arquivo já existe no banco (`row is not None`), se o `content_hash` atual (calculado sobre o conteúdo lido do disco) é igual ao armazenado no banco, e se `force` é `False`. Se tudo isso for verdade, **pula a re-indexação** (retorna `False`).\n\n**O que ele ainda atualiza nesse caso?**  \nMesmo pulando a re-indexação, ele **atualiza `mtime` e `size`** do arquivo na tabela `files` (linhas 135-138):\n\n```python\nself.conn.execute(\n    \"UPDATE files SET mtime=?, size=? WHERE id=?\",\n    (int(st.st_mtime), st.st_size, row[\"id\"]),\n)\n```\n\nOu seja, o timestamp de modificação e o tamanho do arquivo são atualizados no banco, mas nenhuma extração de símbolos, arestas ou FTS é feita.",
+          "tokens": 17230,
+          "tool_calls": 5,
+          "seconds": 31.8,
+          "contains_all": true,
+          "id": "loc-reindex-skip",
+          "question": "Qual método decide pular a re-indexação de um arquivo cujo conteúdo não mudou, e em qual arquivo ele está? O que ele ainda atualiza nesse caso?",
+          "judge": {
+            "score": 10,
+            "reason": "The candidate correctly identifies the method (Indexer.index_file) and file (src/codegraph/indexer.py), explains the condition for skipping reindexing (content_hash match, no force), and states that mtime and size are still updated, fully matching the reference."
+          }
+        },
+        {
+          "answer": "O método `resolve_edges` do `Indexer` é chamado em **3 call sites**:\n\n| # | Arquivo | Função / Método | Linha |\n|---|---------|-----------------|-------|\n| 1 | `src/codegraph/indexer.py` | `Indexer.index_repo` | 110 |\n| 2 | `src/codegraph/query.py` | `QueryEngine._repair` | 74 |\n| 3 | `src/codegraph/watcher.py` | `Watcher._drain` | 102 |\n\n**Detalhamento:**\n\n1. **`Indexer.index_repo`** (`src/codegraph/indexer.py:110`) — após remover arquivos que sumiram do disco durante uma indexação completa.\n2. **`QueryEngine._repair`** (`src/codegraph/query.py:74`) — após re-indexar um arquivo individual que estava \"velho\" (stat diferente), durante a verificação de frescor do índice.\n3. **`Watcher._drain`** (`src/codegraph/watcher.py:102`) — após processar um lote de eventos do filesystem watcher (adições/remoções), se houve alguma mudança.",
+          "tokens": 5600,
+          "tool_calls": 5,
+          "seconds": 17.9,
+          "contains_all": true,
+          "id": "callers-resolve-edges",
+          "question": "Quem chama o método resolve_edges do Indexer? Liste todos os call sites (arquivo e função).",
+          "judge": {
+            "score": 10,
+            "reason": "Correctly lists all three call sites with file and function names, matching the reference exactly."
+          }
+        },
+        {
+          "answer": "Agora tenho a resposta completa.\n\n---\n\n## Resposta\n\nQuando um símbolo é removido do índice (via `remove_file` em `src/codegraph/indexer.py:230`), as arestas de **outros arquivos** que apontavam para ele **não são deletadas**. O que acontece é:\n\n1. **`dst` vira `NULL`** — a constraint de chave estrangeira `ON DELETE SET NULL` na coluna `dst` da tabela `edges` (definida em `src/codegraph/db.py:56` e `docs/DESIGN.md:64`) dispara automaticamente quando o símbolo referenciado é removido da tabela `symbols`.\n\n2. **`dst_name` é preservado** — a coluna `dst_name` (`TEXT NOT NULL`) contém o **nome textual do alvo** e nunca é apagada (definida em `src/codegraph/db.py:57` e `docs/DESIGN.md:65`). Isso é explicitamente documentado: *\"alvo textual, SEMPRE preenchido (permite re-resolução)\"*.\n\n3. **A aresta vira \"dangling\"** — fica com `dst IS NULL` mas todo o resto da linha (kind, src, dst_name, file_id, line, col, confidence) permanece intacto.\n\n### Para quê a informação é preservada?\n\nPara **re-resolução assíncrona** posterior. O método `resolve_edges()` (`src/codegraph/indexer.py:243`) consulta todas as arestas com `dst IS NULL` (usando o índice parcial `idx_edges_dangling` em `src/codegraph/db.py:67`) e tenta religá-las a símbolos existentes usando o `dst_name` como chave de busca. Isso permite que, se o símbolo for recriado (ex.: o arquivo é re-indexado), a aresta seja automaticamente reconectada sem perder o contexto original.\n\nEm resumo: **o grafo nunca perde informação em silêncio** — como diz o comentário em `src/codegraph/db.py:6-7`.",
+          "tokens": 54792,
+          "tool_calls": 12,
+          "seconds": 68.6,
+          "contains_all": true,
+          "id": "dangling-edges",
+          "question": "Quando um símbolo é removido do índice, o que acontece com as arestas de OUTROS arquivos que apontavam para ele? Que informação é preservada e para quê?",
+          "judge": {
+            "score": 10,
+            "reason": "The answer correctly states that dst becomes NULL, dst_name is preserved, edges become dangling, and re-resolution is possible via resolve_edges, matching the reference exactly and adding specific code locations."
+          }
+        },
+        {
+          "answer": "Agora tenho todas as informações. Vou consolidar a resposta.\n\n## Resposta\n\nO PageRank dos símbolos é recomputado em **`src/codegraph/rank.py`**, na função **`recompute(conn)`** (linha 32). A recomputação é **lazy** (preguiçosa): ela só ocorre quando uma consulta que precisa do ranking é executada.\n\n### O que dispara a recomputação\n\n1. **Marcação de sujeira (`mark_dirty`)** — qualquer operação que modifique o grafo de símbolos marca a flag `rank_dirty=1` na tabela `meta`:\n   - `index_file()` em `src/codegraph/indexer.py` (linha 223) — após indexar/atualizar um arquivo.\n   - `remove_file()` em `src/codegraph/indexer.py` (linha 238) — após remover um arquivo.\n   - `refine_all()` em `src/codegraph/l1/__init__.py` (linha 48) — após promover símbolos no nível L1.\n\n2. **Gatilho de consulta (`ensure_ranks`)** — as funções que precisam do ranking chamam `ensure_ranks(conn)` (em `src/codegraph/rank.py`, linha 24), que verifica se `rank_dirty` é `\"1\"` e, em caso positivo, chama `recompute(conn)`:\n   - `impact()` em `src/codegraph/query.py` (linha 291).\n   - `overview()` em `src/codegraph/query.py` (linha 372).\n\n### Fluxo resumido\n\n```\nindex_file / remove_file / refine_all\n  → mark_dirty(conn)  (seta rank_dirty=1)\n  → (mais tarde) overview() ou impact()\n    → ensure_ranks(conn)\n      → se rank_dirty == \"1\": recompute(conn)\n        → calcula PageRank iterativo (20 iterações, damping 0.85)\n        → atualiza symbols.rank e seta rank_dirty=0\n```",
+          "tokens": 13911,
+          "tool_calls": 8,
+          "seconds": 109.5,
+          "contains_all": true,
+          "id": "pagerank-recompute",
+          "question": "Onde o PageRank dos símbolos é recomputado e o que dispara a recomputação?",
+          "judge": {
+            "score": 10,
+            "reason": "Resposta completa e precisa: identifica o arquivo, função, mecanismo lazy, marcadores e gatilhos exatos."
+          }
+        },
+        {
+          "answer": "Agora tenho todas as informações para responder de forma completa e precisa.\n\n---\n\n## Mecanismo: **Read-Repair na Query**\n\nA garantia de que uma consulta nunca responde com dados de um arquivo que mudou no disco é o **read-repair**, implementado no método `QueryEngine._repair()` em `src/codegraph/query.py:52-75`. É a \"garantia final\" (camada 3 do anti-staleness, conforme `docs/DESIGN.md:111`).\n\n### Fluxo passo a passo\n\n1. **Toda tool pública** (`find_symbol`, `symbol_info`, `references`, `callers`, `callees`, `impact`, `ego_graph`, `overview`) começa criando um `Envelope` e executando a consulta no índice SQLite.\n\n2. **Identificação dos arquivos envolvidos** — a tool coleta o conjunto de paths (`rel`) que aparecem no resultado da consulta (símbolo alvo, arestas, etc.).\n\n3. **Chamada do `_repair(rels, env)`** (`query.py:52`) — para cada `rel` no conjunto:\n   - **Fast-path por stat** (`query.py:67-69`): compara `size` e `mtime` do arquivo no disco com os valores armazenados na tabela `files`. Se iguais, assume-se fresco — **sem hash, sem I/O de leitura**.\n   - Se `size` ou `mtime` divergiram, chama `self.ix.index_file(rel)` (`query.py:70`), que:\n     - Recalcula o `content_hash` (xxhash64) do conteúdo atual.\n     - Re-parseia o arquivo com tree-sitter (L0).\n     - Substitui as linhas do arquivo no banco (transação por arquivo, invariante em `indexer.py:3-5`).\n   - Se o arquivo não existe mais no disco (`query.py:57-60`), chama `self.ix.remove_file(rel)` e registra aviso no envelope.\n\n4. **Re-resolução de arestas** — se algo mudou (`changed = True`), chama `self.ix.resolve_edges()` (`query.py:74`) para religar arestas que ficaram dangling.\n\n5. **Re-execução da consulta** — se `_repair` retornou `True`, a tool **re-executa a consulta inteira** com os dados frescos (ex.: `query.py:165-166` em `find_symbol`).\n\n6. **Envelope de resposta** — divergências são anotadas no `Envelope` com mensagens como `\"freshness: {rel} mudou desde a indexação; re-indexado agora (L0).\"` (`query.py:71`).\n\n7. **Caso especial: resultado vazio** — `_repair_all()` (`query.py:77-85`) varre **todos** os arquivos indexados, porque o arquivo que conteria a resposta pode estar justamente desatualizado e não ter sido incluído no resultado vazio.\n\n### Arquivos e símbolos chave\n\n| Arquivo | Símbolo | Papel |\n|---------|---------|-------|\n| `src/codegraph/query.py:52` | `QueryEngine._repair()` | Núcleo do read-repair |\n| `src/codegraph/query.py:77` | `QueryEngine._repair_all()` | Repara índice inteiro quando consulta vem vazia |\n| `src/codegraph/query.py:160` | `QueryEngine.find_symbol()` | Exemplo de tool que usa o padrão: consulta → repara → re-consulta |\n| `src/codegraph/indexer.py:67` | `Indexer.index_file()` | Re-parseia L0 e atualiza o banco |\n| `src/codegraph/watcher.py:20` | `Watcher` | Otimização em background (M2), não fonte de verdade |\n| `docs/DESIGN.md:111` | — | Documenta o read-repair como \"garantia final\" |\n\n### Invariante central\n\n> **\"Nenhuma resposta sem checagem de frescor\"** (`docs/DESIGN.md:9`) — o read-repair é síncrono na query, executado em milissegundos (re-parse L0 de arquivos individuais), e garante que o dado servido reflete o conteúdo atual do disco. O watcher (`src/codegraph/watcher.py`) é mera otimização para manter o índice quente; a fonte de verdade é o read-repair na query.",
+          "tokens": 84804,
+          "tool_calls": 12,
+          "seconds": 51.5,
+          "contains_all": true,
+          "id": "read-repair-flow",
+          "question": "Qual mecanismo garante que uma consulta nunca responde com dados de um arquivo que mudou no disco? Descreva o fluxo passo a passo.",
+          "judge": {
+            "score": 10,
+            "reason": "The answer is fully correct, specific, and detailed, covering the read-repair mechanism, step-by-step flow, fast-path, re-indexing, edge resolution, re-execution, envelope warnings, and special case for empty results, matching the reference exactly."
+          }
+        },
+        {
+          "answer": "Agora tenho a resposta completa.\n\n**Resposta:**\n\nUma aresta de chamada resolvida **apenas por match de nome** (nome puro, sem qualificação via FQN/import) é marcada com confiança **`possible`**. Isso ocorre na camada L0, especificamente no método `resolve_edges()` de `src/codegraph/indexer.py` (linhas 259–271 e 295–303): quando o `dst_name` não contém `.` (nome puro), a busca é feita exclusivamente por nome do símbolo, restrita à mesma linguagem do arquivo de origem. Se houver de 2 a `MAX_CANDIDATES` (5) candidatos, a primeira aresta recebe `possible` via `UPDATE` (linha 296) e as demais são inseridas como clones também `possible` (linhas 300–303).\n\nO componente que promove arestas para **`certain`** é a **camada L1**, implementada pelo **`JediResolver`** em `src/codegraph/l1/python_jedi.py`. A condição para a promoção é que o `jedi.Script.goto()` na posição da chamada retorne **exatamente uma definição** (`len(defs) == 1`, linha 64) **dentro do repositório** (`module_path` não é `None` e o path resolve relativo à raiz do repo, linhas 63 e 67–70). Quando isso ocorre, a aresta é atualizada com `confidence='certain'` e `resolver='l1'` (linha 81), e os clones `possible` do mesmo call site são removidos (linhas 84–87).",
+          "tokens": 52470,
+          "tool_calls": 13,
+          "seconds": 62.3,
+          "contains_all": true,
+          "id": "confidence-layers",
+          "question": "Com qual confiança é marcada uma aresta de chamada resolvida apenas por match de nome, e qual componente promove arestas para 'certain'? Sob que condição?",
+          "judge": {
+            "score": 10,
+            "reason": "The candidate answer correctly identifies 'possible' for name-only match, the L1 JediResolver promoting to 'certain' when exactly one definition is found in the repo, and removal of clones. It provides additional accurate details (file paths, line numbers, conditions) that align with the reference."
+          }
+        },
+        {
+          "answer": "<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"read_file\">\n<｜DSML｜parameter name=\"arguments\" string=\"false\">{\"end_line\": 120, \"path\": \"src/codegraph/l3/__init__.py\", \"start_line\": 82}</｜DSML｜parameter>\n</｜DSML｜invoke>\n<｜DSML｜invoke name=\"read_file\">\n<｜DSML｜parameter name=\"arguments\" string=\"false\">{\"path\": \"tests/test_l3.py\"}</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>",
+          "tokens": 42708,
+          "tool_calls": 13,
+          "seconds": 296.4,
+          "contains_all": false,
+          "id": "l3-stale",
+          "question": "Quando uma descrição L3 (describe) fica stale e o que o sistema faz com ela nesse caso? Ela sobrevive a uma re-indexação do arquivo?",
+          "judge": {
+            "score": 0,
+            "reason": "The candidate did not provide an answer; instead, it attempted to read files, which is not a valid response to the question."
+          }
+        },
+        {
+          "answer": "A resposta está clara no código-fonte. Aqui está a conclusão:\n\n---\n\nNo watcher (`src/codegraph/watcher.py`), os eventos que disparam um **rescan completo** do repositório (via `Indexer.index_repo()`) em vez de re-indexação por arquivo são:\n\n1. **Mudanças em `.git/HEAD`** (linha 43) — troca de branch.\n2. **Mudanças em qualquer caminho sob `.git/refs/`** (linha 43) — pull, fetch, merge, etc.\n3. **Mudanças em `.gitignore` ou `.codegraphignore`** (linha 51-55) — porque a spec de ignore mudou, afetando potencialmente todo o conjunto de arquivos.\n\nEm todos esses casos, a flag `self._full_rescan` é setada para `True` (linhas 45, 54), e no método `_drain()` (linha 80-86) isso faz com que `self.ix.index_repo()` seja chamado — um rescan completo do repositório.\n\nPara qualquer outro arquivo reconhecido (linguagem suportada), o watcher faz re-indexação incremental por arquivo via `self.ix.index_file(rel)` (linha 92).",
+          "tokens": 16753,
+          "tool_calls": 7,
+          "seconds": 30.2,
+          "contains_all": true,
+          "id": "watcher-full-rescan",
+          "question": "No watcher, quais eventos de arquivo disparam um rescan completo do repositório em vez de re-indexação por arquivo?",
+          "judge": {
+            "score": 10,
+            "reason": "Identical to reference: correctly lists .git/HEAD, .git/refs, .gitignore/.codegraphignore, and explains _full_rescan flag and index_repo call."
+          }
+        }
+      ],
+      "avg_score": 8.75,
+      "objective_rate": 0.88,
+      "avg_tokens": 36034,
+      "avg_tool_calls": 9.4,
+      "avg_seconds": 83.5
+    }
+  }
+}

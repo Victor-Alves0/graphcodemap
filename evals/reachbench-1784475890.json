@@ -1,0 +1,214 @@
+{
+  "model": "deepseek/deepseek-v4-pro",
+  "timestamp": 1784475890,
+  "repo": "benchrepos\\flask",
+  "n": 3,
+  "results": [
+    {
+      "id": "flask-dispatch-session",
+      "arms": {
+        "baseline": {
+          "reach_ok": true,
+          "target_ok": true,
+          "chain_recall": 1.0,
+          "correct": true,
+          "pred_target": "make_null_session",
+          "pred_chain": [
+            "flask.app.Flask.full_dispatch_request",
+            "flask.app.Flask.finalize_request",
+            "flask.app.Flask.process_response",
+            "flask.ctx.RequestContext._get_session",
+            "flask.sessions.SessionInterface.make_null_session"
+          ],
+          "tokens": 59189,
+          "calls": 20,
+          "names": [
+            "grep",
+            "grep",
+            "grep",
+            "grep",
+            "read_file",
+            "read_file",
+            "grep",
+            "grep",
+            "grep",
+            "read_file",
+            "read_file",
+            "read_file",
+            "read_file",
+            "grep",
+            "grep",
+            "read_file",
+            "read_file",
+            "read_file",
+            "grep",
+            "grep"
+          ],
+          "seconds": 189.9,
+          "answer": "```json\n{\"reaches\": true, \"target\": \"make_null_session\", \"chain\": [\"flask.app.Flask.full_dispatch_request\", \"flask.app.Flask.finalize_request\", \"flask.app.Flask.process_response\", \"flask.ctx.RequestContext._get_session\", \"flask.sessions.SessionInterface.make_null_session\"]}\n```"
+        },
+        "codegraph": {
+          "reach_ok": true,
+          "target_ok": true,
+          "chain_recall": 1.0,
+          "correct": true,
+          "pred_target": "make_null_session",
+          "pred_chain": [
+            "full_dispatch_request",
+            "finalize_request",
+            "process_response",
+            "_get_session",
+            "make_null_session"
+          ],
+          "tokens": 4177,
+          "calls": 1,
+          "names": [
+            "reaches"
+          ],
+          "seconds": 17.5,
+          "answer": "```json\n{\"reaches\": true, \"target\": \"make_null_session\", \"chain\": [\"full_dispatch_request\", \"finalize_request\", \"process_response\", \"_get_session\", \"make_null_session\"]}\n```"
+        }
+      }
+    },
+    {
+      "id": "flask-call-process",
+      "arms": {
+        "baseline": {
+          "reach_ok": true,
+          "target_ok": true,
+          "chain_recall": 0.75,
+          "correct": true,
+          "pred_target": "process_response",
+          "pred_chain": [
+            "Flask.__call__",
+            "wsgi_app",
+            "full_dispatch_request",
+            "finalize_request",
+            "process_response"
+          ],
+          "tokens": 23401,
+          "calls": 13,
+          "names": [
+            "grep",
+            "grep",
+            "grep",
+            "grep",
+            "grep",
+            "grep",
+            "read_file",
+            "read_file",
+            "grep",
+            "read_file",
+            "grep",
+            "read_file",
+            "read_file"
+          ],
+          "seconds": 31.5,
+          "answer": "```json\n{\"reaches\": true, \"target\": \"process_response\", \"chain\": [\"Flask.__call__\", \"wsgi_app\", \"full_dispatch_request\", \"finalize_request\", \"process_response\"]}\n```"
+        },
+        "codegraph": {
+          "reach_ok": true,
+          "target_ok": true,
+          "chain_recall": 1.0,
+          "correct": true,
+          "pred_target": "process_response",
+          "pred_chain": [
+            "__call__",
+            "wsgi_app",
+            "handle_exception",
+            "finalize_request"
+          ],
+          "tokens": 3913,
+          "calls": 1,
+          "names": [
+            "reaches"
+          ],
+          "seconds": 10.4,
+          "answer": "```json\n{\"reaches\": true, \"target\": \"process_response\", \"chain\": [\"__call__\", \"wsgi_app\", \"handle_exception\", \"finalize_request\"]}\n```"
+        }
+      }
+    },
+    {
+      "id": "flask-wsgi-session",
+      "arms": {
+        "baseline": {
+          "reach_ok": false,
+          "target_ok": false,
+          "chain_recall": 0.0,
+          "correct": false,
+          "pred_target": null,
+          "pred_chain": null,
+          "tokens": 61273,
+          "calls": 15,
+          "names": [
+            "grep",
+            "grep",
+            "list_files",
+            "list_files",
+            "list_files",
+            "grep",
+            "grep",
+            "read_file",
+            "read_file",
+            "grep",
+            "read_file",
+            "read_file",
+            "grep",
+            "read_file",
+            "grep"
+          ],
+          "seconds": 65.0,
+          "answer": "<｜｜DSML｜｜tool_calls>\n<｜｜DSML｜｜invoke name=\"read_file\">\n<｜｜DSML｜｜parameter name=\"path\" string=\"true\">src/flask/ctx.py</｜｜DSML｜｜parameter>\n<｜｜DSML｜｜parameter name=\"start_line\" string=\"false\">370</｜｜DSML｜｜parameter>\n<｜｜DSML｜｜parameter name=\"end_line\" string=\"false\">410</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>"
+        },
+        "codegraph": {
+          "reach_ok": true,
+          "target_ok": true,
+          "chain_recall": 1.0,
+          "correct": true,
+          "pred_target": "make_null_session",
+          "pred_chain": [
+            "Flask.wsgi_app",
+            "AppContext.push",
+            "AppContext._get_session",
+            "SessionInterface.make_null_session"
+          ],
+          "tokens": 51751,
+          "calls": 15,
+          "names": [
+            "find_symbol",
+            "symbol_info",
+            "callees",
+            "callers",
+            "callers",
+            "callees",
+            "callees",
+            "read_file",
+            "read_file",
+            "read_file",
+            "find_symbol",
+            "read_file",
+            "read_file",
+            "find_symbol",
+            "reaches"
+          ],
+          "seconds": 56.0,
+          "answer": "```json\n{\"reaches\": true, \"target\": \"make_null_session\", \"chain\": [\"Flask.wsgi_app\", \"AppContext.push\", \"AppContext._get_session\", \"SessionInterface.make_null_session\"]}\n```"
+        }
+      }
+    }
+  ],
+  "summary": {
+    "baseline": {
+      "correct": 0.67,
+      "chain_recall": 0.58,
+      "avg_tokens": 47954,
+      "avg_calls": 16.0
+    },
+    "codegraph": {
+      "correct": 1.0,
+      "chain_recall": 1.0,
+      "avg_tokens": 19947,
+      "avg_calls": 5.7
+    }
+  }
+}

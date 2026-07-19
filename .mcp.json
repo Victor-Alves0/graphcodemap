@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "codegraph": {
+      "command": "d:\\Projetos\\CodeGraph\\.venv\\Scripts\\codegraph-mcp.exe",
+      "args": ["--root", "d:\\Projetos\\CodeGraph"]
+    }
+  }
+}

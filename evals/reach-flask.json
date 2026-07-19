@@ -1,0 +1,23 @@
+[
+  {
+    "id": "flask-dispatch-session",
+    "entry": "flask.app.Flask.full_dispatch_request",
+    "target": "make_null_session",
+    "sink_regex": "make_null_session",
+    "gold_chain": ["full_dispatch_request", "finalize_request", "process_response", "_get_session"]
+  },
+  {
+    "id": "flask-call-process",
+    "entry": "flask.app.Flask.__call__",
+    "target": "process_response",
+    "sink_regex": "process_response",
+    "gold_chain": ["__call__", "wsgi_app", "handle_exception", "finalize_request"]
+  },
+  {
+    "id": "flask-wsgi-session",
+    "entry": "flask.app.Flask.wsgi_app",
+    "target": "make_null_session",
+    "sink_regex": "make_null_session",
+    "gold_chain": ["wsgi_app", "push", "_get_session"]
+  }
+]

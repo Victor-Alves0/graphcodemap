@@ -1,0 +1,666 @@
+{
+  "model": "deepseek/deepseek-v4-flash",
+  "timestamp": 1784434868,
+  "n": 15,
+  "results": [
+    {
+      "instance_id": "pallets__flask-4045",
+      "repo": "pallets/flask",
+      "gold_files": [
+        "src/flask/blueprints.py"
+      ],
+      "arms": {
+        "baseline": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": 0.0,
+          "pred_files": [
+            "src/flask/blueprints.py"
+          ],
+          "gold_files": [
+            "src/flask/blueprints.py"
+          ],
+          "tokens": 39704,
+          "cached_tokens": 19968,
+          "tool_calls": 12,
+          "seconds": 30.1,
+          "answer_tail": "```json\n{\"files\": [\"src/flask/blueprints.py\"], \"symbols\": [\"Blueprint.__init__\"]}\n```"
+        },
+        "codegraph": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": 0.0,
+          "pred_files": [
+            "src/flask/blueprints.py"
+          ],
+          "gold_files": [
+            "src/flask/blueprints.py"
+          ],
+          "tokens": 46629,
+          "cached_tokens": 17920,
+          "tool_calls": 12,
+          "seconds": 40.4,
+          "answer_tail": "\"every dot is now significant since blueprints can be nested.\"\n\nThe issue is that when registering a nested blueprint, the `name` option passed to `register_blueprint` can contain a dot (e.g., `name=\"parent.child\"`), and this is not validated. The `register` method at line 300-302 constructs the full name as `f\"{name_prefix}.{self_name}\"`, but there's no validation that the `name` option itself doesn't contain dots.\n\nThe fix should be in the `register` method of `Blueprint` class in `blueprints.py`, where the `name` option is used. We need to validate that the name passed via options doesn't contain a dot.\n\n```json\n{\"files\": [\"src/flask/blueprints.py\"], \"symbols\": [\"Blueprint.register\"]}\n```"
+        }
+      }
+    },
+    {
+      "instance_id": "pallets__flask-4992",
+      "repo": "pallets/flask",
+      "gold_files": [
+        "src/flask/config.py"
+      ],
+      "arms": {
+        "baseline": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": null,
+          "pred_files": [
+            "src/flask/config.py"
+          ],
+          "gold_files": [
+            "src/flask/config.py"
+          ],
+          "tokens": 15102,
+          "cached_tokens": 6400,
+          "tool_calls": 6,
+          "seconds": 22.0,
+          "answer_tail": "```json\n{\"files\": [\"src/flask/config.py\"], \"symbols\": [\"Config.from_file\"]}\n```"
+        },
+        "codegraph": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": null,
+          "pred_files": [
+            "src/flask/config.py"
+          ],
+          "gold_files": [
+            "src/flask/config.py"
+          ],
+          "tokens": 27397,
+          "cached_tokens": 6912,
+          "tool_calls": 7,
+          "seconds": 22.1,
+          "answer_tail": "```json\n{\"files\": [\"src/flask/config.py\"], \"symbols\": [\"Config.from_file\"]}\n```"
+        }
+      }
+    },
+    {
+      "instance_id": "pallets__flask-5063",
+      "repo": "pallets/flask",
+      "gold_files": [
+        "src/flask/cli.py"
+      ],
+      "arms": {
+        "baseline": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": 1.0,
+          "pred_files": [
+            "src/flask/cli.py"
+          ],
+          "gold_files": [
+            "src/flask/cli.py"
+          ],
+          "tokens": 24189,
+          "cached_tokens": 11264,
+          "tool_calls": 11,
+          "seconds": 22.8,
+          "answer_tail": "```json\n{\"files\": [\"src/flask/cli.py\"], \"symbols\": [\"routes_command\"]}\n```"
+        },
+        "codegraph": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": 1.0,
+          "pred_files": [
+            "src/flask/cli.py"
+          ],
+          "gold_files": [
+            "src/flask/cli.py"
+          ],
+          "tokens": 39081,
+          "cached_tokens": 22784,
+          "tool_calls": 10,
+          "seconds": 41.2,
+          "answer_tail": "```json\n{\"files\": [\"src/flask/cli.py\"], \"symbols\": [\"routes_command\"]}\n```"
+        }
+      }
+    },
+    {
+      "instance_id": "psf__requests-1963",
+      "repo": "psf/requests",
+      "gold_files": [
+        "requests/sessions.py"
+      ],
+      "arms": {
+        "baseline": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": null,
+          "pred_files": [
+            "requests/sessions.py"
+          ],
+          "gold_files": [
+            "requests/sessions.py"
+          ],
+          "tokens": 10985,
+          "cached_tokens": 512,
+          "tool_calls": 5,
+          "seconds": 22.1,
+          "answer_tail": "```json\n{\"files\": [\"requests/sessions.py\"], \"symbols\": [\"resolve_redirects\"]}\n```"
+        },
+        "codegraph": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": null,
+          "pred_files": [
+            "requests/sessions.py"
+          ],
+          "gold_files": [
+            "requests/sessions.py"
+          ],
+          "tokens": 36082,
+          "cached_tokens": 11776,
+          "tool_calls": 8,
+          "seconds": 30.1,
+          "answer_tail": "```json\n{\"files\": [\"requests/sessions.py\"], \"symbols\": [\"SessionRedirectMixin.resolve_redirects\"]}\n```"
+        }
+      }
+    },
+    {
+      "instance_id": "psf__requests-2148",
+      "repo": "psf/requests",
+      "gold_files": [
+        "requests/models.py"
+      ],
+      "arms": {
+        "baseline": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": null,
+          "pred_files": [
+            "requests/models.py"
+          ],
+          "gold_files": [
+            "requests/models.py"
+          ],
+          "tokens": 25829,
+          "cached_tokens": 10240,
+          "tool_calls": 9,
+          "seconds": 38.0,
+          "answer_tail": "```json\n{\"files\": [\"requests/models.py\"], \"symbols\": [\"iter_content\"]}\n```"
+        },
+        "codegraph": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": null,
+          "pred_files": [
+            "requests/models.py"
+          ],
+          "gold_files": [
+            "requests/models.py"
+          ],
+          "tokens": 48265,
+          "cached_tokens": 30208,
+          "tool_calls": 12,
+          "seconds": 31.4,
+          "answer_tail": "```json\n{\"files\": [\"requests/models.py\"], \"symbols\": [\"Response.iter_content\", \"Response.content\"]}\n```"
+        }
+      }
+    },
+    {
+      "instance_id": "psf__requests-2317",
+      "repo": "psf/requests",
+      "gold_files": [
+        "requests/sessions.py"
+      ],
+      "arms": {
+        "baseline": {
+          "file_recall": 0.0,
+          "all_files": 0.0,
+          "any_file": 0.0,
+          "sym_hit": null,
+          "pred_files": [],
+          "gold_files": [
+            "requests/sessions.py"
+          ],
+          "tokens": 22162,
+          "cached_tokens": 11776,
+          "tool_calls": 10,
+          "seconds": 33.0,
+          "answer_tail": "<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"read_file\">\n<｜DSML｜parameter name=\"arguments\" string=\"false\">{\"end_line\": 430, \"path\": \"requests/sessions.py\", \"start_line\": 400}</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>"
+        },
+        "codegraph": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": null,
+          "pred_files": [
+            "requests/sessions.py"
+          ],
+          "gold_files": [
+            "requests/sessions.py"
+          ],
+          "tokens": 35584,
+          "cached_tokens": 17664,
+          "tool_calls": 11,
+          "seconds": 25.4,
+          "answer_tail": "```json\n{\"files\": [\"requests/sessions.py\"], \"symbols\": [\"Session.request\"]}\n```"
+        }
+      }
+    },
+    {
+      "instance_id": "psf__requests-2674",
+      "repo": "psf/requests",
+      "gold_files": [
+        "requests/adapters.py"
+      ],
+      "arms": {
+        "baseline": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": null,
+          "pred_files": [
+            "requests/adapters.py"
+          ],
+          "gold_files": [
+            "requests/adapters.py"
+          ],
+          "tokens": 45542,
+          "cached_tokens": 19712,
+          "tool_calls": 15,
+          "seconds": 46.5,
+          "answer_tail": "```json\n{\"files\": [\"requests/adapters.py\"], \"symbols\": [\"send\"]}\n```"
+        },
+        "codegraph": {
+          "file_recall": 0.0,
+          "all_files": 0.0,
+          "any_file": 0.0,
+          "sym_hit": null,
+          "pred_files": [],
+          "gold_files": [
+            "requests/adapters.py"
+          ],
+          "tokens": 44330,
+          "cached_tokens": 16896,
+          "tool_calls": 13,
+          "seconds": 33.8,
+          "answer_tail": "Let me look at the `send` method in `adapters.py` to see the full exception handling flow:\n\n\n\n"
+        }
+      }
+    },
+    {
+      "instance_id": "psf__requests-3362",
+      "repo": "psf/requests",
+      "gold_files": [
+        "requests/utils.py"
+      ],
+      "arms": {
+        "baseline": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": 1.0,
+          "pred_files": [
+            "requests/utils.py"
+          ],
+          "gold_files": [
+            "requests/utils.py"
+          ],
+          "tokens": 22824,
+          "cached_tokens": 6912,
+          "tool_calls": 11,
+          "seconds": 26.6,
+          "answer_tail": "```json\n{\"files\": [\"requests/utils.py\"], \"symbols\": [\"stream_decode_response_unicode\"]}\n```"
+        },
+        "codegraph": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": 1.0,
+          "pred_files": [
+            "requests/utils.py"
+          ],
+          "gold_files": [
+            "requests/utils.py"
+          ],
+          "tokens": 38011,
+          "cached_tokens": 22272,
+          "tool_calls": 9,
+          "seconds": 41.3,
+          "answer_tail": "```json\n{\"files\": [\"requests/utils.py\"], \"symbols\": [\"stream_decode_response_unicode\"]}\n```"
+        }
+      }
+    },
+    {
+      "instance_id": "psf__requests-863",
+      "repo": "psf/requests",
+      "gold_files": [
+        "requests/models.py"
+      ],
+      "arms": {
+        "baseline": {
+          "file_recall": 0.0,
+          "all_files": 0.0,
+          "any_file": 0.0,
+          "sym_hit": 0.0,
+          "pred_files": [],
+          "gold_files": [
+            "requests/models.py"
+          ],
+          "tokens": 19450,
+          "cached_tokens": 5120,
+          "tool_calls": 9,
+          "seconds": 29.3,
+          "answer_tail": "\n\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"read_file\">\n<｜DSML｜parameter name=\"end_line\" string=\"false\">50</｜DSML｜parameter>\n<｜DSML｜parameter name=\"path\" string=\"true\">requests/hooks.py</｜DSML｜parameter>\n<｜DSML｜parameter name=\"start_line\" string=\"false\">32</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>"
+        },
+        "codegraph": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": 0.0,
+          "pred_files": [
+            "requests/models.py"
+          ],
+          "gold_files": [
+            "requests/models.py"
+          ],
+          "tokens": 39004,
+          "cached_tokens": 25856,
+          "tool_calls": 11,
+          "seconds": 38.4,
+          "answer_tail": "```json\n{\"files\": [\"requests/models.py\"], \"symbols\": [\"Request\"]}\n```"
+        }
+      }
+    },
+    {
+      "instance_id": "pytest-dev__pytest-11143",
+      "repo": "pytest-dev/pytest",
+      "gold_files": [
+        "src/_pytest/assertion/rewrite.py"
+      ],
+      "arms": {
+        "baseline": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": null,
+          "pred_files": [
+            "src/_pytest/assertion/rewrite.py"
+          ],
+          "gold_files": [
+            "src/_pytest/assertion/rewrite.py"
+          ],
+          "tokens": 25641,
+          "cached_tokens": 5376,
+          "tool_calls": 7,
+          "seconds": 47.3,
+          "answer_tail": "```json\n{\"files\": [\"src/_pytest/assertion/rewrite.py\"], \"symbols\": [\"AssertionRewriter.run\", \"AssertionRewriter.is_rewrite_disabled\"]}\n```"
+        },
+        "codegraph": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": null,
+          "pred_files": [
+            "src/_pytest/assertion/rewrite.py"
+          ],
+          "gold_files": [
+            "src/_pytest/assertion/rewrite.py"
+          ],
+          "tokens": 51860,
+          "cached_tokens": 23296,
+          "tool_calls": 8,
+          "seconds": 53.7,
+          "answer_tail": "```json\n{\"files\": [\"src/_pytest/assertion/rewrite.py\"], \"symbols\": [\"AssertionRewriter.run\"]}\n```"
+        }
+      }
+    },
+    {
+      "instance_id": "pytest-dev__pytest-11148",
+      "repo": "pytest-dev/pytest",
+      "gold_files": [
+        "src/_pytest/pathlib.py"
+      ],
+      "arms": {
+        "baseline": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": null,
+          "pred_files": [
+            "src/_pytest/pathlib.py"
+          ],
+          "gold_files": [
+            "src/_pytest/pathlib.py"
+          ],
+          "tokens": 61968,
+          "cached_tokens": 24384,
+          "tool_calls": 10,
+          "seconds": 85.5,
+          "answer_tail": "logging`), Python's import system may find a different module object than the one already referenced in the test module's namespace, because the intermediate modules created by `insert_missing_modules` can shadow the real packages.\n\nThe fix needs to ensure that when `insert_missing_modules` creates intermediate modules, it doesn't create dummy modules that conflict with real packages that might be imported later. The key issue is that `insert_missing_modules` creates empty `ModuleType` objects for intermediate paths, but these can conflict with real namespace packages or regular packages.\n\n```json\n{\"files\": [\"src/_pytest/pathlib.py\"], \"symbols\": [\"import_path\", \"insert_missing_modules\"]}\n```"
+        },
+        "codegraph": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": null,
+          "pred_files": [
+            "src/_pytest/pathlib.py"
+          ],
+          "gold_files": [
+            "src/_pytest/pathlib.py"
+          ],
+          "tokens": 47810,
+          "cached_tokens": 20544,
+          "tool_calls": 11,
+          "seconds": 90.1,
+          "answer_tail": "e a real package (like `pmxbot`) already exists in `sys.modules`. The issue is that when `insert_missing_modules` processes the parent chain, it may create dummy modules that shadow real packages, or it may fail to properly link the child module to the real parent package.\n\nThe key problem is in the `importlib` mode path of `import_path` (lines 524-540) and the `insert_missing_modules` function (lines 627-665). When a test module is imported, the parent packages created by `insert_missing_modules` can conflict with real packages that are imported later, causing duplicate module instances.\n\n```json\n{\"files\": [\"src/_pytest/pathlib.py\"], \"symbols\": [\"import_path\", \"insert_missing_modules\"]}\n```"
+        }
+      }
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5103",
+      "repo": "pytest-dev/pytest",
+      "gold_files": [
+        "src/_pytest/assertion/rewrite.py"
+      ],
+      "arms": {
+        "baseline": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": 0.0,
+          "pred_files": [
+            "src/_pytest/assertion/rewrite.py"
+          ],
+          "gold_files": [
+            "src/_pytest/assertion/rewrite.py"
+          ],
+          "tokens": 31623,
+          "cached_tokens": 9984,
+          "tool_calls": 9,
+          "seconds": 31.3,
+          "answer_tail": "```json\n{\"files\": [\"src/_pytest/assertion/rewrite.py\"], \"symbols\": [\"visit_Call_35\", \"visit_Call_legacy\"]}\n```"
+        },
+        "codegraph": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": 0.0,
+          "pred_files": [
+            "src/_pytest/assertion/rewrite.py"
+          ],
+          "gold_files": [
+            "src/_pytest/assertion/rewrite.py"
+          ],
+          "tokens": 50347,
+          "cached_tokens": 24576,
+          "tool_calls": 10,
+          "seconds": 38.8,
+          "answer_tail": "ith iterables (generator expressions, list comprehensions) to provide better failure messages showing which element failed, similar to how a for-loop assertion works.\n\nThe key file that needs to be modified is `src/_pytest/assertion/rewrite.py`. The `visit_Call_35` and `visit_Call_legacy` methods handle function calls like `all()` and `any()`, and they would need to be extended to detect when the function being called is `all` or `any` with a generator expression or list comprehension argument, and then rewrite it to unroll the iteration and provide per-element failure information.\n\n```json\n{\"files\": [\"src/_pytest/assertion/rewrite.py\"], \"symbols\": [\"visit_Call_35\", \"visit_Call_legacy\"]}\n```"
+        }
+      }
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5221",
+      "repo": "pytest-dev/pytest",
+      "gold_files": [
+        "src/_pytest/python.py"
+      ],
+      "arms": {
+        "baseline": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": 0.0,
+          "pred_files": [
+            "src/_pytest/python.py"
+          ],
+          "gold_files": [
+            "src/_pytest/python.py"
+          ],
+          "tokens": 23455,
+          "cached_tokens": 6144,
+          "tool_calls": 10,
+          "seconds": 41.2,
+          "answer_tail": "```json\n{\"files\": [\"src/_pytest/python.py\"], \"symbols\": [\"_showfixtures_main\"]}\n```"
+        },
+        "codegraph": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": 0.0,
+          "pred_files": [
+            "src/_pytest/python.py"
+          ],
+          "gold_files": [
+            "src/_pytest/python.py"
+          ],
+          "tokens": 53779,
+          "cached_tokens": 21760,
+          "tool_calls": 10,
+          "seconds": 51.7,
+          "answer_tail": "```json\n{\"files\": [\"src/_pytest/python.py\"], \"symbols\": [\"_showfixtures_main\"]}\n```"
+        }
+      }
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5227",
+      "repo": "pytest-dev/pytest",
+      "gold_files": [
+        "src/_pytest/logging.py"
+      ],
+      "arms": {
+        "baseline": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": null,
+          "pred_files": [
+            "src/_pytest/logging.py"
+          ],
+          "gold_files": [
+            "src/_pytest/logging.py"
+          ],
+          "tokens": 4559,
+          "cached_tokens": 0,
+          "tool_calls": 2,
+          "seconds": 14.1,
+          "answer_tail": "```json\n{\"files\": [\"src/_pytest/logging.py\"], \"symbols\": [\"DEFAULT_LOG_FORMAT\"]}\n```"
+        },
+        "codegraph": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": null,
+          "pred_files": [
+            "src/_pytest/logging.py"
+          ],
+          "gold_files": [
+            "src/_pytest/logging.py"
+          ],
+          "tokens": 5930,
+          "cached_tokens": 2560,
+          "tool_calls": 2,
+          "seconds": 18.6,
+          "answer_tail": "```json\n{\"files\": [\"src/_pytest/logging.py\"], \"symbols\": [\"DEFAULT_LOG_FORMAT\"]}\n```"
+        }
+      }
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5413",
+      "repo": "pytest-dev/pytest",
+      "gold_files": [
+        "src/_pytest/_code/code.py"
+      ],
+      "arms": {
+        "baseline": {
+          "file_recall": 0.0,
+          "all_files": 0.0,
+          "any_file": 0.0,
+          "sym_hit": 0.0,
+          "pred_files": [],
+          "gold_files": [
+            "src/_pytest/_code/code.py"
+          ],
+          "tokens": 29017,
+          "cached_tokens": 13056,
+          "tool_calls": 9,
+          "seconds": 26.5,
+          "answer_tail": "\n\n<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"read_file\">\n<｜DSML｜parameter name=\"end_line\" string=\"false\">545</｜DSML｜parameter>\n<｜DSML｜parameter name=\"path\" string=\"true\">src/_pytest/_code/code.py</｜DSML｜parameter>\n<｜DSML｜parameter name=\"start_line\" string=\"false\">530</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>"
+        },
+        "codegraph": {
+          "file_recall": 1.0,
+          "all_files": 1.0,
+          "any_file": 1.0,
+          "sym_hit": 0.0,
+          "pred_files": [
+            "src/_pytest/_code/code.py"
+          ],
+          "gold_files": [
+            "src/_pytest/_code/code.py"
+          ],
+          "tokens": 55887,
+          "cached_tokens": 27136,
+          "tool_calls": 10,
+          "seconds": 45.0,
+          "answer_tail": "The bug is that `ExceptionInfo` has no `__str__` method, so `str()` on the context variable falls back to `__repr__` which returns a technical description instead of the exception message. The fix is to add a `__str__` method to `ExceptionInfo` that returns `str(self.value)`.\n\n```json\n{\"files\": [\"src/_pytest/_code/code.py\"], \"symbols\": [\"ExceptionInfo\"]}\n```"
+        }
+      }
+    }
+  ],
+  "summary": {
+    "baseline": {
+      "any_file_rate": 0.8,
+      "all_files_rate": 0.8,
+      "mean_file_recall": 0.8,
+      "sym_hit_rate": 0.286,
+      "avg_tokens": 26803,
+      "avg_cached": 10057,
+      "avg_tool_calls": 9.0,
+      "avg_seconds": 34.4
+    },
+    "codegraph": {
+      "any_file_rate": 0.933,
+      "all_files_rate": 0.933,
+      "mean_file_recall": 0.933,
+      "sym_hit_rate": 0.286,
+      "avg_tokens": 41333,
+      "avg_cached": 19477,
+      "avg_tool_calls": 9.6,
+      "avg_seconds": 40.1
+    }
+  }
+}

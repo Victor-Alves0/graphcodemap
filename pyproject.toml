@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+# Nome oficial do projeto (decisão 2026-07-18): GraphCodeMap.
+# O pacote Python importável segue "codegraph" (import codegraph), como
+# pillow/PIL — o nome de distribuição é o que se instala, não o que se importa.
+name = "graphcodemap"
+version = "0.1.0"
+description = "Code-to-graph engine for AI coding agents: symbols, call graph, impact analysis — local-first, staleness-aware, model-agnostic."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Victor Alves" }]
+keywords = ["code-graph", "ai-agents", "tree-sitter", "call-graph", "mcp", "static-analysis"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+  "tree-sitter>=0.23",
+  "tree-sitter-language-pack>=0.6",
+  "pathspec>=0.12",
+  "watchdog>=4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-timeout>=2"]
+mcp = ["mcp>=1.2"]
+l1 = ["jedi>=0.19"]
+
+[project.scripts]
+graphcodemap = "codegraph.cli:main"
+graphcodemap-mcp = "codegraph.mcp_server:main"
+# aliases curtos (mantidos p/ configs .mcp.json existentes e digitação rápida)
+codegraph = "codegraph.cli:main"
+codegraph-mcp = "codegraph.mcp_server:main"
+
+[project.urls]
+Homepage = "https://github.com/Victor-Alves0/graphcodemap"
+Repository = "https://github.com/Victor-Alves0/graphcodemap"
+Issues = "https://github.com/Victor-Alves0/graphcodemap/issues"
+Changelog = "https://github.com/Victor-Alves0/graphcodemap/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codegraph"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
