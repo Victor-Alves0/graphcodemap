@@ -1,0 +1,18 @@
+[
+  {
+    "repo": "D:\\Projetos\\_scale_linux\\kernel",
+    "files": 641,
+    "index_s": 35.2,
+    "index_files_per_s": 18.2,
+    "symbols": 23764,
+    "edges": 108863,
+    "calls": 102801,
+    "db_mb": 35.5,
+    "bytes_per_file": 55338,
+    "sweep_s": 0.052,
+    "miss_query_s": 0.08,
+    "incremental_reindex_s": 1.21,
+    "peak_rss_mb": 98.5,
+    "parse_failed": null
+  }
+]

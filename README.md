@@ -178,11 +178,20 @@ This project's design principle is **epistemic honesty** — so are its claims:
   lock), or use one instance per thread. Writes retry on `database is locked`.
   Call-graph cycles (mutual/self recursion) terminate safely. Both are covered by
   regression tests and the CI matrix (Linux + Windows, Python 3.10–3.12).
-- **Scale:** measured up to the low tens of thousands of files. Indexing is
-  single-threaded (a one-time cost; the watcher keeps it warm after) and the
-  freshness sweep is O(files) but cheap via `os.scandir` (~250ms for a missed
-  lookup at 8k files, strong-consistency preserved). Not yet validated on 100k+
-  monorepos; parallel indexing and lazy/partial indexing are future work.
+- **Scale:** measured to **100k+ files** with a reproducible harness
+  ([`evals/scalebench.py`](evals/scalebench.py), full numbers in
+  [evals/RESULTS.md](evals/RESULTS.md#escala--prova-em-100k-arquivos-2026-07-20)).
+  Well-structured (namespaced) code scales cleanly: 100k files index in ~8 min at
+  **324 MB peak, no OOM**, on the one-time-index + hot-watcher model. Two honest
+  ceilings surfaced: (1) the strong freshness guarantee (an O(files) `os.scandir`
+  sweep on every empty result) costs ~5s per missed query at 100k — fine to
+  ~20-30k, but needs throttling/tiering above that; (2) **dense C at scale needs
+  active L1.** The full Linux kernel (72k C files) did *not* complete on the dev
+  box — C is ~30× denser on disk (55 KB/file) and name-based resolution fans out
+  pathologically without namespaces (`dev_err` called 35k×, `ARRAY_SIZE` 31k×), so
+  `certain` L1 resolution (clangd) becomes a *feasibility* requirement there, not
+  a nicety. Indexing is single-threaded; parallel/lazy/partial indexing and a
+  throttled freshness sweep are the next scale work.
 
 Configuration: set `OPENROUTER_API_KEY` (env or `.env`) to enable L3/eval;
 model via `CODEGRAPH_L3_MODEL`. Contributions and issue reports welcome.

@@ -8,6 +8,18 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Scale proof to 100k+ files** (`evals/scalebench.py`, results in
+  `evals/RESULTS.md`). A reproducible harness generates a synthetic repo with
+  real graph density (cross-file imports/calls) and measures cold index time,
+  peak memory, DB size, the O(files) freshness sweep, incremental re-index, and
+  query latency at growing N. Findings, unvarnished: well-structured (namespaced)
+  code scales cleanly to 100k (~8 min, **324 MB peak, no OOM** — the in-memory
+  `resolve_edges` index held). Two real ceilings surfaced and are now documented:
+  the strong freshness sweep costs ~5s per missed query at 100k (needs tiering
+  above ~30k), and the full Linux kernel (72k C files) did not complete — dense C
+  (~30× the on-disk size, name-based fan-out like `dev_err`×35k) makes active L1
+  (clangd) a feasibility requirement, not a nicety.
+
 - **Field-sensitive dataflow/taint.** A tainted fact is now an *access path*
   (`("user", "password")`), not a bare name. Reading a path is tainted if it or
   any prefix is tainted (marking the whole object taints its fields; marking one

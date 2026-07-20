@@ -299,3 +299,81 @@ A receita está validada e replicável: **linguagem + L1 (resolução semântica
 grafo passa a ganhar de grep em estrutura/travessia, mais barato E mais correto.**
 Hoje há L1 para Python (jedi), JS/TS (tsserver), Go (gopls), Rust (rust-analyzer)
 e C/C++ (clangd); cada nova linguagem com um LSP entra na mesma receita.
+
+---
+
+# Escala — prova em 100k+ arquivos (2026-07-20)
+
+Harness reproduzível: [`evals/scalebench.py`](scalebench.py). Gera um repo
+sintético com **densidade de grafo real** (imports + chamadas cross-file, ~2N
+símbolos, ~N arestas), não arquivos isolados — assim os caminhos O(N) que
+importam são de fato exercitados. Mede, por N crescente: tempo de índice frio,
+**pico de memória** (working set do processo), tamanho do `.db`, varredura de
+frescor (`scan_source_stats`), custo de um "miss" de query (dispara
+read-repair), re-index incremental e latência de query. Hardware: Windows 11,
+1 máquina, SQLite em disco local (números têm ruído de ±, não são um benchmark
+de laboratório).
+
+## Braço 1 — sintético (código namespaced, estilo Python)
+
+| N | index | arq/s | pico RAM | DB | frescor | miss query | find | impact* | re-index† |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 5.000 | 11,6s | 430 | 49 MB | 7,3 MB | 0,22s | 0,24s | 9 ms | 0,35s | 4,5s |
+| 20.000 | 128s | 156 | 94 MB | 35 MB | 0,86s | 0,94s | 40 ms | 2,5s | 19s |
+| **100.000** | **484s** | 207 | **324 MB** | 181 MB | **4,4s** | **4,9s** | 197 ms | 16,7s | 102s |
+
+\* `impact` no sintético é o **pior caso**: o grafo é uma cadeia linear de 500
+níveis, então a travessia transitiva percorre a cadeia inteira. Código real
+raramente é assim.  † `re-index` = `index()` completo após 1 edição (boot-scan
+diff O(N), re-hash de tudo) — **não** é o caminho incremental do watcher (O(1)
+por evento).
+
+**Leitura honesta:**
+- **✅ Não quebra.** 100k arquivos, **zero erro, zero OOM**, 324 MB de pico. O
+  `by_name` em memória do `resolve_edges` (200k símbolos) — o suspeito nº 1 de
+  estouro — escalou ~linear e aguentou.
+- **Índice frio é ~linear** (150–430 arq/s, ruidoso): ~8 min p/ 100k. Custo
+  único; o watcher mantém quente depois.
+- **⚠️ A garantia forte de frescor custa ~5s por "miss" a 100k.** A varredura
+  `scan_source_stats` (scandir, size/mtime) é O(N): barata até ~20-30k (<1s),
+  limítrofe a 100k. Acima disso precisa de throttle/estratégia em camadas
+  (trabalho futuro). Antes documentado como "~250ms a 8k" — a 100k são ~5s.
+- **⚠️ `index()` completo é O(N) re-hash** (102s a 100k). Incremental de verdade
+  é via watcher, não chamando `index()` de novo.
+
+## Braço 2 — C real (kernel Linux, `git clone --depth 1`)
+
+Corroboração em código de verdade. Duas medições:
+
+| repo | arquivos | index | arq/s | símbolos | símbolos/arq | bytes/arq | resultado |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `kernel/` | 641 | 35s | 18 | 23.764 | 37 | **55 KB** | ✅ completa |
+| kernel inteiro | 72.428 | — | — | — | — | — | **🧱 não completa** |
+
+O kernel **inteiro travou no L0 a 38.445/72.428 arquivos** (~53%), após ~19 min
+de CPU, com **2,69 milhões de símbolos** (~70/arq) e **2,5 milhões de arestas de
+chamada**, gerando um DB de 2,4 GB + 1,2 GB de WAL — antes mesmo do resolve.
+
+**Por que o C é o muro (e por que o L1 deixa de ser luxo):**
+- **C é 30× mais denso em disco** (55 KB/arq vs 1,8 KB do sintético) e **11× mais
+  lento de indexar** (18 vs 207 arq/s): macros + headers geram dezenas de
+  símbolos por arquivo.
+- **Resolução por nome é patológica em C** (sem namespaces): os alvos de chamada
+  mais frequentes são macros/funções ubíquas — `dev_err` ×35.395, `BIT` ×34.123,
+  `ARRAY_SIZE` ×31.517, `kfree` ×20.074. Sem L1, o `resolve_edges` casa esses
+  nomes por texto e o fan-out explode.
+- **É exatamente o caso que o L1/clangd resolve** — arestas `certain` semânticas
+  em vez de adivinhação por nome. Mas clangd não está ativo nesta máquina, então
+  o kernel bate no muro. **Conclusão: em C-escala, L1 não é qualidade, é
+  requisito de viabilidade.**
+
+## Veredito de escala
+
+- **Código bem-estruturado (namespaced) escala limpo até 100k+** no modelo
+  "índice único + watcher quente": ~8 min, 324 MB, sem OOM.
+- **Dois tetos reais, medidos, não escondidos:** (1) a varredura de frescor O(N)
+  chega a ~5s/miss a 100k — precisa de camadas acima de ~30k; (2) C denso em
+  escala (kernel) exige L1 ativo para não explodir por fan-out de nomes.
+- **Não validado como pronto para monorepo de 100k+ em C sem L1.** Indexação
+  incremental/parcial e throttle da varredura de frescor são o próximo trabalho
+  de escala. Números honestos > alegação de SOTA.
