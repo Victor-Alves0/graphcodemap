@@ -13,7 +13,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from .indexer import Indexer, load_ignore_spec
+from .indexer import Indexer, get_index_scopes, in_scope, load_ignore_spec
 from .languages import language_for
 from .log import get as _get_log
 
@@ -28,12 +28,25 @@ class Watcher:
         self.debounce = debounce
         self.ix: Indexer | None = None  # criado na thread do drain
         self.spec = load_ignore_spec(self.root)
+        self._scopes = self._load_scopes()   # índice parcial: ignora fora do escopo
         self._pending: set[str] = set()
         self._full_rescan = False
         self._lock = threading.Lock()
         self._drain_lock = threading.Lock()
         self._timer: threading.Timer | None = None
         self._observer = None
+
+    def _load_scopes(self) -> list[str]:
+        from .db import connect, default_db_path
+
+        try:
+            conn = connect(self._db_path or default_db_path(self.root))
+            try:
+                return get_index_scopes(conn)
+            finally:
+                conn.close()
+        except Exception:
+            return []
 
     # -- eventos -------------------------------------------------------------
 
@@ -56,6 +69,8 @@ class Watcher:
                 with self._lock:
                     self._full_rescan = True
                 self._schedule()
+            return
+        if not in_scope(rel, self._scopes):     # índice parcial: fora do escopo
             return
         with self._lock:
             self._pending.add(rel)

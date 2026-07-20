@@ -12,6 +12,7 @@ GraphCodeMap parses your repository with tree-sitter into a SQLite-backed graph 
 pip install graphcodemap
 
 codegraph index .                 # build .codegraph/graph.db
+codegraph index --scope drivers/gpu   # partial: index only a subtree (big monorepos)
 codegraph overview                # ranked map of the repo (PageRank)
 codegraph find validate_token     # locate symbols
 codegraph callers auth.TokenService.validate
@@ -198,8 +199,11 @@ This project's design principle is **epistemic honesty** — so are its claims:
   did *not* complete on the dev box — C is ~30× denser on disk (55 KB/file) and
   name-based resolution fans out pathologically without namespaces (`dev_err`
   called 35k×, `ARRAY_SIZE` 31k×), so `certain` L1 resolution (clangd) becomes a
-  *feasibility* requirement there, not a nicety. Indexing is single-threaded;
-  parallel/lazy/partial indexing are the next scale work.
+  *feasibility* requirement there, not a nicety. For repos too big or dense to
+  index whole, **`index --scope <subtree>`** indexes only the part you care about
+  (persisted, additive, and the freshness sweep then walks only that subtree —
+  ~4ms for a 500-file scope of a 100k repo vs ~0.7s for the whole). Indexing is
+  single-threaded; parallel indexing is the remaining scale work.
 
 Configuration: set `OPENROUTER_API_KEY` (env or `.env`) to enable L3/eval;
 model via `CODEGRAPH_L3_MODEL`. Contributions and issue reports welcome.

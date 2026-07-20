@@ -392,6 +392,12 @@ chamada**, gerando um DB de 2,4 GB + 1,2 GB de WAL — antes mesmo do resolve.
   PULADA no caminho de produção quando um watcher vivo já garante frescor
   (custo/miss → ~0, com backstop de 30s); (2) C denso em escala (kernel) exige L1
   ativo para não explodir por fan-out de nomes.
-- **Não validado como pronto para monorepo de 100k+ em C sem L1.** Indexação
-  incremental/parcial é o próximo trabalho de escala. Números honestos > alegação
-  de SOTA.
+- **Escape para o caso denso: indexação parcial (`index --scope`).** Para um
+  monorepo grande/denso demais p/ indexar inteiro (o kernel), indexa-se só a
+  subárvore que importa — escopo persistido e acumulável; a varredura de frescor
+  então só anda nessa subárvore (~4ms para um escopo de 500 arquivos num repo de
+  100k, vs ~0,7s no inteiro = 185×). Não resolve indexar o kernel INTEIRO, mas
+  torna tratável trabalhar numa parte dele.
+- **Ainda não validado como pronto para indexar um monorepo de 100k+ em C por
+  completo sem L1.** Indexação paralela é o trabalho de escala que resta. Números
+  honestos > alegação de SOTA.

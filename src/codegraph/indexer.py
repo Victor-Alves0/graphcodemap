@@ -10,6 +10,7 @@ Invariantes (docs/DESIGN.md §1.2 e §2):
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from pathlib import Path
@@ -66,19 +67,57 @@ def _file_ignore_spec(lines: list[str]) -> pathspec.PathSpec:
     return pathspec.GitIgnoreSpec.from_lines(file_lines)
 
 
-def iter_source_files(root: Path, spec: pathspec.PathSpec | None = None):
+# -- escopo de indexação parcial ---------------------------------------------
+# Um índice pode cobrir só subárvores (para monorepos grandes demais p/ indexar
+# inteiros — ver evals/RESULTS.md). O escopo é persistido em meta['index_scopes']
+# (lista JSON de prefixos relativos; vazio = repo inteiro). iter/scan/freshness
+# respeitam o escopo; a remoção só apaga arquivos sumidos DENTRO do escopo.
+
+def _norm_scope(s: str) -> str:
+    return s.strip().replace("\\", "/").strip("/")
+
+
+def in_scope(rel: str, scopes: list[str] | None) -> bool:
+    if not scopes:
+        return True
+    return any(rel == s or rel.startswith(s + "/") for s in scopes)
+
+
+def get_index_scopes(conn) -> list[str]:
+    row = conn.execute("SELECT value FROM meta WHERE key='index_scopes'").fetchone()
+    if row is None or not row["value"]:
+        return []
+    try:
+        return list(json.loads(row["value"]))
+    except (ValueError, TypeError):
+        return []
+
+
+def _scope_roots(root: Path, scopes: list[str] | None) -> list[tuple[Path, str]]:
+    """(dir absoluto, prefixo relativo) por onde iniciar o walk. Sem escopo, o
+    próprio root; com escopo, cada subárvore (existente)."""
+    if not scopes:
+        return [(root, "")]
+    return [(root / s, s) for s in scopes if (root / s).exists()]
+
+
+def iter_source_files(root: Path, spec: pathspec.PathSpec | None = None,
+                      scopes: list[str] | None = None):
     spec = spec or load_ignore_spec(root)
-    for p in sorted(root.rglob("*")):
-        if not p.is_file():
-            continue
-        rel = p.relative_to(root).as_posix()
-        if spec.match_file(rel) or language_for(rel) is None:
-            continue
-        yield rel
+    for base, _ in _scope_roots(root, scopes):
+        it = [base] if base.is_file() else sorted(base.rglob("*"))
+        for p in it:
+            if not p.is_file():
+                continue
+            rel = p.relative_to(root).as_posix()
+            if spec.match_file(rel) or language_for(rel) is None:
+                continue
+            yield rel
 
 
 def scan_source_stats(root: Path,
-                      spec: pathspec.PathSpec | None = None) -> dict[str, tuple[int, int]]:
+                      spec: pathspec.PathSpec | None = None,
+                      scopes: list[str] | None = None) -> dict[str, tuple[int, int]]:
     """``{rel: (size, int(mtime))}`` de todos os arquivos-fonte, via ``os.scandir``.
 
     size/mtime vêm da leitura do diretório (no Windows, sem syscall extra por
@@ -94,7 +133,10 @@ def scan_source_stats(root: Path,
     # diretório vem na pilha), em vez de os.path.relpath por entrada — relpath
     # chama normcase/LCMapStringEx e dominava a varredura (~72% em 100k arquivos).
     # Barra "/" direto, sem replace. Mesmo conjunto/paths que iter_source_files.
-    stack: list[tuple[str, str]] = [(str(root), "")]
+    # Com escopo, o walk começa só nas subárvores indexadas (varredura barata em
+    # monorepo grande onde só uma parte está indexada).
+    stack: list[tuple[str, str]] = [(str(base), rel)
+                                    for base, rel in _scope_roots(root, scopes)]
     while stack:
         abs_dir, rel_dir = stack.pop()
         try:
@@ -165,7 +207,7 @@ class Indexer:
 
     # -- indexação -----------------------------------------------------------
 
-    def index_repo(self, force: bool = False) -> dict:
+    def index_repo(self, force: bool = False, scope: str | None = None) -> dict:
         row = self.conn.execute(
             "SELECT value FROM meta WHERE key='indexer_version'").fetchone()
         if row is None or row["value"] != INDEXER_VERSION:
@@ -175,13 +217,26 @@ class Indexer:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (INDEXER_VERSION,))
             self.conn.commit()
+        # escopo parcial: acumula o prefixo pedido no escopo persistido; sem
+        # `scope`, respeita o que já estiver salvo (vazio = repo inteiro).
+        scopes = get_index_scopes(self.conn)
+        if scope is not None:
+            ns = _norm_scope(scope)
+            if ns and ns not in scopes:
+                scopes = sorted(scopes + [ns])
+            self.conn.execute(
+                "INSERT INTO meta(key, value) VALUES('index_scopes', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (json.dumps(scopes),))
+            self.conn.commit()
+        scope_arg = scopes or None
         spec = load_ignore_spec(self.root)
         seen: set[str] = set()
         stats = {"scanned": 0, "indexed": 0, "removed": 0, "errors": 0}
         cur = self.conn.cursor()
         cur.execute("BEGIN")
         pending = 0
-        for rel in iter_source_files(self.root, spec):
+        for rel in iter_source_files(self.root, spec, scope_arg):
             seen.add(rel)
             stats["scanned"] += 1
             cur.execute("SAVEPOINT f")           # isolamento de erro por arquivo
@@ -216,9 +271,10 @@ class Indexer:
                 cur.execute("BEGIN")
                 pending = 0
         cur.execute("COMMIT")
-        # arquivos que sumiram do disco (delete/rename/branch switch)
+        # arquivos que sumiram do disco (delete/rename/branch switch) — só
+        # dentro do escopo, para não apagar o que outra subárvore indexou.
         for row in self.conn.execute("SELECT path FROM files").fetchall():
-            if row["path"] not in seen:
+            if row["path"] not in seen and in_scope(row["path"], scope_arg):
                 self.remove_file(row["path"])
                 stats["removed"] += 1
         rank.mark_dirty(self.conn)

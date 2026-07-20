@@ -21,10 +21,14 @@ def cmd_index(args) -> int:
         args.root = str(Path(args.path).resolve())
     ix = Indexer(args.root, args.db)
     t0 = time.perf_counter()
-    stats = ix.index_repo(force=args.force)
+    stats = ix.index_repo(force=args.force, scope=getattr(args, "scope", None))
     dt = time.perf_counter() - t0
+    from .indexer import get_index_scopes
+
+    scopes = get_index_scopes(ix.conn)
+    scope_note = f" [escopo: {', '.join(scopes)}]" if scopes else ""
     print(f"indexados {stats['indexed']}/{stats['scanned']} arquivos "
-          f"({stats['removed']} removidos, {stats['errors']} erros) em {dt:.2f}s")
+          f"({stats['removed']} removidos, {stats['errors']} erros) em {dt:.2f}s{scope_note}")
     if args.l1:
         from . import l1
 
@@ -267,6 +271,9 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("path", nargs="?", default=None, help="raiz do repo (equivale a --root)")
     sp.add_argument("--force", action="store_true", help="re-indexa tudo mesmo sem mudanças")
     sp.add_argument("--l1", action="store_true", help="roda refinamento L1 após indexar")
+    sp.add_argument("--scope", default=None,
+                    help="indexa só esta subárvore do repo (parcial; acumula "
+                         "entre execuções e é lembrado nas próximas)")
     sp.set_defaults(fn=cmd_index)
 
     sp = sub.add_parser("refine", help="refinamento L1: promove arestas a 'certain'")

@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, field
 
 from .community import ensure_communities
-from .indexer import Indexer, scan_source_stats
+from .indexer import Indexer, get_index_scopes, scan_source_stats
 from .languages import get_parser
 from .rank import ensure_ranks
 from .util import like_escape
@@ -125,7 +125,9 @@ class QueryEngine:
                 and (time.monotonic() - self._last_full_sweep) < self._sweep_backstop):
             return False  # watcher garante frescor; pula a varredura O(N)
         self._last_full_sweep = time.monotonic()
-        on_disk = scan_source_stats(self.root)
+        # com índice parcial, varre só as subárvores indexadas (barato em
+        # monorepo grande); sem escopo, o repo inteiro.
+        on_disk = scan_source_stats(self.root, scopes=get_index_scopes(self.conn) or None)
         stale: set[str] = set()
         for r in self.conn.execute("SELECT path, size, mtime FROM files"):
             cur = on_disk.get(r["path"])

@@ -8,6 +8,17 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Partial / scoped indexing** (`index --scope <subtree>`, `CodeGraph.index(scope=...)`).
+  Index only the subtree(s) you care about — the escape hatch for monorepos too
+  big or too dense to index whole (the scale proof showed the full Linux kernel,
+  72k C files, doesn't complete on a dev box). The scope is **persisted**
+  (`meta['index_scopes']`), **accumulates** across runs (index `drivers/gpu`, then
+  `drivers/net`), and is respected everywhere: re-index, the freshness sweep, and
+  the watcher all stay within scope, and removal only prunes vanished files
+  *inside* scope (indexing subtree A never deletes B). The freshness sweep walks
+  only the indexed subtrees, so a 500-file scope of a 100k-file repo sweeps in
+  ~4ms instead of ~0.7s (185×). No scope = whole repo (unchanged default).
+
 - **Scale proof to 100k+ files** (`evals/scalebench.py`, results in
   `evals/RESULTS.md`). A reproducible harness generates a synthetic repo with
   real graph density (cross-file imports/calls) and measures cold index time,
