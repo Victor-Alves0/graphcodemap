@@ -402,7 +402,17 @@ chamada**, gerando um DB de 2,4 GB + 1,2 GB de WAL — antes mesmo do resolve.
   grafo bit-a-bit idêntico ao serial. Modesto de propósito — o índice é limitado
   pela escrita serial no SQLite (~48% do tempo; parse+extract são só ~7%), então
   não há ganho linear a extrair aqui. Dito sem enfeite.
+- **O travamento do índice do kernel inteiro era o WAL, e foi corrigido.** A
+  causa não era CPU: o `resolve_edges` escrevia milhões de arestas numa transação
+  única → WAL de 1,2 GB → checkpoint final gigante que travava. Agora as escritas
+  em massa commitam em blocos + `wal_checkpoint(TRUNCATE)`, mantendo o WAL pequeno
+  (índice de 100k arestas → -wal de ~10 KB) e tornando o índice resumível. Isso
+  muda "não completa" para "completa" (ainda que devagar). Validado como
+  WAL-limitado e resultado-idêntico em índices sintéticos; o kernel inteiro
+  ponta-a-ponta (multi-GB, horas) não foi re-rodado — é o fix da causa-raiz
+  identificada, rotulado honestamente assim.
 - **Ainda não validado como pronto para indexar um monorepo de 100k+ em C por
-  completo sem L1.** O que destravaria de verdade o caso denso é um armazenamento
-  com escrita não-serial (fora do escopo) — não mais paralelismo de CPU. Números
-  honestos > alegação de SOTA.
+  completo sem L1**, e o throughput continua limitado pela escrita serial do
+  SQLite. Storage com escrita não-serial daria só um fator constante (~1,5×) e
+  feriria o local-first — baixa alavancagem. Para uso real, `--scope` resolve.
+  Números honestos > alegação de SOTA.

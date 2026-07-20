@@ -111,6 +111,19 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Performance
 
+- **Bounded WAL on huge indexes (fixes the full-repo index stall).** Indexing a
+  very large repo (the full Linux kernel, 72k C files) stalled: the L0 graph wrote
+  fine (~2.4GB) but `resolve_edges` then wrote millions of edges in a **single
+  transaction**, so the write-ahead log grew unbounded (~1.2GB) — uncommitted
+  frames can't be checkpointed — until the final commit triggered one giant
+  checkpoint that hung. Fixed by committing the bulk edge writes in chunks
+  (`WRITE_CHUNK` rows) with a periodic `wal_checkpoint(TRUNCATE)`, and by
+  checkpointing the L0 batch loop every N commits. The WAL now stays small (a
+  100k-edge index truncates it to ~10KB) and the index becomes resumable if
+  interrupted (each committed chunk is durable; `resolve_edges` is idempotent).
+  Verified WAL-bounded + result-identical on synthetic indexes; the full-kernel
+  end-to-end was not re-run (multi-GB, hours), so this is the identified
+  root-cause fix, honestly labeled as such.
 - **Parallel indexing (prepare in threads, writes stay serial).** The index is
   write-bound — profiling puts SQLite `executemany`/`execute` at ~48% and
   parse+extract at only ~7% — so the honest lever is overlapping the parallelizable

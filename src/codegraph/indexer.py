@@ -37,6 +37,13 @@ BULK_BATCH = 500
 # serial → grafo bit-a-bit igual. Ganho limitado pelo teto de escrita (~1,3x).
 PARALLEL_MIN_FILES = 1000        # abaixo disso o overhead de thread não compensa
 INDEX_WORKERS_MAX = 4            # ponto ótimo medido (acima, contenção de GIL piora)
+# WAL sob controle em repos ENORMES: escrever milhões de linhas numa transação
+# única faz o WAL crescer sem limite (não dá p/ checkpointar frames não-commitados)
+# até o commit final disparar um checkpoint gigante que trava — foi o que travou
+# o índice do kernel Linux inteiro. Commit em blocos + checkpoint(TRUNCATE)
+# mantêm o WAL pequeno e tornam o índice resumível se interrompido.
+WRITE_CHUNK = 50_000             # linhas por commit nas escritas em massa
+CHECKPOINT_EVERY_BATCHES = 20    # a cada N commits de arquivo, encolhe o WAL
 CALLABLE_KINDS = ("function", "method", "class")
 
 # Versão da lógica de extração/resolução: mudou → força re-index completo,
@@ -313,6 +320,26 @@ class Indexer:
             raise
         return True
 
+    def _flush_wal(self) -> None:
+        """Checkpoint(TRUNCATE): grava o WAL no .db e ENCOLHE o arquivo -wal. O
+        autocheckpoint (passivo) reaproveita espaço mas não encolhe, e pode ser
+        bloqueado — este é explícito. Não-fatal se um leitor concorrente segurar."""
+        try:
+            self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception as e:
+            log.debug("wal_checkpoint adiado: %s", e)
+
+    def _executemany_chunked(self, cur, sql: str, rows: list) -> None:
+        """executemany em blocos com commit (+ checkpoint periódico) entre eles,
+        para não acumular um WAL gigante numa transação única — a origem do stall
+        ao indexar repos enormes. Cada bloco commitado é durável: resolve_edges
+        vira resumível (re-rodar religa só o que faltou; é idempotente)."""
+        for i in range(0, len(rows), WRITE_CHUNK):
+            cur.executemany(sql, rows[i:i + WRITE_CHUNK])
+            self.conn.commit()
+            if (i // WRITE_CHUNK) % 4 == 3:
+                self._flush_wal()
+
     def _mark_failed(self, cur, rel: str) -> None:
         cur.execute(
             "INSERT INTO files(path, language, content_hash, size, mtime, "
@@ -324,7 +351,7 @@ class Indexer:
         seen: set[str] = set()
         cur = self.conn.cursor()
         cur.execute("BEGIN")
-        pending = 0
+        pending = batches = 0
         for rel in files:
             seen.add(rel)
             cur.execute("SAVEPOINT f")           # isolamento de erro por arquivo
@@ -352,6 +379,9 @@ class Indexer:
             pending += 1
             if pending >= BULK_BATCH:            # flush do lote
                 cur.execute("COMMIT")
+                batches += 1
+                if batches % CHECKPOINT_EVERY_BATCHES == 0:
+                    self._flush_wal()            # encolhe o WAL em índice enorme
                 cur.execute("BEGIN")
                 pending = 0
         cur.execute("COMMIT")
@@ -397,7 +427,7 @@ class Indexer:
         seen: set[str] = set(files)
         cur = self.conn.cursor()
         cur.execute("BEGIN")
-        pending = 0
+        pending = batches = 0
         chunk = max(BULK_BATCH, workers * 16)     # limita prepares em voo (memória)
         with ThreadPoolExecutor(max_workers=workers) as ex:
             for i in range(0, len(files), chunk):
@@ -437,6 +467,9 @@ class Indexer:
                     pending += 1
                     if pending >= BULK_BATCH:
                         cur.execute("COMMIT")
+                        batches += 1
+                        if batches % CHECKPOINT_EVERY_BATCHES == 0:
+                            self._flush_wal()
                         cur.execute("BEGIN")
                         pending = 0
         cur.execute("COMMIT")
@@ -650,15 +683,15 @@ class Indexer:
             for c in cands[1:]:
                 fanout.append((e["kind"], e["src"], c["id"], guess,
                                e["file_id"], e["line"], e["col"]))
-        if inferred:
-            cur.executemany(
-                "UPDATE edges SET dst=?, confidence='inferred' WHERE id=?", inferred)
-        if possible:
-            cur.executemany(
-                "UPDATE edges SET dst=?, confidence='possible' WHERE id=?", possible)
-        if fanout:
-            cur.executemany(
-                "INSERT OR IGNORE INTO edges(kind, src, dst, dst_name, "
-                "file_id, line, col, confidence, resolver) "
-                "VALUES(?,?,?,?,?,?,?,'possible','l0')", fanout)
+        # escrita em blocos: em repos enormes estas listas têm milhões de linhas;
+        # uma transação única faria o WAL explodir e o commit final travar.
+        self._executemany_chunked(
+            cur, "UPDATE edges SET dst=?, confidence='inferred' WHERE id=?", inferred)
+        self._executemany_chunked(
+            cur, "UPDATE edges SET dst=?, confidence='possible' WHERE id=?", possible)
+        self._executemany_chunked(
+            cur, "INSERT OR IGNORE INTO edges(kind, src, dst, dst_name, "
+                 "file_id, line, col, confidence, resolver) "
+                 "VALUES(?,?,?,?,?,?,?,'possible','l0')", fanout)
         self.conn.commit()
+        self._flush_wal()
