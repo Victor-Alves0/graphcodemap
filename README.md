@@ -183,15 +183,18 @@ This project's design principle is **epistemic honesty** — so are its claims:
   [evals/RESULTS.md](evals/RESULTS.md#escala--prova-em-100k-arquivos-2026-07-20)).
   Well-structured (namespaced) code scales cleanly: 100k files index in ~8 min at
   **324 MB peak, no OOM**, on the one-time-index + hot-watcher model. Two honest
-  ceilings surfaced: (1) the strong freshness guarantee (an O(files) `os.scandir`
-  sweep on every empty result) costs ~5s per missed query at 100k — fine to
-  ~20-30k, but needs throttling/tiering above that; (2) **dense C at scale needs
-  active L1.** The full Linux kernel (72k C files) did *not* complete on the dev
-  box — C is ~30× denser on disk (55 KB/file) and name-based resolution fans out
-  pathologically without namespaces (`dev_err` called 35k×, `ARRAY_SIZE` 31k×), so
-  `certain` L1 resolution (clangd) becomes a *feasibility* requirement there, not
-  a nicety. Indexing is single-threaded; parallel/lazy/partial indexing and a
-  throttled freshness sweep are the next scale work.
+  ceilings surfaced: (1) the strong freshness guarantee is an O(files)
+  `os.scandir` sweep on every empty result — profiling found 72% of it was
+  `os.path.relpath` (millions of `normcase` calls on Windows), now removed by
+  building the relative path during descent: **~5s → ~1.3s per missed query at
+  100k**, same files and same guarantee (no throttle), comfortable to ~100k;
+  (2) **dense C at scale needs active L1.** The full Linux kernel (72k C files)
+  did *not* complete on the dev box — C is ~30× denser on disk (55 KB/file) and
+  name-based resolution fans out pathologically without namespaces (`dev_err`
+  called 35k×, `ARRAY_SIZE` 31k×), so `certain` L1 resolution (clangd) becomes a
+  *feasibility* requirement there, not a nicety. Indexing is single-threaded;
+  parallel/lazy/partial indexing and a watcher-aware freshness sweep are the next
+  scale work.
 
 Configuration: set `OPENROUTER_API_KEY` (env or `.env`) to enable L3/eval;
 model via `CODEGRAPH_L3_MODEL`. Contributions and issue reports welcome.

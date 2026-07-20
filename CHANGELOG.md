@@ -100,6 +100,16 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Performance
 
+- **Freshness sweep ~3.5× faster (`scan_source_stats`).** The O(files) staleness
+  sweep that runs on every empty query result was dominated by `os.path.relpath`
+  (72% of its time — millions of `normcase`/`LCMapStringEx` calls on Windows), not
+  I/O. Building the relative path by concatenation during the directory descent
+  (the parent's relative prefix rides the walk stack) and checking `language_for`
+  before the gitignore regex cut a full 100k-file sweep from ~4.65s to ~1.33s —
+  same file set, same strong anti-staleness guarantee (no throttle; the
+  every-miss sweep test still holds). This lowers scale ceiling #1 from the
+  100k-file scale proof, pushing the comfortable freshness ceiling to ~100k.
+
 - **Indexing restructured (batched writes + in-memory edge resolution).** The
   full-scan (`index_repo`) commits in batches (a per-file `SAVEPOINT` preserves
   error isolation) and inserts symbols/FTS/edges with `executemany`; the write

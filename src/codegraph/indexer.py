@@ -74,22 +74,28 @@ def scan_source_stats(root: Path,
     em escala. Mesmo conjunto de arquivos que ``iter_source_files``."""
     spec = spec or load_ignore_spec(root)
     out: dict[str, tuple[int, int]] = {}
-    root_s = str(root)
-    stack = [root_s]
+    # Constrói o caminho relativo por concatenação enquanto desce (o prefixo do
+    # diretório vem na pilha), em vez de os.path.relpath por entrada — relpath
+    # chama normcase/LCMapStringEx e dominava a varredura (~72% em 100k arquivos).
+    # Barra "/" direto, sem replace. Mesmo conjunto/paths que iter_source_files.
+    stack: list[tuple[str, str]] = [(str(root), "")]
     while stack:
+        abs_dir, rel_dir = stack.pop()
         try:
-            it = os.scandir(stack.pop())
+            it = os.scandir(abs_dir)
         except OSError:
             continue
         with it:
             for e in it:
+                rel = e.name if not rel_dir else f"{rel_dir}/{e.name}"
                 try:
-                    rel = os.path.relpath(e.path, root_s).replace(os.sep, "/")
                     if e.is_dir(follow_symlinks=False):
                         if not spec.match_file(rel + "/"):   # poda dir ignorado
-                            stack.append(e.path)
+                            stack.append((e.path, rel))
                     elif e.is_file(follow_symlinks=False):
-                        if spec.match_file(rel) or language_for(rel) is None:
+                        # language_for (lookup de extensão) primeiro: descarta
+                        # não-fontes sem pagar o match do gitignore (regex).
+                        if language_for(rel) is None or spec.match_file(rel):
                             continue
                         st = e.stat()
                         out[rel] = (st.st_size, int(st.st_mtime))

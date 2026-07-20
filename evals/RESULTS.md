@@ -334,10 +334,17 @@ por evento).
   estouro — escalou ~linear e aguentou.
 - **Índice frio é ~linear** (150–430 arq/s, ruidoso): ~8 min p/ 100k. Custo
   único; o watcher mantém quente depois.
-- **⚠️ A garantia forte de frescor custa ~5s por "miss" a 100k.** A varredura
-  `scan_source_stats` (scandir, size/mtime) é O(N): barata até ~20-30k (<1s),
-  limítrofe a 100k. Acima disso precisa de throttle/estratégia em camadas
-  (trabalho futuro). Antes documentado como "~250ms a 8k" — a 100k são ~5s.
+- **⚠️→✅ A varredura de frescor foi de ~5s para ~1,3s a 100k (3,5×).** A tabela
+  acima é a medição *original*. O profiling apontou que **72% do tempo era
+  `os.path.relpath`** (chama `normcase`/`LCMapStringEx` milhões de vezes no
+  Windows), não I/O. Trocado por concatenação do caminho relativo durante a
+  descida (o prefixo do diretório vem na pilha): **4,65s → 1,33s a 100k**, mesmo
+  conjunto de arquivos, mesma garantia forte (sem throttle — o teste
+  `test_repeated_misses_still_catch_edits` continua exigindo varredura a cada
+  miss). Continua O(N), mas com constante 3,5× menor, empurrando o teto
+  confortável de ~30k para ~100k. Reduzir o pathspec (agora o maior custo
+  restante) e um caminho "watcher-aware" (pular a varredura quando um watcher
+  vivo já garante frescor) são o próximo passo.
 - **⚠️ `index()` completo é O(N) re-hash** (102s a 100k). Incremental de verdade
   é via watcher, não chamando `index()` de novo.
 
@@ -371,9 +378,11 @@ chamada**, gerando um DB de 2,4 GB + 1,2 GB de WAL — antes mesmo do resolve.
 
 - **Código bem-estruturado (namespaced) escala limpo até 100k+** no modelo
   "índice único + watcher quente": ~8 min, 324 MB, sem OOM.
-- **Dois tetos reais, medidos, não escondidos:** (1) a varredura de frescor O(N)
-  chega a ~5s/miss a 100k — precisa de camadas acima de ~30k; (2) C denso em
-  escala (kernel) exige L1 ativo para não explodir por fan-out de nomes.
+- **Dois tetos reais, medidos, não escondidos:** (1) a varredura de frescor é
+  O(N) — reduzida de ~5s para ~1,3s/miss a 100k (eliminando `os.path.relpath`),
+  confortável até ~100k; acima disso precisa de camadas (pathspec + watcher-aware);
+  (2) C denso em escala (kernel) exige L1 ativo para não explodir por fan-out de
+  nomes.
 - **Não validado como pronto para monorepo de 100k+ em C sem L1.** Indexação
-  incremental/parcial e throttle da varredura de frescor são o próximo trabalho
-  de escala. Números honestos > alegação de SOTA.
+  incremental/parcial e um caminho watcher-aware para a varredura de frescor são
+  o próximo trabalho de escala. Números honestos > alegação de SOTA.
