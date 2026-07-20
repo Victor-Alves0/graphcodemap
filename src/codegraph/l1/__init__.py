@@ -13,21 +13,34 @@ from __future__ import annotations
 
 from ..community import mark_dirty as mark_community_dirty
 from ..indexer import Indexer
+from ..log import get as _get_log
 from ..rank import mark_dirty
+
+log = _get_log(__name__)
 
 
 def available_resolvers() -> list[type]:
     out: list[type] = []
     from .clangd import ClangdResolver
+    from .clojure_lsp import ClojureLspResolver
     from .go_gopls import GoplsResolver
+    from .kotlin_ls import KotlinLsResolver
+    from .lua_ls import LuaLsResolver
+    from .php_intelephense import IntelephenseResolver
     from .python_jedi import JediResolver
+    from .ruby_solargraph import SolargraphResolver
     from .rust_analyzer import RustAnalyzerResolver
     from .tsjs_ls import TsLsResolver
 
-    # Python/JS-TS/Go validados; Rust/C-C++ ativam quando o LSP está no PATH
-    # (protocolo idêntico ao gopls, que foi validado).
-    for cls in (JediResolver, TsLsResolver, GoplsResolver,
-                RustAnalyzerResolver, ClangdResolver):
+    # Cada resolver ativa só quando seu LSP está no PATH — inerte caso contrário.
+    # Validados ao vivo: Python (jedi), JS/TS (tsserver), Go (gopls),
+    # Rust (rust-analyzer), Lua (lua-language-server), Clojure (clojure-lsp).
+    # Wired via lsp_base genérico, ativam quando o binário existe (não validados
+    # ao vivo aqui): C/C++ (clangd), PHP (intelephense), Ruby (solargraph),
+    # Kotlin (kotlin-language-server).
+    for cls in (JediResolver, TsLsResolver, GoplsResolver, RustAnalyzerResolver,
+                ClangdResolver, LuaLsResolver, ClojureLspResolver,
+                IntelephenseResolver, SolargraphResolver, KotlinLsResolver):
         if cls.available():
             out.append(cls)
     return out
@@ -36,7 +49,7 @@ def available_resolvers() -> list[type]:
 def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
     """Roda os resolvers disponíveis. `rels` restringe a arquivos específicos."""
     resolvers = available_resolvers()
-    stats = {"files": 0, "promoted": 0,
+    stats = {"files": 0, "promoted": 0, "errors": 0,
              "resolvers": sorted(lang for cls in resolvers
                                  for lang in cls.languages)}
     if not resolvers:
@@ -60,7 +73,11 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
                 try:
                     stats["promoted"] += resolver.refine_file(
                         conn, indexer.root, f["path"], f["id"])
-                except Exception:
+                except Exception as e:
+                    stats["errors"] += 1
+                    log.debug("resolver %s falhou em %s: %s: %s",
+                              cls.__name__, f["path"], type(e).__name__, e,
+                              exc_info=True)
                     continue
         finally:
             close = getattr(resolver, "close", None)

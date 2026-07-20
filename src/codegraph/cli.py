@@ -163,6 +163,10 @@ def cmd_describe(args) -> int:
                 d = describer.describe_symbol(dict(r), refresh=args.refresh)
                 mark = "gerada" if d["generated_now"] else "cache"
                 print(f"[{mark}] {r['fqn']}")
+            u = getattr(describer._provider, "usage", None)
+            if u and u["calls"]:
+                print(f"custo: {u['total_tokens']} tokens em {u['calls']} "
+                      f"chamada(s) ({u['model']})")
             return 0
         data, env = engine.describe(args.target, refresh=args.refresh)
         print(render.describe(data, env))
@@ -193,6 +197,33 @@ def cmd_eval(args) -> int:
 def cmd_stats(args) -> int:
     print(render.stats(_engine(args).stats()))
     return 0
+
+
+def cmd_vacuum(args) -> int:
+    ix = Indexer(args.root, args.db)
+    t0 = time.perf_counter()
+    r = ix.compact()
+    dt = time.perf_counter() - t0
+    mb = lambda b: f"{b / 1024 / 1024:.1f} MB"  # noqa: E731
+    print(f"compactado em {dt:.2f}s: arestas {r['edges_before']} → "
+          f"{r['edges_after']}, tamanho {mb(r['size_before'])} → "
+          f"{mb(r['size_after'])} ({r['indexed']} arquivos, {r['errors']} erros)")
+    return 0
+
+
+def cmd_doctor(args) -> int:
+    engine = _engine(args)
+    d = engine.doctor()
+    print(render.doctor(d))
+    if getattr(args, "why", False) and d["parse_failed_sample"]:
+        print("\nmotivo das falhas de parse:")
+        for rel in d["parse_failed_sample"]:
+            reason = (engine.ix.diagnose_file(rel)
+                      or "hoje parseia — falha obsoleta (rode `vacuum`)")
+            print(f"  {rel}: {reason}")
+    # exit != 0 se há sinal de problema, para uso em scripts/CI
+    unhealthy = d["parse_failed_total"] > 0
+    return 1 if unhealthy else 0
 
 
 def cmd_watch(args) -> int:
@@ -334,6 +365,16 @@ def main(argv: list[str] | None = None) -> int:
 
     sp = sub.add_parser("stats", help="estatísticas do índice")
     sp.set_defaults(fn=cmd_stats)
+
+    sp = sub.add_parser("doctor", help="diagnóstico de saúde do índice "
+                        "(parse, confiança, resolvers L1, staleness)")
+    sp.add_argument("--why", action="store_true",
+                    help="re-parseia os arquivos 'failed' e mostra o motivo")
+    sp.set_defaults(fn=cmd_doctor)
+
+    sp = sub.add_parser("vacuum", help="reconstrói o índice e recupera espaço "
+                        "(re-index --force + VACUUM; preserva descrições L3)")
+    sp.set_defaults(fn=cmd_vacuum)
 
     sp = sub.add_parser("watch", help="indexa e observa mudanças continuamente")
     sp.set_defaults(fn=cmd_watch)

@@ -73,10 +73,17 @@ def calls(sym, rows, env, label: str, direction: str) -> str:
         lines.append(f"{'  ' * r['depth']}{r['site_path']}:{r['line']}  "
                      f"{other}  [{r['confidence']}]")
     if weak:
-        lines.append("candidatos por nome (verificar):")
+        # agrega por site: um call site ambíguo casa N candidatos por nome —
+        # mostrá-los numa linha (em vez de N) corta tokens sem perder recall
+        by_site: dict[tuple, list] = {}
         for r in weak:
-            other = r["other_fqn"] or "<módulo>"
-            lines.append(f"  {r['site_path']}:{r['line']}  {other}")
+            by_site.setdefault((r["site_path"], r["line"]), []).append(
+                r["other_fqn"] or "<módulo>")
+        lines.append("candidatos por nome (verificar):")
+        for (path, line), targets in by_site.items():
+            uniq = list(dict.fromkeys(targets))
+            shown = ", ".join(uniq[:4]) + (f" +{len(uniq) - 4}" if len(uniq) > 4 else "")
+            lines.append(f"  {path}:{line}  {shown}")
     if unresolved and direction == "out":
         # externas/stdlib: só os nomes, agregados — sites individuais são ruído
         counts: dict[str, int] = {}
@@ -251,7 +258,64 @@ def describe(data, env) -> str:
     label = f" «{data['label']}»" if data.get("label") else ""
     header = (f"descrição de {data['target']} ({data['scope']}){label} — "
               f"{data['model']}, {when} [{state}]")
-    return warnings(env) + header + "\n\n" + data["content"]
+    u = data.get("usage")
+    cost = (f"\ncusto: {u['total_tokens']} tokens "
+            f"(prompt {u['prompt_tokens']} + completion {u['completion_tokens']}, "
+            f"{u['calls']} chamada(s))") if u else ""
+    return warnings(env) + header + cost + "\n\n" + data["content"]
+
+
+def _age(seconds) -> str:
+    if seconds is None:
+        return "nunca"
+    if seconds < 90:
+        return f"{seconds}s atrás"
+    if seconds < 5400:
+        return f"{seconds // 60}min atrás"
+    if seconds < 172800:
+        return f"{seconds // 3600}h atrás"
+    return f"{seconds // 86400}d atrás"
+
+
+def doctor(d) -> str:
+    lines = [f"saúde do índice — {d['root']}",
+             f"  indexer v{d['indexer_version']}  •  último scan completo: "
+             f"{_age(d['last_full_scan_age_s'])}"]
+
+    # sinais de alerta primeiro (o que o usuário precisa ver)
+    flags = []
+    if d["parse_failed_total"]:
+        flags.append(f"{d['parse_failed_total']} arquivo(s) falharam no parse "
+                     "(rode com CODEGRAPH_LOG=warning para ver o motivo)")
+    if not d["l1_resolvers"]:
+        flags.append("nenhum resolver L1 ativo — arestas ficam em 'inferred'/"
+                     "'possible' (instale: pip install \"graphcodemap[l1]\")")
+    if d["call_edges"] and d["certain_pct"] < 20 and d["l1_resolvers"]:
+        flags.append(f"só {d['certain_pct']}% das chamadas são 'certain' — "
+                     "considere rodar `refine` para promover mais arestas")
+    if flags:
+        lines.append("")
+        lines += [f"  ⚠ {f}" for f in flags]
+
+    lines.append("")
+    lines.append(f"  arquivos: {d['files']}  símbolos: {d['symbols']}")
+    parse = "  ".join(f"{k}={v}" for k, v in sorted(d["parse"].items()))
+    lines.append(f"  parse: {parse}")
+    conf = "  ".join(f"{k}={v}" for k, v in sorted(d["confidence"].items()))
+    lines.append(f"  chamadas: {d['call_edges']} arestas ({conf or 'nenhuma'}); "
+                 f"{d['certain_pct']}% certain, {d['dangling']} dangling")
+    lines.append(f"  L1 ativo: {', '.join(d['l1_resolvers']) or 'nenhum'}")
+    langs = "  ".join(f"{k}={v}" for k, v in d["by_language"].items())
+    lines.append(f"  linguagens: {langs}")
+
+    if d["parse_failed_sample"]:
+        lines.append("")
+        lines.append(f"  arquivos com falha ({d['parse_failed_total']}):")
+        lines += [f"    {p}" for p in d["parse_failed_sample"]]
+        if d["parse_failed_total"] > len(d["parse_failed_sample"]):
+            resto = d["parse_failed_total"] - len(d["parse_failed_sample"])
+            lines.append(f"    … +{resto}")
+    return "\n".join(lines)
 
 
 def stats(s) -> str:

@@ -74,6 +74,12 @@ class CodeGraph:
     def stats(self) -> dict:
         return self.query.stats()
 
+    def doctor(self, failed_limit: int = 20) -> dict:
+        return self.query.doctor(failed_limit=failed_limit)
+
+    def compact(self) -> dict:
+        return self.indexer.compact()
+
     def close(self) -> None:
         self.indexer.close()
 

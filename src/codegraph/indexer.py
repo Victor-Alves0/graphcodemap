@@ -10,23 +10,31 @@ Invariantes (docs/DESIGN.md §1.2 e §2):
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
 import pathspec
 
 from . import community, extract, rank
-from .db import connect, default_db_path
+from .db import connect, default_db_path, retry_on_locked
 from .languages import get_parser, language_for
-from .util import content_hash, like_escape, symbol_uid
+from .log import get as _get_log
+from .util import content_hash, symbol_uid
+
+log = _get_log(__name__)
 
 MAX_FILE_SIZE = 2 * 1024 * 1024
 MAX_CANDIDATES = 5
+# escrita em lote no scan completo: commit a cada N arquivos (o commit por
+# arquivo dominava o tempo de indexação). Savepoint por arquivo preserva o
+# isolamento de erro. Só afeta index_repo — o caminho incremental é per-arquivo.
+BULK_BATCH = 500
 CALLABLE_KINDS = ("function", "method", "class")
 
 # Versão da lógica de extração/resolução: mudou → força re-index completo,
 # mesmo com content-hashes iguais (o índice é derivado de código+extractor).
-INDEXER_VERSION = "13"
+INDEXER_VERSION = "14"
 
 DEFAULT_IGNORES = [
     ".git/", ".codegraph/", "__pycache__/", ".venv/", "venv/", "node_modules/",
@@ -55,6 +63,41 @@ def iter_source_files(root: Path, spec: pathspec.PathSpec | None = None):
         yield rel
 
 
+def scan_source_stats(root: Path,
+                      spec: pathspec.PathSpec | None = None) -> dict[str, tuple[int, int]]:
+    """``{rel: (size, int(mtime))}`` de todos os arquivos-fonte, via ``os.scandir``.
+
+    size/mtime vêm da leitura do diretório (no Windows, sem syscall extra por
+    arquivo) — ~60x mais rápido que ``stat()`` individual em repos grandes. Usado
+    pela varredura de frescor (read-repair de resultado vazio) para que ela possa
+    rodar a CADA query sem custo proibitivo, preservando a garantia anti-staleness
+    em escala. Mesmo conjunto de arquivos que ``iter_source_files``."""
+    spec = spec or load_ignore_spec(root)
+    out: dict[str, tuple[int, int]] = {}
+    root_s = str(root)
+    stack = [root_s]
+    while stack:
+        try:
+            it = os.scandir(stack.pop())
+        except OSError:
+            continue
+        with it:
+            for e in it:
+                try:
+                    rel = os.path.relpath(e.path, root_s).replace(os.sep, "/")
+                    if e.is_dir(follow_symlinks=False):
+                        if not spec.match_file(rel + "/"):   # poda dir ignorado
+                            stack.append(e.path)
+                    elif e.is_file(follow_symlinks=False):
+                        if spec.match_file(rel) or language_for(rel) is None:
+                            continue
+                        st = e.stat()
+                        out[rel] = (st.st_size, int(st.st_mtime))
+                except OSError:
+                    continue
+    return out
+
+
 def module_fqn_for(rel: str) -> str:
     dot = rel.rfind(".")
     stem = rel[:dot] if dot != -1 else rel
@@ -67,10 +110,35 @@ def module_fqn_for(rel: str) -> str:
 class Indexer:
     def __init__(self, root: str | Path, db_path: str | Path | None = None) -> None:
         self.root = Path(root).resolve()
-        self.conn = connect(Path(db_path) if db_path else default_db_path(self.root))
+        self.db_path = Path(db_path) if db_path else default_db_path(self.root)
+        self.conn = connect(self.db_path)
 
     def close(self) -> None:
         self.conn.close()
+
+    # -- manutenção ----------------------------------------------------------
+
+    def compact(self) -> dict:
+        """Reconstrói o índice do zero e recupera espaço: re-indexa tudo
+        (limpa marcadores 'failed' obsoletos e arestas órfãs), remove descrições
+        órfãs e roda VACUUM. As descrições L3 de símbolos vivos são preservadas
+        (ids estáveis). Retorna tamanhos antes/depois e contagens."""
+        size_before = self.db_path.stat().st_size if self.db_path.exists() else 0
+        edges_before = self.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+        stats = self.index_repo(force=True)
+        # descrições cujo símbolo/arquivo sumiu (defensivo — CASCADE já cobre o
+        # caminho normal, mas estado legado pode ter sobrado)
+        self.conn.execute("DELETE FROM descriptions WHERE symbol_id NOT IN "
+                          "(SELECT id FROM symbols)")
+        self.conn.execute("DELETE FROM module_descriptions WHERE file_id NOT IN "
+                          "(SELECT id FROM files)")
+        self.conn.commit()
+        self.conn.execute("VACUUM")
+        edges_after = self.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+        size_after = self.db_path.stat().st_size if self.db_path.exists() else 0
+        return {"size_before": size_before, "size_after": size_after,
+                "edges_before": edges_before, "edges_after": edges_after,
+                "indexed": stats["indexed"], "errors": stats["errors"]}
 
     # -- indexação -----------------------------------------------------------
 
@@ -87,26 +155,52 @@ class Indexer:
         spec = load_ignore_spec(self.root)
         seen: set[str] = set()
         stats = {"scanned": 0, "indexed": 0, "removed": 0, "errors": 0}
+        cur = self.conn.cursor()
+        cur.execute("BEGIN")
+        pending = 0
         for rel in iter_source_files(self.root, spec):
             seen.add(rel)
             stats["scanned"] += 1
+            cur.execute("SAVEPOINT f")           # isolamento de erro por arquivo
             try:
-                if self.index_file(rel, force=force):
+                prep = self._prepare(rel, force)
+                if prep is None:                 # sem linguagem / grande demais
+                    cur.execute("RELEASE f")
+                elif prep[0] == "unchanged":
+                    _, frow, st = prep
+                    cur.execute("UPDATE files SET mtime=?, size=? WHERE id=?",
+                                (int(st.st_mtime), st.st_size, frow["id"]))
+                    cur.execute("RELEASE f")
+                else:
+                    self._write_parsed(cur, rel, prep)
+                    cur.execute("RELEASE f")
                     stats["indexed"] += 1
-            except Exception:
+            except Exception as e:
+                cur.execute("ROLLBACK TO f")
+                cur.execute("RELEASE f")
                 stats["errors"] += 1
-                self.conn.execute(
-                    """INSERT INTO files(path, language, content_hash, size, mtime,
-                       parse_status, indexed_at) VALUES(?,?,?,?,?,'failed',?)
-                       ON CONFLICT(path) DO UPDATE SET parse_status='failed'""",
-                    (rel, language_for(rel), "", 0, 0, int(time.time())),
-                )
-                self.conn.commit()
+                log.warning("falha ao indexar %s: %s: %s",
+                            rel, type(e).__name__, e)
+                log.debug("traceback de %s", rel, exc_info=True)
+                cur.execute(
+                    "INSERT INTO files(path, language, content_hash, size, mtime, "
+                    "parse_status, indexed_at) VALUES(?,?,?,?,?,'failed',?) "
+                    "ON CONFLICT(path) DO UPDATE SET parse_status='failed'",
+                    (rel, language_for(rel), "", 0, 0, int(time.time())))
+            pending += 1
+            if pending >= BULK_BATCH:            # flush do lote
+                cur.execute("COMMIT")
+                cur.execute("BEGIN")
+                pending = 0
+        cur.execute("COMMIT")
         # arquivos que sumiram do disco (delete/rename/branch switch)
         for row in self.conn.execute("SELECT path FROM files").fetchall():
             if row["path"] not in seen:
                 self.remove_file(row["path"])
                 stats["removed"] += 1
+        rank.mark_dirty(self.conn)
+        community.mark_dirty(self.conn)
+        self.conn.commit()
         self.resolve_edges()
         self.conn.execute(
             "INSERT INTO meta(key, value) VALUES('last_full_scan', ?) "
@@ -116,110 +210,47 @@ class Indexer:
         self.conn.commit()
         return stats
 
-    def index_file(self, rel: str, force: bool = False, data: bytes | None = None) -> bool:
-        """Re-indexa um arquivo. Retorna True se o índice mudou."""
+    def diagnose_file(self, rel: str) -> str | None:
+        """Re-tenta parse+extract SEM tocar o banco e devolve o motivo da falha
+        (ou None se hoje parseia). Usado pelo `doctor --why`."""
         path = self.root / rel
         lang = language_for(rel)
         if lang is None:
-            return False
-        if data is None:
+            return "sem linguagem dedicada (extensão não reconhecida)"
+        try:
             data = path.read_bytes()
+        except OSError as e:
+            return f"leitura falhou: {e}"
         if len(data) > MAX_FILE_SIZE:
+            return f"arquivo grande demais ({len(data)} > {MAX_FILE_SIZE} bytes)"
+        try:
+            tree = get_parser(lang).parse(data)
+            extract.extract(lang, data, module_fqn_for(rel), tree)
+        except Exception as e:
+            return f"{type(e).__name__}: {e}"
+        return None
+
+    def index_file(self, rel: str, force: bool = False, data: bytes | None = None) -> bool:
+        """Re-indexa um arquivo (com retry-on-locked p/ escrita concorrente)."""
+        return retry_on_locked(lambda: self._index_file(rel, force=force, data=data))
+
+    def _index_file(self, rel: str, force: bool = False, data: bytes | None = None) -> bool:
+        """Re-indexa um arquivo em transação PRÓPRIA (caminho incremental:
+        watcher/read-repair). Retorna True se o índice mudou."""
+        prep = self._prepare(rel, force, data)
+        if prep is None:
             return False
-        h = content_hash(data)
-        st = path.stat()
-        row = self.conn.execute(
-            "SELECT id, content_hash FROM files WHERE path=?", (rel,)
-        ).fetchone()
-        if row is not None and row["content_hash"] == h and not force:
+        if prep[0] == "unchanged":
+            _, row, st = prep
             self.conn.execute(
                 "UPDATE files SET mtime=?, size=? WHERE id=?",
-                (int(st.st_mtime), st.st_size, row["id"]),
-            )
+                (int(st.st_mtime), st.st_size, row["id"]))
             self.conn.commit()
             return False
-
-        tree = get_parser(lang).parse(data)
-        if lang == "cpp" and rel.endswith(".h") and tree.root_node.has_error:
-            # .h é ambíguo: header C parseado como C++ pode falhar — tenta C
-            c_tree = get_parser("c").parse(data)
-            if not c_tree.root_node.has_error:
-                lang, tree = "c", c_tree
-        syms, refs = extract.extract(lang, data, module_fqn_for(rel), tree)
-        status = "partial" if tree.root_node.has_error else "ok"
-
         cur = self.conn.cursor()
         try:
             cur.execute("BEGIN")
-            saved_descriptions: list = []
-            if row is not None:
-                file_id = row["id"]
-                # descrições L3 sobrevivem ao re-index (ids de símbolo são
-                # estáveis); source_hash antigo preservado → stale detectável
-                saved_descriptions = cur.execute(
-                    "SELECT d.symbol_id, d.scope, d.content, d.source_hash, "
-                    "d.model, d.generated_at FROM descriptions d "
-                    "JOIN symbols s ON d.symbol_id=s.id WHERE s.file_id=?",
-                    (file_id,)).fetchall()
-                cur.execute(
-                    "DELETE FROM symbols_fts WHERE symbol_id IN "
-                    "(SELECT id FROM symbols WHERE file_id=?)", (file_id,))
-                cur.execute("DELETE FROM edges WHERE file_id=?", (file_id,))
-                cur.execute("DELETE FROM symbols WHERE file_id=?", (file_id,))
-                cur.execute(
-                    "UPDATE files SET language=?, content_hash=?, size=?, mtime=?, "
-                    "parse_status=?, indexed_at=? WHERE id=?",
-                    (lang, h, st.st_size, int(st.st_mtime), status, int(time.time()), file_id),
-                )
-            else:
-                cur.execute(
-                    "INSERT INTO files(path, language, content_hash, size, mtime, "
-                    "parse_status, indexed_at) VALUES(?,?,?,?,?,?,?)",
-                    (rel, lang, h, st.st_size, int(st.st_mtime), status, int(time.time())),
-                )
-                file_id = cur.lastrowid
-
-            ordinals: dict[tuple[str, str], int] = {}
-            fqn_to_uid: dict[str, str] = {}
-            all_uids: set[str] = set()
-            for s in syms:
-                ordinal = ordinals.get((s.fqn, s.kind), 0)
-                ordinals[(s.fqn, s.kind)] = ordinal + 1
-                uid = symbol_uid(rel, s.fqn, s.kind, ordinal)
-                fqn_to_uid.setdefault(s.fqn, uid)
-                all_uids.add(uid)
-                cur.execute(
-                    "INSERT INTO symbols(id, file_id, kind, name, fqn, signature, doc, "
-                    "start_line, start_col, end_line, end_col, body_hash, visibility) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (uid, file_id, s.kind, s.name, s.fqn, s.signature, s.doc,
-                     s.start_line, s.start_col, s.end_line, s.end_col,
-                     s.body_hash, s.visibility),
-                )
-                cur.execute(
-                    "INSERT INTO symbols_fts(symbol_id, name, fqn, doc) VALUES(?,?,?,?)",
-                    (uid, s.name, s.fqn, s.doc or ""),
-                )
-            for d in saved_descriptions:
-                if d["symbol_id"] in all_uids:
-                    cur.execute(
-                        "INSERT INTO descriptions(symbol_id, scope, content, "
-                        "source_hash, model, generated_at) VALUES(?,?,?,?,?,?)",
-                        (d["symbol_id"], d["scope"], d["content"],
-                         d["source_hash"], d["model"], d["generated_at"]))
-            for s in syms:
-                if s.parent_fqn and s.parent_fqn in fqn_to_uid:
-                    cur.execute(
-                        "UPDATE symbols SET parent_id=? WHERE id=?",
-                        (fqn_to_uid[s.parent_fqn], fqn_to_uid[s.fqn]),
-                    )
-            for r in refs:
-                cur.execute(
-                    "INSERT INTO edges(kind, src, dst, dst_name, file_id, line, col, "
-                    "confidence, resolver) VALUES(?,?,NULL,?,?,?,?,'possible','l0')",
-                    (r.kind, fqn_to_uid.get(r.src_fqn) if r.src_fqn else None,
-                     r.dst_name, file_id, r.line, r.col),
-                )
+            self._write_parsed(cur, rel, prep)
             rank.mark_dirty(self.conn)
             community.mark_dirty(self.conn)
             cur.execute("COMMIT")
@@ -228,7 +259,127 @@ class Indexer:
             raise
         return True
 
+    def _prepare(self, rel: str, force: bool, data: bytes | None = None):
+        """Lê+parseia um arquivo, SEM tocar o banco (além de 1 SELECT de frescor).
+        Retorna: None (pular) | ('unchanged', row, st) | ('changed', row, st,
+        lang, h, syms, refs, status). Separado de _write_parsed para o modo em
+        lote do index_repo poder agrupar as escritas."""
+        path = self.root / rel
+        lang = language_for(rel)
+        if lang is None:
+            return None
+        if data is None:
+            data = path.read_bytes()
+        if len(data) > MAX_FILE_SIZE:
+            return None
+        h = content_hash(data)
+        st = path.stat()
+        row = self.conn.execute(
+            "SELECT id, content_hash FROM files WHERE path=?", (rel,)).fetchone()
+        if row is not None and row["content_hash"] == h and not force:
+            return ("unchanged", row, st)
+        tree = get_parser(lang).parse(data)
+        if lang == "cpp" and rel.endswith(".h") and tree.root_node.has_error:
+            # .h é ambíguo: header C parseado como C++ pode falhar — tenta C
+            c_tree = get_parser("c").parse(data)
+            if not c_tree.root_node.has_error:
+                lang, tree = "c", c_tree
+        syms, refs = extract.extract(lang, data, module_fqn_for(rel), tree)
+        status = "partial" if tree.root_node.has_error else "ok"
+        return ("changed", row, st, lang, h, syms, refs, status)
+
+    def _write_parsed(self, cur, rel: str, prep) -> None:
+        """Escreve símbolos+arestas de um arquivo já parseado (tupla 'changed' de
+        _prepare). NÃO gerencia transação — o chamador faz BEGIN/COMMIT (incre-
+        mental) ou SAVEPOINT (lote). Inserts em `executemany` em vez de execute
+        por linha. (No index completo o custo é dominado por resolve_edges e pela
+        manutenção dos índices de edges, não por esta escrita.)"""
+        _, row, st, lang, h, syms, refs, status = prep
+        saved_descriptions: list = []
+        if row is not None:
+            file_id = row["id"]
+            # descrições L3 sobrevivem ao re-index (ids de símbolo são estáveis;
+            # source_hash antigo preservado → stale detectável)
+            saved_descriptions = cur.execute(
+                "SELECT d.symbol_id, d.scope, d.content, d.source_hash, "
+                "d.model, d.generated_at FROM descriptions d "
+                "JOIN symbols s ON d.symbol_id=s.id WHERE s.file_id=?",
+                (file_id,)).fetchall()
+            cur.execute(
+                "DELETE FROM symbols_fts WHERE symbol_id IN "
+                "(SELECT id FROM symbols WHERE file_id=?)", (file_id,))
+            cur.execute("DELETE FROM edges WHERE file_id=?", (file_id,))
+            cur.execute("DELETE FROM symbols WHERE file_id=?", (file_id,))
+            cur.execute(
+                "UPDATE files SET language=?, content_hash=?, size=?, mtime=?, "
+                "parse_status=?, indexed_at=? WHERE id=?",
+                (lang, h, st.st_size, int(st.st_mtime), status,
+                 int(time.time()), file_id))
+        else:
+            cur.execute(
+                "INSERT INTO files(path, language, content_hash, size, mtime, "
+                "parse_status, indexed_at) VALUES(?,?,?,?,?,?,?)",
+                (rel, lang, h, st.st_size, int(st.st_mtime), status,
+                 int(time.time())))
+            file_id = cur.lastrowid
+
+        ordinals: dict[tuple[str, str], int] = {}
+        fqn_to_uid: dict[str, str] = {}
+        all_uids: set[str] = set()
+        sym_rows: list = []
+        fts_rows: list = []
+        for s in syms:
+            ordinal = ordinals.get((s.fqn, s.kind), 0)
+            ordinals[(s.fqn, s.kind)] = ordinal + 1
+            uid = symbol_uid(rel, s.fqn, s.kind, ordinal)
+            fqn_to_uid.setdefault(s.fqn, uid)
+            all_uids.add(uid)
+            sym_rows.append((uid, file_id, s.kind, s.name, s.fqn, s.signature,
+                             s.doc, s.start_line, s.start_col, s.end_line,
+                             s.end_col, s.body_hash, s.visibility))
+            fts_rows.append((uid, s.name, s.fqn, s.doc or ""))
+        if sym_rows:
+            cur.executemany(
+                "INSERT INTO symbols(id, file_id, kind, name, fqn, signature, doc, "
+                "start_line, start_col, end_line, end_col, body_hash, visibility) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", sym_rows)
+            cur.executemany(
+                "INSERT INTO symbols_fts(symbol_id, name, fqn, doc) VALUES(?,?,?,?)",
+                fts_rows)
+        for d in saved_descriptions:
+            if d["symbol_id"] in all_uids:
+                cur.execute(
+                    "INSERT INTO descriptions(symbol_id, scope, content, "
+                    "source_hash, model, generated_at) VALUES(?,?,?,?,?,?)",
+                    (d["symbol_id"], d["scope"], d["content"],
+                     d["source_hash"], d["model"], d["generated_at"]))
+        parent_updates = [(fqn_to_uid[s.parent_fqn], fqn_to_uid[s.fqn])
+                          for s in syms
+                          if s.parent_fqn and s.parent_fqn in fqn_to_uid]
+        if parent_updates:
+            cur.executemany("UPDATE symbols SET parent_id=? WHERE id=?",
+                            parent_updates)
+        seen_refs: set[tuple] = set()
+        edge_rows: list = []
+        for r in refs:
+            src_id = fqn_to_uid.get(r.src_fqn) if r.src_fqn else None
+            # refs idênticas no mesmo site são redundantes; deduplicar aqui
+            # garante ≤1 aresta resolvida por site (casando com o índice único)
+            key = (r.kind, src_id, r.dst_name, r.line, r.col)
+            if key in seen_refs:
+                continue
+            seen_refs.add(key)
+            edge_rows.append((r.kind, src_id, r.dst_name, file_id, r.line, r.col))
+        if edge_rows:
+            cur.executemany(
+                "INSERT INTO edges(kind, src, dst, dst_name, file_id, line, col, "
+                "confidence, resolver) VALUES(?,?,NULL,?,?,?,?,'possible','l0')",
+                edge_rows)
+
     def remove_file(self, rel: str) -> None:
+        retry_on_locked(lambda: self._remove_file(rel))
+
+    def _remove_file(self, rel: str) -> None:
         row = self.conn.execute("SELECT id FROM files WHERE path=?", (rel,)).fetchone()
         if row is None:
             return
@@ -244,82 +395,87 @@ class Indexer:
 
     def resolve_edges(self) -> None:
         danglings = self.conn.execute(
-            "SELECT id, kind, src, dst_name, file_id, line FROM edges WHERE dst IS NULL"
+            "SELECT id, kind, src, dst_name, file_id, line, col "
+            "FROM edges WHERE dst IS NULL"
         ).fetchall()
         if not danglings:
             return
         cur = self.conn.cursor()
         lang_of = {r["id"]: r["language"] for r in
                    cur.execute("SELECT id, language FROM files")}
-        # guesses repetem-se aos milhares (o mesmo alvo chamado de N sites) e os
-        # símbolos não mudam durante a passada — memoizar por guess
-        qual_cache: dict[str, list] = {}
-        bare_cache: dict[tuple, list] = {}
+        # Índice de símbolos EM MEMÓRIA (um único SELECT). O cache-por-guess
+        # degradava para ~1 SELECT por dangling quando os guesses são quase únicos
+        # (o grosso do custo de resolução em repos grandes): 20k+ queries. Os
+        # símbolos cabem em memória; resolver por dict elimina essas queries.
+        by_name: dict[str, list] = {}
+        for r in cur.execute(
+                "SELECT s.id, s.file_id, s.fqn, s.name, s.kind, f.language "
+                "FROM symbols s JOIN files f ON s.file_id=f.id ORDER BY s.id"):
+            by_name.setdefault(r["name"], []).append(r)
+
+        class_kinds = ("class", "interface", "struct")
+
+        def _dedup_cap(rows) -> list:
+            # candidatos distintos por fqn (decl+def de C/C++ = 1 candidato),
+            # parando em MAX+1 para detectar ambiguidade (>MAX) sem varrer tudo
+            out: dict[str, object] = {}
+            for c in rows:
+                if c["fqn"] not in out:
+                    out[c["fqn"]] = c
+                    if len(out) > MAX_CANDIDATES:
+                        break
+            return list(out.values())
+
+        # decisões coletadas no loop e escritas em lote no fim (executemany):
+        # nenhum lookup depende de uma escrita, então diferir é seguro.
+        inferred: list = []   # (dst_id, edge_id)
+        possible: list = []   # (dst_id, edge_id) — representante do ambíguo
+        fanout: list = []     # clones de candidatos extras
         for e in danglings:
             guess = e["dst_name"]
-            if not guess or guess.endswith(".*") or "*" in guess:
+            if not guess or "*" in guess:
                 continue
             if "." in guess:
-                # guess qualificado (via import/escopo): match por fqn exato/sufixo.
-                # name=último segmento usa idx_symbols_name; fqn = escopo.name,
-                # então todo fqn com sufixo .guess termina no mesmo name
-                cands = qual_cache.get(guess)
-                if cands is None:
-                    cands = cur.execute(
-                        "SELECT id, file_id, fqn FROM symbols "
-                        "WHERE name=? AND (fqn=? OR fqn LIKE ? ESCAPE '\\') LIMIT ?",
-                        (guess.rsplit(".", 1)[-1], guess,
-                         f"%.{like_escape(guess)}", MAX_CANDIDATES + 3),
-                    ).fetchall()
-                    qual_cache[guess] = cands
+                # guess qualificado (via import/escopo): match por fqn exato/sufixo
+                seg, suffix = guess.rsplit(".", 1)[-1], "." + guess
+                cands = _dedup_cap(
+                    c for c in by_name.get(seg, ())
+                    if c["fqn"] == guess or c["fqn"].endswith(suffix))
             elif e["kind"] in ("calls", "inherits"):
-                # nome puro (receptor desconhecido): NUNCA entra no match de fqn —
-                # busca por nome, restrita à MESMA linguagem do site da referência
-                key = (guess, e["kind"], lang_of.get(e["file_id"]))
-                cands = bare_cache.get(key)
-                if cands is None:
-                    kinds = (CALLABLE_KINDS if e["kind"] == "calls"
-                             else ("class", "interface", "struct"))
-                    placeholders = ",".join("?" * len(kinds))
-                    cands = cur.execute(
-                        f"SELECT s.id, s.file_id, s.fqn FROM symbols s "
-                        f"JOIN files f ON s.file_id=f.id "
-                        f"WHERE s.name=? AND s.kind IN ({placeholders}) "
-                        f"AND f.language=? LIMIT ?",
-                        (guess, *kinds, key[2], MAX_CANDIDATES + 3),
-                    ).fetchall()
-                    bare_cache[key] = cands
+                # nome puro (receptor desconhecido): por nome + kind + MESMA língua
+                kinds = CALLABLE_KINDS if e["kind"] == "calls" else class_kinds
+                lang = lang_of.get(e["file_id"])
+                cands = _dedup_cap(
+                    c for c in by_name.get(guess, ())
+                    if c["kind"] in kinds and c["language"] == lang)
             else:
                 continue
-            # declaração+definição (C/C++) ou redefinições compartilham fqn:
-            # contam como UM candidato (senão viram falsa ambiguidade)
-            by_fqn: dict[str, object] = {}
-            for c in cands:
-                by_fqn.setdefault(c["fqn"], c)
-            cands = list(by_fqn.values())[: MAX_CANDIDATES + 1]
             if not cands or len(cands) > MAX_CANDIDATES:
                 continue  # permanece dangling — contado na completeness
             if len(cands) == 1:
-                cur.execute(
-                    "UPDATE edges SET dst=?, confidence='inferred' WHERE id=?",
-                    (cands[0]["id"], e["id"]),
-                )
+                inferred.append((cands[0]["id"], e["id"]))
                 continue
             same_file = [c for c in cands if c["file_id"] == e["file_id"]]
             if len(same_file) == 1:
-                cur.execute(
-                    "UPDATE edges SET dst=?, confidence='inferred' WHERE id=?",
-                    (same_file[0]["id"], e["id"]),
-                )
+                inferred.append((same_file[0]["id"], e["id"]))
                 continue
-            cur.execute(
-                "UPDATE edges SET dst=?, confidence='possible' WHERE id=?",
-                (cands[0]["id"], e["id"]),
-            )
+            # ambíguo (2..MAX candidatos): representante na aresta original +
+            # um clone por candidato extra (recall p/ callers/impact). INSERT OR
+            # IGNORE + índice único garantem idempotência: re-resolver nunca
+            # duplica (foi a causa do bloat histórico, não o fan-out em si).
+            possible.append((cands[0]["id"], e["id"]))
             for c in cands[1:]:
-                cur.execute(
-                    "INSERT INTO edges(kind, src, dst, dst_name, file_id, line, "
-                    "confidence, resolver) VALUES(?,?,?,?,?,?,'possible','l0')",
-                    (e["kind"], e["src"], c["id"], guess, e["file_id"], e["line"]),
-                )
+                fanout.append((e["kind"], e["src"], c["id"], guess,
+                               e["file_id"], e["line"], e["col"]))
+        if inferred:
+            cur.executemany(
+                "UPDATE edges SET dst=?, confidence='inferred' WHERE id=?", inferred)
+        if possible:
+            cur.executemany(
+                "UPDATE edges SET dst=?, confidence='possible' WHERE id=?", possible)
+        if fanout:
+            cur.executemany(
+                "INSERT OR IGNORE INTO edges(kind, src, dst, dst_name, "
+                "file_id, line, col, confidence, resolver) "
+                "VALUES(?,?,?,?,?,?,?,'possible','l0')", fanout)
         self.conn.commit()

@@ -28,7 +28,29 @@ codegraph describe auth.TokenService.validate # L3: LLM behavior summary (cached
 codegraph describe src/auth.py                # L3: module-level summary
 codegraph describe --top 20                   # pre-warm summaries for hub symbols
 codegraph stats
+codegraph doctor                              # index health: parse, confidence, L1, staleness
+codegraph vacuum                              # rebuild + reclaim space (keeps L3 cache)
 ```
+
+### Observability
+
+`doctor` gives a one-shot health check: parse status (and the paths of any files
+that failed to parse), the call-edge confidence split (`certain`/`inferred`/
+`possible`) with `%certain`, which L1 resolvers are active, and how stale the
+index is. It flags actionable problems and exits non-zero when files failed to
+parse (handy in CI). `doctor --why` re-parses the failed files and prints the
+reason. Also available as an MCP tool. When the DB looks bloated or stale,
+`vacuum` rebuilds it and reclaims space while keeping the L3 cache.
+
+Logging is off by default (a library shouldn't spam your output). Turn it on to
+see *why* a file failed to index, resolver activity, or L3 token cost:
+
+```bash
+CODEGRAPH_LOG=warning codegraph index .   # warnings (e.g. which file failed and why)
+CODEGRAPH_DEBUG=1 codegraph refine        # full debug (LSP activity, token accounting)
+```
+
+L3 (`describe`) reports token usage per generation, so the cost is visible.
 
 The `graphcodemap` and `codegraph` commands are the same CLI (the short name
 is kept as an alias). Install `graphcodemap[l1]` to enable semantic refinement: a pluggable resolver
@@ -105,7 +127,7 @@ configurable via `.codegraph/taint.json`. It is a pragmatic, incremental
 
 ## Status
 
-**Alpha (v0.1.0).** The core is feature-complete and covered by ~140 tests, but
+**Alpha (v0.1.0).** The core is feature-complete and covered by ~165 tests, but
 the project has not yet been battle-tested by real usage. Roadmap M0–M12 done
 (see [docs/DESIGN.md](docs/DESIGN.md#7-roadmap)): L0 indexing, read-repair +
 watcher, PageRank/impact/ego/overview, MCP server, L1 (Python/jedi, JS/TS/
@@ -125,14 +147,37 @@ This project's design principle is **epistemic honesty** — so are its claims:
   within noise, and it measures localization, not full issue resolution. On
   large structural tasks (redis) the graph won on both quality and token cost.
   Full methodology and caveats: [evals/RESULTS.md](evals/RESULTS.md).
+- **Reachability isn't a token win by itself — it's an accuracy win.** On a
+  3-task flask reachability set (entry→sink chain), the graph arm scored 100%
+  correct vs 67% baseline and 0.92 vs 0.58 chain recall, with fewer tool calls
+  (14.7 vs 17.3) — but roughly *token parity* (43.6k vs 41.2k avg; one task where
+  the graph over-explored dragged the average up). The lesson we keep re-learning:
+  the graph buys **correctness and completeness on structural questions**, not a
+  universal token discount. Where it also saves tokens is when `certain` L1 edges
+  let the agent trust `reaches` and stop.
 - **Dataflow/taint is *may-taint*** (over-approximates — findings are candidates
   to verify), flow-insensitive, and does not model field/alias sensitivity yet.
-- **L1 semantic resolution** ships for Python (jedi), JS/TS (tsserver), Go
-  (gopls), Rust (`rust-analyzer`) and C/C++ (`clangd`) — all validated via the
-  same generic LSP client. Each LSP-backed language activates when its server is
-  on `PATH`. Languages without an active resolver keep `inferred`/`possible`
-  edges.
+- **L1 semantic resolution** promotes call edges to `certain` via one generic
+  LSP client. *Validated* against a live server: Python (jedi), JS/TS (tsserver),
+  Go (gopls), Rust (`rust-analyzer`), Lua (`lua-language-server`), Clojure
+  (`clojure-lsp`) — four distinct server families proving the generic client
+  generalizes. *Wired and inert until the server is on `PATH`* (same protocol,
+  not yet validated on a live server here): C/C++ (`clangd`), PHP
+  (`intelephense`), Ruby (`solargraph`), Kotlin (`kotlin-language-server`). Each
+  activates only when its binary exists; languages without an active resolver
+  keep honest `inferred`/`possible` edges. JVM/toolchain-launched servers (jdtls,
+  metals, sourcekit-lsp, Roslyn) need a custom launcher and are future work.
 - Static analysis can miss dynamic/reflective calls — every answer says so.
+- **Concurrency:** one `CodeGraph`/`QueryEngine` instance is single-threaded —
+  share it only under external serialization (the MCP server does this with a
+  lock), or use one instance per thread. Writes retry on `database is locked`.
+  Call-graph cycles (mutual/self recursion) terminate safely. Both are covered by
+  regression tests and the CI matrix (Linux + Windows, Python 3.10–3.12).
+- **Scale:** measured up to the low tens of thousands of files. Indexing is
+  single-threaded (a one-time cost; the watcher keeps it warm after) and the
+  freshness sweep is O(files) but cheap via `os.scandir` (~250ms for a missed
+  lookup at 8k files, strong-consistency preserved). Not yet validated on 100k+
+  monorepos; parallel indexing and lazy/partial indexing are future work.
 
 Configuration: set `OPENROUTER_API_KEY` (env or `.env`) to enable L3/eval;
 model via `CODEGRAPH_L3_MODEL`. Contributions and issue reports welcome.

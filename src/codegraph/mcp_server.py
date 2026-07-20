@@ -65,23 +65,31 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
         Watcher(root, db_path).start()
     mcp = FastMCP("codegraph", instructions=INSTRUCTIONS)
 
+    # o engine é UMA conexão SQLite; FastMCP pode despachar tools em paralelo
+    # (threadpool). Uma conexão sqlite não é thread-safe → serializa o acesso.
+    # Barato: queries são ms; a correção do read-repair (que escreve) exige
+    # exclusão mútua de qualquer forma. Escritores de background (watcher/refine)
+    # usam conexões próprias e contam com o retry-on-locked do db.
+    _engine_lock = threading.RLock()
+
     def guard(fn):
-        try:
-            return fn()
-        except (AmbiguousSymbol, SymbolNotFound) as e:
-            return f"erro: {e}"
+        with _engine_lock:
+            try:
+                return fn()
+            except (AmbiguousSymbol, SymbolNotFound) as e:
+                return f"erro: {e}"
 
     @mcp.tool()
     def overview(scope: str | None = None, token_budget: int = 1200) -> str:
         """Mapa ranqueado do repo (PageRank). Primeiro passo em repo novo."""
-        entries, env = engine.overview(scope=scope, token_budget=token_budget)
-        return render.overview(entries, env)
+        return guard(lambda: render.overview(
+            *engine.overview(scope=scope, token_budget=token_budget)))
 
     @mcp.tool()
     def find_symbol(query: str, kind: str | None = None, limit: int = 10) -> str:
         """Localiza símbolos por nome/fqn (kind: function|method|class|…)."""
-        rows, env = engine.find_symbol(query, kind=kind, limit=limit)
-        return render.find(query, rows, env)
+        return guard(lambda: render.find(
+            query, *engine.find_symbol(query, kind=kind, limit=limit)))
 
     @mcp.tool()
     def symbol_info(symbol: str) -> str:
@@ -158,7 +166,8 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
         arquivos. Mapa de alto nível que não está escrito em arquivo nenhum —
         bom depois de `overview` para entender a arquitetura. Rotule um domínio
         com describe('domain:N')."""
-        return render.communities(*engine.communities(limit=limit, min_size=min_size))
+        return guard(lambda: render.communities(
+            *engine.communities(limit=limit, min_size=min_size)))
 
     @mcp.tool()
     def describe(target: str, refresh: bool = False) -> str:
@@ -180,7 +189,16 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
     def index_status() -> str:
         """Estatísticas do índice: arquivos, símbolos, arestas resolvidas/
         pendentes, linguagens."""
-        return render.stats(engine.stats())
+        return guard(lambda: render.stats(engine.stats()))
+
+    @mcp.tool()
+    def doctor() -> str:
+        """Diagnóstico de saúde do índice: parse (arquivos ok/falhos),
+        distribuição de confiança das chamadas (certain/inferred/possible), %
+        certain, resolvers L1 ativos, staleness (idade do último scan) e
+        arquivos que falharam no parse. Use para decidir o quanto confiar nas
+        respostas do grafo, ou para diagnosticar por que algo não aparece."""
+        return guard(lambda: render.doctor(engine.doctor()))
 
     return mcp
 

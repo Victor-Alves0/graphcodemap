@@ -11,6 +11,10 @@ import os
 import urllib.request
 from pathlib import Path
 
+from ..log import get as _get_log
+
+log = _get_log(__name__)
+
 DEFAULT_MODEL = "deepseek/deepseek-v4-flash"  # override: CODEGRAPH_L3_MODEL
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -65,6 +69,30 @@ class OpenRouterProvider:
         self.api_key = api_key
         self.model = model
         self.timeout = timeout
+        # observabilidade de custo: acumulado desde a criação do provider.
+        self.calls = 0
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+        self.last_usage: dict | None = None
+
+    @property
+    def usage(self) -> dict:
+        return {"calls": self.calls, "prompt_tokens": self.prompt_tokens,
+                "completion_tokens": self.completion_tokens,
+                "total_tokens": self.total_tokens, "model": self.model}
+
+    def _account(self, data: dict) -> None:
+        u = data.get("usage") or {}
+        self.last_usage = u
+        self.calls += 1
+        self.prompt_tokens += int(u.get("prompt_tokens", 0) or 0)
+        self.completion_tokens += int(u.get("completion_tokens", 0) or 0)
+        self.total_tokens += int(u.get("total_tokens", 0) or 0)
+        log.debug("L3 %s: +%s tokens (prompt=%s completion=%s), acumulado=%s",
+                  self.model, u.get("total_tokens", 0),
+                  u.get("prompt_tokens", 0), u.get("completion_tokens", 0),
+                  self.total_tokens)
 
     def __call__(self, system: str, user: str) -> str:
         payload = json.dumps({
@@ -88,8 +116,12 @@ class OpenRouterProvider:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except Exception as e:  # rede/HTTP/parse
+            log.debug("L3 %s: falha de rede/parse: %s", self.model, e)
             raise L3Unavailable(f"falha no provider L3 ({self.model}): {e}") from e
         try:
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError) as e:
+            log.debug("L3 %s: resposta inesperada: %s", self.model, data)
             raise L3Unavailable(f"resposta inesperada do provider: {data}") from e
+        self._account(data)
+        return content

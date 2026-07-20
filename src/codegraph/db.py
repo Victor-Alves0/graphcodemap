@@ -10,9 +10,24 @@ Regras de propriedade que tornam o incremental correto:
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 
 SCHEMA_VERSION = "4"
+
+
+def retry_on_locked(fn, tries: int = 6, base_delay: float = 0.05):
+    """Roda `fn`, repetindo em 'database is locked'/SQLITE_BUSY_SNAPSHOT com
+    backoff exponencial. Para escritas concorrentes entre conexões (watcher +
+    read-repair + refine) que o busy_timeout do SQLite não cobre. `fn` deve ser
+    idempotente — é o caso das escritas do indexer (transação por arquivo)."""
+    for i in range(tries):
+        try:
+            return fn()
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e).lower() or i == tries - 1:
+                raise
+            time.sleep(base_delay * (2 ** i))
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -70,6 +85,11 @@ CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src, kind);
 CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst, kind);
 CREATE INDEX IF NOT EXISTS idx_edges_file ON edges(file_id);
 CREATE INDEX IF NOT EXISTS idx_edges_dangling ON edges(dst_name) WHERE dst IS NULL;
+-- guarda estrutural: arestas resolvidas idênticas não podem coexistir. Torna o
+-- re-acúmulo de clones impossível — a origem do bloat histórico (edges 800x) —
+-- SEM perder recall: candidatos distintos (dst diferente) continuam permitidos.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_resolved_uniq
+  ON edges(kind, src, dst, dst_name, file_id, line, col) WHERE dst IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS descriptions (
   symbol_id    TEXT NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
@@ -119,8 +139,10 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA synchronous=NORMAL")
-    # watcher/refine/queries podem concorrer: espera em vez de "database is locked"
-    conn.execute("PRAGMA busy_timeout=5000")
+    # watcher/refine/queries podem concorrer: espera em vez de "database is locked".
+    # busy_timeout cobre SQLITE_BUSY, mas NÃO SQLITE_BUSY_SNAPSHOT (ler-depois-
+    # escrever entre conexões) — para esse há retry_on_locked na camada de escrita.
+    conn.execute("PRAGMA busy_timeout=10000")
     # identificadores são case-sensitive; LIKE default do SQLite não é
     conn.execute("PRAGMA case_sensitive_like=ON")
     # Checar a versão ANTES de aplicar o schema: o _SCHEMA novo pode referenciar

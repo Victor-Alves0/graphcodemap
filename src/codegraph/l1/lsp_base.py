@@ -19,13 +19,21 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import sqlite3
 import subprocess
+import threading
 import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
+
+from ..log import get as _get_log
+
+log = _get_log(__name__)
+
+_EOF = object()  # sentinela: stream do servidor fechou/quebrou
 
 
 def _uri_to_path(uri: str) -> Path | None:
@@ -44,6 +52,9 @@ class LspResolver:
     # servidores que carregam o projeto de forma assíncrona (rust-analyzer,
     # clangd) só respondem `definition` depois de indexar — espera até isto.
     ready_timeout: float = 40.0
+    # limite de I/O por leitura: servidor que trava (aceita didOpen mas nunca
+    # responde) não pode congelar a indexação — estourou, mata e desiste.
+    io_timeout: float = 20.0
 
     # -- descoberta / disponibilidade ----------------------------------------
 
@@ -68,44 +79,90 @@ class LspResolver:
         self._opened: set[str] = set()
         self._lines: dict[str, list[str]] = {}
         self._ready = False
+        self._dead = False
+        # thread leitora dedicada + fila: dá timeout a cada leitura sem depender
+        # de select() (indisponível em pipe no Windows). Um servidor travado é
+        # detectado pelo timeout da fila, não bloqueia a thread principal.
+        self._q: queue.Queue = queue.Queue()
+        self._reader = threading.Thread(target=self._reader_loop, daemon=True)
+        self._reader.start()
         self._ok = self._initialize()
 
     # -- framing --------------------------------------------------------------
 
     def _write(self, msg: dict) -> None:
+        if self._dead or self.proc.poll() is not None:
+            return
         data = json.dumps(msg).encode("utf-8")
-        self.proc.stdin.write(
-            f"Content-Length: {len(data)}\r\n\r\n".encode("ascii") + data)
-        self.proc.stdin.flush()
+        try:
+            self.proc.stdin.write(
+                f"Content-Length: {len(data)}\r\n\r\n".encode("ascii") + data)
+            self.proc.stdin.flush()
+        except OSError as e:
+            log.debug("%s: stdin quebrado: %s", self.cmd_name, e)
+            self._kill()
 
-    def _read(self) -> dict | None:
+    def _read_frame(self):
+        """Lê UMA mensagem do stdout (bloqueante). ``_EOF`` = stream fechou."""
         headers: dict[str, str] = {}
         while True:
             line = self.proc.stdout.readline()
             if not line:
-                return None
+                return _EOF
             s = line.decode("ascii", "replace").strip()
             if s == "":
                 break
             if ":" in s:
                 k, v = s.split(":", 1)
                 headers[k.strip().lower()] = v.strip()
-        n = int(headers.get("content-length", 0))
+        try:
+            n = int(headers.get("content-length", 0))
+        except ValueError:
+            return _EOF
         if n <= 0:
-            return None
+            return _EOF
         buf = b""
         while len(buf) < n:
             chunk = self.proc.stdout.read(n - len(buf))
             if not chunk:
-                return None
+                return _EOF
             buf += chunk
         try:
             return json.loads(buf.decode("utf-8"))
         except ValueError:
+            return _EOF  # framing quebrou: stream não é mais confiável
+
+    def _reader_loop(self) -> None:
+        try:
+            while True:
+                msg = self._read_frame()
+                self._q.put(msg)
+                if msg is _EOF:
+                    return
+        except Exception:
+            self._q.put(_EOF)
+
+    def _read(self) -> dict | None:
+        """Próxima mensagem, com timeout de I/O. None = EOF ou servidor travou."""
+        try:
+            msg = self._q.get(timeout=self.io_timeout)
+        except queue.Empty:
+            log.warning("%s: sem resposta em %.0fs — matando servidor LSP",
+                        self.cmd_name, self.io_timeout)
+            self._kill()
             return None
+        return None if msg is _EOF else msg
+
+    def _kill(self) -> None:
+        self._dead = True
+        self._ok = False
+        try:
+            self.proc.kill()
+        except Exception:
+            pass
 
     def _request(self, method: str, params, timeout_msgs: int = 2000):
-        if self.proc.poll() is not None:
+        if self._dead or self.proc.poll() is not None:
             return None
         self._seq += 1
         rid = self._seq

@@ -15,6 +15,9 @@ from pathlib import Path
 
 from .indexer import Indexer, load_ignore_spec
 from .languages import language_for
+from .log import get as _get_log
+
+log = _get_log(__name__)
 
 
 class Watcher:
@@ -96,16 +99,20 @@ class Watcher:
                     self.ix.remove_file(rel)
                     stats["removed"] += 1
                     changed = True
-            except Exception:
+            except Exception as e:
                 stats["errors"] += 1
+                log.warning("watcher: falha ao re-indexar %s: %s: %s",
+                            rel, type(e).__name__, e)
+                log.debug("traceback de %s", rel, exc_info=True)
         if changed:
             self.ix.resolve_edges()
             try:
                 from . import l1
 
                 l1.refine(self.ix, rels=sorted(batch))
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("watcher: refine L1 falhou no lote: %s: %s",
+                          type(e).__name__, e, exc_info=True)
         return stats
 
     # -- ciclo de vida -------------------------------------------------------

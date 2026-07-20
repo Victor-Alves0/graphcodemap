@@ -68,3 +68,29 @@ def test_syntax_error_marks_partial(cg, repo):
     bad.write_text("def broken(:\n    pass\n", encoding="utf-8")
     cg.index()
     assert cg.stats()["parse_partial"] >= 1
+
+
+def test_scan_source_stats_matches_iter(cg, repo):
+    # a varredura de frescor (scandir, rápida em escala) deve cobrir exatamente
+    # o mesmo conjunto de arquivos que a indexação (iter_source_files)
+    from codegraph.indexer import iter_source_files, scan_source_stats
+
+    indexed = set(iter_source_files(repo))
+    scanned = set(scan_source_stats(repo))
+    assert scanned == indexed
+
+
+def test_repeated_misses_still_catch_edits(cg, repo):
+    # garantia FORTE preservada em escala: sem throttle, cada resultado vazio
+    # faz a varredura barata — uma edição é vista mesmo após outras queries.
+    cg.find_symbol("inexistente_um")                 # miss 1 (varre)
+    cg.find_symbol("inexistente_dois")               # miss 2 (varre de novo)
+
+    auth = repo / "app" / "auth.py"
+    auth.write_text(auth.read_text(encoding="utf-8") +
+                    "\n\ndef recem_criada():\n    return 1\n", encoding="utf-8")
+    _touch_newer(auth)
+
+    rows, env = cg.find_symbol("recem_criada")       # varredura pega na hora
+    assert any(r["fqn"] == "app.auth.recem_criada" for r in rows)
+    assert any("re-indexado agora" in w for w in env.warnings)
