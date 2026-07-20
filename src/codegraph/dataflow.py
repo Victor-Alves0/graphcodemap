@@ -204,6 +204,85 @@ def _ids(source: bytes, node, out: set[str]) -> None:
         _ids(source, c, out)
 
 
+# -- field-sensitivity: caminhos de acesso ------------------------------------
+# Um FATO tainted agora é um *caminho de acesso* (tupla), não um nome nu:
+#   ("user",)              -> a variável inteira
+#   ("user", "password")   -> só esse campo
+# Regra de prefixo (ver `_is_tainted`): ler `a.b` está sujo se `a` OU `a.b`
+# estiver sujo — marcar o objeto inteiro contamina os campos, mas marcar um
+# campo NÃO contamina os irmãos. Profundidade limitada (truncar mantém o
+# prefixo = super-aproximação segura). Caminho não-reconstruível cai no
+# comportamento antigo (coleta os identificadores-base = profundidade 1).
+MAX_PATH_DEPTH = 3
+_NAMEISH = {"identifier", "property_identifier", "field_identifier",
+            "simple_identifier", "name", "constant", "shorthand_property_identifier"}
+
+_PY_MEMBER = {"attribute": ("object", "attribute"), "subscript": ("value", None)}
+_JS_MEMBER = {"member_expression": ("object", "property"),
+              "subscript_expression": ("object", None)}
+
+
+def _chain_path(source, node, member):
+    """Caminho de acesso de um id/cadeia-de-membros pura, ou None."""
+    if node is None:
+        return None
+    t = node.type
+    if t in _NAMEISH:
+        return (_text(source, node),)
+    spec = member.get(t)
+    if spec is None:
+        return None
+    objf, fldf = spec
+    base = _chain_path(source, node.child_by_field_name(objf), member)
+    if base is None:
+        return None
+    if fldf is None:                       # subscript a[i]: descarta índice
+        return base
+    fld = node.child_by_field_name(fldf)
+    if fld is None or fld.type not in _NAMEISH:
+        return base                        # campo dinâmico a[expr] → base (conflita)
+    return tuple((base + (_text(source, fld),))[:MAX_PATH_DEPTH])
+
+
+def _paths(source, node, out: set, member) -> None:
+    """Coleta os caminhos de acesso máximos lidos numa subárvore (py/js)."""
+    if node is None:
+        return
+    t = node.type
+    if t in _NAMEISH:
+        out.add((_text(source, node),))
+        return
+    if t in member:
+        p = _chain_path(source, node, member)
+        if p is not None:
+            out.add(p)
+            return                          # não desce: caminho já é maximal
+    for c in node.named_children:
+        _paths(source, c, out, member)
+
+
+def _target_paths(source, node, member) -> set:
+    """Caminhos escritos por um alvo de atribuição (id, membro ou pattern)."""
+    if node is None:
+        return set()
+    if node.type in ("pattern_list", "tuple_pattern", "list_pattern",
+                     "array_pattern", "tuple", "expression_list"):
+        out: set = set()
+        for c in node.named_children:
+            out |= _target_paths(source, c, member)
+        return out
+    p = _chain_path(source, node, member)
+    return {p} if p is not None else set()
+
+
+def _is_tainted(path, tainted) -> bool:
+    """Prefixo: `a.b.c` sujo se qualquer prefixo (`a`, `a.b`, `a.b.c`) o estiver."""
+    for i in range(1, len(path) + 1):
+        if path[:i] in tainted:
+            return True
+    return False
+
+
 def find_function_node(root, start_line: int, lang: str):
     types = _func_types(lang)
     stack = [root]
@@ -295,11 +374,11 @@ def _facts_py(source, fn) -> FnFacts:
         right = a.child_by_field_name("right")
         if left is None or right is None:
             continue
-        rids: set[str] = set()
-        _ids(source, right, rids)
+        rids: set = set()
+        _paths(source, right, rids, _PY_MEMBER)
         rhs_call = (_callee_name(source, right.child_by_field_name("function"), "py")
                     if right.type == "call" else None)
-        facts.assigns.append(Assign(_assign_targets_py(source, left), rids,
+        facts.assigns.append(Assign(_target_paths(source, left, _PY_MEMBER), rids,
                                     a.type == "augmented_assignment", rhs_call,
                                     a.start_point[0] + 1))
 
@@ -318,9 +397,9 @@ def _facts_py(source, fn) -> FnFacts:
             else:
                 val, idx = arg, pos
                 pos += 1
-            ids: set[str] = set()
+            ids: set = set()
             if val is not None:
-                _ids(source, val, ids)
+                _paths(source, val, ids, _PY_MEMBER)
             cs.args.append((idx, ids))
         facts.calls.append(cs)
 
@@ -328,7 +407,7 @@ def _facts_py(source, fn) -> FnFacts:
     _walk(body, {"return_statement"}, stop, rets)
     for r in rets:
         ids = set()
-        _ids(source, r, ids)
+        _paths(source, r, ids, _PY_MEMBER)
         child = r.named_children[0] if r.named_children else None
         top_call = (_callee_name(source, child.child_by_field_name("function"), "py")
                     if child is not None and child.type == "call" else None)
@@ -374,11 +453,14 @@ def _facts_js(source, fn) -> FnFacts:
     for d in decls:
         name = d.child_by_field_name("name")
         value = d.child_by_field_name("value")
-        if name is None or name.type != "identifier" or value is None:
+        if name is None or value is None:
             continue
-        rids: set[str] = set()
-        _ids(source, value, rids)
-        facts.assigns.append(Assign({_text(source, name)}, rids, False,
+        targets = _target_paths(source, name, _JS_MEMBER)
+        if not targets:
+            continue
+        rids: set = set()
+        _paths(source, value, rids, _JS_MEMBER)
+        facts.assigns.append(Assign(targets, rids, False,
                                     rhs_call_name(value), d.start_point[0] + 1))
 
     reassigns: list = []
@@ -387,11 +469,14 @@ def _facts_js(source, fn) -> FnFacts:
     for a in reassigns:
         left = a.child_by_field_name("left")
         right = a.child_by_field_name("right")
-        if left is None or right is None or left.type != "identifier":
+        if left is None or right is None:
+            continue
+        targets = _target_paths(source, left, _JS_MEMBER)
+        if not targets:
             continue
         rids = set()
-        _ids(source, right, rids)
-        facts.assigns.append(Assign({_text(source, left)}, rids,
+        _paths(source, right, rids, _JS_MEMBER)
+        facts.assigns.append(Assign(targets, rids,
                                     a.type == "augmented_assignment_expression",
                                     rhs_call_name(right), a.start_point[0] + 1))
 
@@ -407,8 +492,8 @@ def _facts_js(source, fn) -> FnFacts:
         for arg in args.named_children:
             if arg.type == "comment":
                 continue
-            ids: set[str] = set()
-            _ids(source, arg, ids)
+            ids: set = set()
+            _paths(source, arg, ids, _JS_MEMBER)
             cs.args.append((pos, ids))
             pos += 1
         facts.calls.append(cs)
@@ -417,7 +502,7 @@ def _facts_js(source, fn) -> FnFacts:
     _walk(body, {"return_statement"}, stop, rets)
     for r in rets:
         ids = set()
-        _ids(source, r, ids)
+        _paths(source, r, ids, _JS_MEMBER)
         child = r.named_children[0] if r.named_children else None
         top_call = (_callee_name(source, child.child_by_field_name("function"), "js")
                     if child is not None and child.type == "call_expression" else None)
@@ -457,6 +542,64 @@ def _ids_of(source, node, idset, out):
         return
     for c in node.named_children:
         _ids_of(source, c, idset, out)
+
+
+# Membros de acesso do tier genérico → (field do objeto, field do último
+# segmento). Best-effort por gramática; se os fields não baterem, `_gen_chain`
+# devolve o prefixo/None e `_gen_paths` cai no comportamento antigo (coleta os
+# ids-base). Nunca perde um fluxo — no pior caso perde só a precisão de campo.
+_GEN_MEMBER = {
+    "field_expression": ("argument", "field"),          # C/C++  a.b / a->b
+    "selector_expression": ("operand", "field"),        # Go     a.b
+    "member_access_expression": ("object", "name"),     # C#/PHP a.b / $a->b
+    "field_access": ("object", "field"),                # Java   a.b
+    "dot_index_expression": ("table", "field"),         # Lua    a.b
+    "attribute": ("object", "attribute"),               # genérico estilo-py
+}
+
+
+def _gen_chain(source, node, idset):
+    if node is None:
+        return None
+    t = node.type
+    if t in idset or t in _NAMEISH:
+        return (_text(source, node),)
+    spec = _GEN_MEMBER.get(t)
+    if spec is None:
+        return None
+    objf, fldf = spec
+    base = _gen_chain(source, node.child_by_field_name(objf), idset)
+    if base is None:
+        return None
+    fld = node.child_by_field_name(fldf)
+    if fld is None or (fld.type not in idset and fld.type not in _NAMEISH):
+        return base
+    return tuple((base + (_text(source, fld),))[:MAX_PATH_DEPTH])
+
+
+def _gen_paths(source, node, idset, out) -> None:
+    if node is None:
+        return
+    t = node.type
+    if t in idset:
+        out.add((_text(source, node),))
+        return
+    if t in _GEN_MEMBER:
+        p = _gen_chain(source, node, idset)
+        if p is not None:
+            out.add(p)
+            return
+    for c in node.named_children:
+        _gen_paths(source, c, idset, out)
+
+
+def _gen_target_paths(source, node, idset) -> set:
+    p = _gen_chain(source, node, idset)
+    if p is not None:
+        return {p}
+    out: set = set()               # pattern/tupla → ids-base (profundidade 1)
+    _gen_paths(source, node, idset, out)
+    return out
 
 
 def _callee_of(source, call_node, idset):
@@ -510,6 +653,16 @@ def _arg_ids(source, arg, idset, out):
             _ids_of(source, c, idset, out)
     else:
         _ids_of(source, arg, idset, out)
+
+
+def _arg_paths(source, arg, idset, out):
+    # idem _arg_ids, mas coletando caminhos de acesso (field-sensitive)
+    if arg.type in ("argument", "value_argument", "spread_element",
+                    "keyword_argument"):
+        for c in arg.named_children:
+            _gen_paths(source, c, idset, out)
+    else:
+        _gen_paths(source, arg, idset, out)
 
 
 def _rhs_call(source, node, call_types, idset):
@@ -591,35 +744,35 @@ def _facts_generic(source, fn, lang) -> FnFacts:
         if step is None:
             continue
         kind = step[0]
-        targets: set[str] = set()
+        targets: set = set()
         rhs_node = None
         if kind == "lr":
             left = n.child_by_field_name(step[2])
             rhs_node = n.child_by_field_name(step[3])
-            _ids_of(source, left, idset, targets)
+            targets |= _gen_target_paths(source, left, idset)
         elif kind == "decl":
             nm = n.child_by_field_name(step[2])
             rhs_node = n.child_by_field_name(step[3])
-            _ids_of(source, nm, idset, targets)
+            targets |= _gen_target_paths(source, nm, idset)
         elif kind == "decl_last":
             nm = n.child_by_field_name(step[2]) if step[2] else None
             if nm is None:
                 nm = next((c for c in n.named_children
                            if c.type in ("variable_declaration", "variable_declarator")),
                           None)
-            _ids_of(source, nm, idset, targets)
+            targets |= _gen_target_paths(source, nm, idset)
             kids = [c for c in n.named_children if c is not nm
                     and c.type not in ("binding_pattern_kind", "modifiers", "=")]
             rhs_node = kids[-1] if kids else None
         elif kind == "bytype":
             lc = next((c for c in n.named_children if c.type == step[2]), None)
             rc = next((c for c in n.named_children if c.type == step[3]), None)
-            _ids_of(source, lc, idset, targets)
+            targets |= _gen_target_paths(source, lc, idset)
             rhs_node = rc
         if not targets or rhs_node is None:
             continue
-        rids: set[str] = set()
-        _ids_of(source, rhs_node, idset, rids)
+        rids: set = set()
+        _gen_paths(source, rhs_node, idset, rids)
         facts.assigns.append(Assign(targets, rids, False,
                                     _rhs_call(source, rhs_node, calls_t, idset),
                                     n.start_point[0] + 1))
@@ -636,8 +789,8 @@ def _facts_generic(source, fn, lang) -> FnFacts:
             for arg in args.named_children:
                 if arg.type in (",", "comment"):
                     continue
-                ids: set[str] = set()
-                _arg_ids(source, arg, idset, ids)
+                ids: set = set()
+                _arg_paths(source, arg, idset, ids)
                 cs.args.append((pos, ids))
                 pos += 1
         facts.calls.append(cs)
@@ -647,8 +800,8 @@ def _facts_generic(source, fn, lang) -> FnFacts:
     if cfg["returns"]:
         _walk(body, cfg["returns"], stop, rets)
     for r in rets:
-        ids: set[str] = set()
-        _ids_of(source, r, idset, ids)
+        ids: set = set()
+        _gen_paths(source, r, idset, ids)
         child = r.named_children[0] if r.named_children else None
         top = (_rhs_call(source, child, calls_t, idset)
                if child is not None else None)
@@ -666,7 +819,7 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                 ("_statement", "_declaration", "_definition", "_declarator")) \
                 and last.type not in _BODY_TYPES and last.type not in cfg["returns"]:
             ids = set()
-            _ids_of(source, last, idset, ids)
+            _gen_paths(source, last, idset, ids)
             if ids:
                 facts.returns.append(
                     ReturnExpr(ids, _rhs_call(source, last, calls_t, idset)))
@@ -706,6 +859,14 @@ def _clj_local_ids(source, node, out: set[str]) -> None:
         return
     for c in node.named_children:
         _clj_local_ids(source, c, out)
+
+
+def _clj_local_paths(source, node, out: set) -> None:
+    """Como _clj_local_ids, mas como caminhos profundidade-1 (Lisp: sem campos)."""
+    names: set[str] = set()
+    _clj_local_ids(source, node, names)
+    for n in names:
+        out.add((n,))
 
 
 def _clj_callee(source, form):
@@ -753,8 +914,8 @@ def _facts_clojure(source, fn) -> FnFacts:
             _clj_facts_visit(source, form, facts)
         if body:                                      # valor de retorno = última forma
             last = body[-1]
-            rids: set[str] = set()
-            _clj_local_ids(source, last, rids)
+            rids: set = set()
+            _clj_local_paths(source, last, rids)
             facts.returns.append(ReturnExpr(rids, _clj_callee(source, last)))
     return facts
 
@@ -773,10 +934,10 @@ def _clj_facts_visit(source, node, facts: FnFacts) -> None:
             pairs = [c for c in vec.named_children]
             for i in range(0, len(pairs) - 1, 2):
                 tgt, expr = pairs[i], pairs[i + 1]
-                targets: set[str] = set()
-                _clj_local_ids(source, tgt, targets)
-                rids: set[str] = set()
-                _clj_local_ids(source, expr, rids)
+                targets: set = set()
+                _clj_local_paths(source, tgt, targets)
+                rids: set = set()
+                _clj_local_paths(source, expr, rids)
                 facts.assigns.append(Assign(targets, rids, False,
                                             _clj_callee(source, expr),
                                             expr.start_point[0] + 1))
@@ -788,8 +949,8 @@ def _clj_facts_visit(source, node, facts: FnFacts) -> None:
     if base not in _CLJ_SPECIAL:                      # aplicação de função → CallSite
         cs = CallSite(base, node.start_point[0] + 1, [])
         for pos, arg in enumerate(node.named_children[1:]):
-            ids: set[str] = set()
-            _clj_local_ids(source, arg, ids)
+            ids: set = set()
+            _clj_local_paths(source, arg, ids)
             cs.args.append((pos, ids))
         facts.calls.append(cs)
     for c in node.named_children[1:]:                 # desce em args/corpo
@@ -810,14 +971,20 @@ def extract_facts(source: bytes, fn_node, lang: str) -> FnFacts:
 # -- motor de taint (compartilhado) -------------------------------------------
 
 def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset()) -> Flow:
-    tainted: set[str] = set(tainted_init)
+    """Fixpoint may-taint FIELD-SENSITIVE. O conjunto sujo guarda *caminhos de
+    acesso* (tuplas); ler um caminho está sujo se ele ou qualquer prefixo seu
+    estiver sujo (`_is_tainted`). `tainted_init` deve conter caminhos — um nome
+    nu `x` é o caminho `("x",)`."""
+    tainted: set = {p if isinstance(p, tuple) else (p,) for p in tainted_init}
     changed = True
     while changed:
         changed = False
         for a in facts.assigns:
             if a.rhs_call is not None and a.rhs_call in sanitizers:
                 continue  # RHS sanitizado → alvo limpo
-            if (a.rhs_ids & tainted) or (a.is_aug and (a.targets & tainted)):
+            rhs_hit = any(_is_tainted(p, tainted) for p in a.rhs_ids)
+            aug_hit = a.is_aug and any(_is_tainted(t, tainted) for t in a.targets)
+            if rhs_hit or aug_hit:
                 for t in a.targets:
                     if t not in tainted:
                         tainted.add(t)
@@ -825,29 +992,31 @@ def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset()) -> Flow:
     flow = Flow()
     for c in facts.calls:
         for idx, ids in c.args:
-            hit = ids & tainted
+            hit = [p for p in ids if _is_tainted(p, tainted)]
             if hit:
-                flow.arg_flows.append(ArgFlow(c.callee, idx, c.line, sorted(hit)[0]))
+                via = ".".join(sorted(hit)[0])
+                flow.arg_flows.append(ArgFlow(c.callee, idx, c.line, via))
     for r in facts.returns:
         if r.top_call is not None and r.top_call in sanitizers:
             continue
-        if r.ids & tainted:
+        if any(_is_tainted(p, tainted) for p in r.ids):
             flow.reaches_return = True
             break
     return flow
 
 
-def source_vars(facts: FnFacts, sources) -> set[str]:
-    """Variáveis cujo valor nasce de uma chamada a uma fonte (input não-confiável)."""
-    out: set[str] = set()
+def source_vars(facts: FnFacts, sources) -> set:
+    """Caminhos cujo valor nasce de uma chamada a uma fonte (input não-confiável)."""
+    out: set = set()
     for a in facts.assigns:
         if a.rhs_call is not None and a.rhs_call in sources:
             out |= a.targets
     return out
 
 
-def source_sites(facts: FnFacts, sources) -> list[tuple[str, int, str]]:
-    """(variável, linha, fonte) para cada atribuição a partir de uma fonte."""
+def source_sites(facts: FnFacts, sources) -> list[tuple]:
+    """(caminho, linha, fonte) para cada atribuição a partir de uma fonte.
+    O caminho é uma tupla (semente para o motor); renderize com '.'.join()."""
     out = []
     for a in facts.assigns:
         if a.rhs_call is not None and a.rhs_call in sources:

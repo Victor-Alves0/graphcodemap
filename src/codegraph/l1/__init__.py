@@ -23,24 +23,33 @@ def available_resolvers() -> list[type]:
     out: list[type] = []
     from .clangd import ClangdResolver
     from .clojure_lsp import ClojureLspResolver
+    from .csharp_ls import CSharpLsResolver
     from .go_gopls import GoplsResolver
+    from .jdtls import JdtlsResolver
     from .kotlin_ls import KotlinLsResolver
     from .lua_ls import LuaLsResolver
+    from .metals import MetalsResolver
     from .php_intelephense import IntelephenseResolver
     from .python_jedi import JediResolver
     from .ruby_solargraph import SolargraphResolver
     from .rust_analyzer import RustAnalyzerResolver
+    from .sourcekit_lsp import SourceKitLspResolver
     from .tsjs_ls import TsLsResolver
 
-    # Cada resolver ativa só quando seu LSP está no PATH — inerte caso contrário.
+    # Cada resolver ativa só quando seu LSP está disponível — inerte caso
+    # contrário. TODA linguagem dedicada tem agora um resolver wired.
     # Validados ao vivo: Python (jedi), JS/TS (tsserver), Go (gopls),
-    # Rust (rust-analyzer), Lua (lua-language-server), Clojure (clojure-lsp).
-    # Wired via lsp_base genérico, ativam quando o binário existe (não validados
-    # ao vivo aqui): C/C++ (clangd), PHP (intelephense), Ruby (solargraph),
-    # Kotlin (kotlin-language-server).
+    # Rust (rust-analyzer), Lua (lua-language-server), Clojure (clojure-lsp),
+    # Java (jdtls) — 7 famílias, incluindo a primeira por *launcher* (jdtls).
+    # Wired via lsp_base genérico, ativam quando o servidor/toolchain existe
+    # (não validados ao vivo aqui): C/C++ (clangd), PHP (intelephense),
+    # Ruby (solargraph), Kotlin (kotlin-language-server), C# (csharp-ls),
+    # Scala (metals), Swift (sourcekit-lsp).
     for cls in (JediResolver, TsLsResolver, GoplsResolver, RustAnalyzerResolver,
                 ClangdResolver, LuaLsResolver, ClojureLspResolver,
-                IntelephenseResolver, SolargraphResolver, KotlinLsResolver):
+                IntelephenseResolver, SolargraphResolver, KotlinLsResolver,
+                JdtlsResolver, CSharpLsResolver, MetalsResolver,
+                SourceKitLspResolver):
         if cls.available():
             out.append(cls)
     return out

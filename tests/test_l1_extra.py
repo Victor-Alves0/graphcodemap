@@ -11,10 +11,14 @@ from __future__ import annotations
 import pytest
 
 from codegraph.l1.clojure_lsp import ClojureLspResolver
+from codegraph.l1.csharp_ls import CSharpLsResolver
+from codegraph.l1.jdtls import JdtlsResolver
 from codegraph.l1.kotlin_ls import KotlinLsResolver
 from codegraph.l1.lua_ls import LuaLsResolver
+from codegraph.l1.metals import MetalsResolver
 from codegraph.l1.php_intelephense import IntelephenseResolver
 from codegraph.l1.ruby_solargraph import SolargraphResolver
+from codegraph.l1.sourcekit_lsp import SourceKitLspResolver
 
 
 def _promoted_cross_file(tmp_path, files, lang, caller="helper", callee="compute"):
@@ -96,6 +100,63 @@ def test_kotlin_l1_promotes_cross_file_call(tmp_path):
         "Main.kt": "package app\n\nfun helper(): Int = compute(2)\n",
     }
     active, promoted, row = _promoted_cross_file(tmp_path, files, "kotlin")
+    assert active and promoted > 0
+    assert row is not None and row["dst"] is not None
+    assert row["confidence"] == "certain"
+
+
+@pytest.mark.skipif(not JdtlsResolver.available(),
+                    reason="jdtls não disponível (defina CODEGRAPH_JDTLS + JDK)")
+def test_java_l1_promotes_cross_file_call(tmp_path):
+    files = {
+        "Calc.java": ("public class Calc {\n"
+                      "    public static int compute(int x) { return x * x; }\n}\n"),
+        "Main.java": ("public class Main {\n"
+                      "    public static int helper() { return Calc.compute(2); }\n}\n"),
+    }
+    active, promoted, row = _promoted_cross_file(tmp_path, files, "java")
+    assert active and promoted > 0
+    assert row is not None and row["dst"] is not None
+    assert row["confidence"] == "certain"
+
+
+@pytest.mark.skipif(not CSharpLsResolver.available(),
+                    reason="csharp-ls não disponível")
+def test_csharp_l1_promotes_cross_file_call(tmp_path):
+    files = {
+        "Calc.cs": ("public static class Calc {\n"
+                    "    public static int Compute(int x) { return x * x; }\n}\n"),
+        "Main.cs": ("public static class Main {\n"
+                    "    public static int Helper() { return Calc.Compute(2); }\n}\n"),
+    }
+    active, promoted, row = _promoted_cross_file(
+        tmp_path, files, "csharp", caller="Helper", callee="Compute")
+    assert active and promoted > 0
+    assert row is not None and row["dst"] is not None
+    assert row["confidence"] == "certain"
+
+
+@pytest.mark.skipif(not MetalsResolver.available(),
+                    reason="metals não disponível")
+def test_scala_l1_promotes_cross_file_call(tmp_path):
+    files = {
+        "Calc.scala": "object Calc {\n  def compute(x: Int): Int = x * x\n}\n",
+        "Main.scala": "object Main {\n  def helper(): Int = Calc.compute(2)\n}\n",
+    }
+    active, promoted, row = _promoted_cross_file(tmp_path, files, "scala")
+    assert active and promoted > 0
+    assert row is not None and row["dst"] is not None
+    assert row["confidence"] == "certain"
+
+
+@pytest.mark.skipif(not SourceKitLspResolver.available(),
+                    reason="sourcekit-lsp não disponível")
+def test_swift_l1_promotes_cross_file_call(tmp_path):
+    files = {
+        "Calc.swift": "func compute(_ x: Int) -> Int { return x * x }\n",
+        "Main.swift": "func helper() -> Int { return compute(2) }\n",
+    }
+    active, promoted, row = _promoted_cross_file(tmp_path, files, "swift")
     assert active and promoted > 0
     assert row is not None and row["dst"] is not None
     assert row["confidence"] == "certain"

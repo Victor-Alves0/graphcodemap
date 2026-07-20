@@ -8,6 +8,31 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Field-sensitive dataflow/taint.** A tainted fact is now an *access path*
+  (`("user", "password")`), not a bare name. Reading a path is tainted if it or
+  any prefix is tainted (marking the whole object taints its fields; marking one
+  field does **not** taint its siblings — the prefix rule). This is a *precision*
+  win (a tainted object's unrelated field is no longer flagged) **and** a *recall*
+  win (member-target assignments like `obj.field = evil` are now tracked — the
+  Python extractor previously dropped them entirely). Validated for Python and
+  JS/TS with a direct proof — seeding `o.x` vs `o.y` yields different results,
+  impossible in the old name-based engine (`tests/test_dataflow_fieldsens.py`).
+  The generic tier reconstructs paths best-effort and falls back to base-name
+  (depth-1) collection when a grammar's member node is unfamiliar, so no language
+  loses recall. Path depth is capped (truncation keeps the prefix = safe
+  over-approximation). Alias/flow sensitivity remain out of scope.
+- **L1 coverage: every dedicated language now has a resolver wired.** Added the
+  four that had none — Java (`jdtls`), C# (`csharp-ls`), Scala (`metals`), Swift
+  (`sourcekit-lsp`). **Java validated live** (JDK 21 + Eclipse JDT LS): a
+  cross-file call promoted to `certain` in ~14s — the **7th** server family and
+  the **first launcher-based** one, proving the generic client is not limited to
+  a single bare executable on `PATH`. The generic LSP client (`l1/lsp_base.py`)
+  gained a `_popen_argv()` hook (subclasses build a full launch command — jdtls
+  runs `java -jar <equinox-launcher> -configuration <cfg> -data <workspace>`),
+  `initializationOptions`, and `workspaceFolders`. C#/Scala/Swift are wired and
+  inert until their toolchain is present (no .NET/Swift/coursier on the dev box),
+  with opt-in tests (`tests/test_l1_extra.py`) that validate each once installed.
+
 - **Clojure/ClojureScript** dedicated extractor + dataflow (18th dedicated
   language) — added for real-world security auditing of Clojure backends.
 - **`reaches`** tool/CLI/MCP: reachability from an entry to a sink (preset

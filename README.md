@@ -110,7 +110,7 @@ Java, C#, C/C++, Go, Rust, Ruby, PHP, Kotlin, Swift, Scala, Lua, Clojure).
 
 Binary/document formats (.pdf, .docx) and structureless formats (.sln, .dfm, BYOND) stay out of the structural graph by design.
 
-Semantic L1 resolvers (promote edges to `certain`): Python via jedi; JS/TS via the TypeScript language service (needs `node` + `typescript@5` — set `CODEGRAPH_NODE`/`CODEGRAPH_TS_DIR` or have them on PATH); and any LSP server via a generic client — Go via `gopls`, Rust via `rust-analyzer`, C/C++ via `clangd` (all validated). An LSP-backed language activates automatically when its server is on `PATH` (or pointed at by `CODEGRAPH_GOPLS`/`CODEGRAPH_RUST_ANALYZER`/`CODEGRAPH_CLANGD`); resolution quality depends on the server finding the project (`go.mod` / `Cargo.toml` / `compile_commands.json`). The generic client waits for async servers (rust-analyzer/clangd) to finish indexing before querying. Adding another language is a ~10-line config on `l1/lsp_base.py`.
+Semantic L1 resolvers (promote edges to `certain`): **every dedicated language now has a resolver wired.** Python via jedi; JS/TS via the TypeScript language service (needs `node` + `typescript@5`); and any LSP server via one generic client. *Validated live* (a cross-file call promoted to `certain`): Go (`gopls`), Rust (`rust-analyzer`), Lua (`lua-language-server`), Clojure (`clojure-lsp`), and **Java (`jdtls`)** — the last being the first *launcher-based* server (`java -jar <equinox-launcher> …`, not a bare `PATH` binary), proving the client generalizes beyond a single executable. *Wired and inert until the toolchain is present* (same protocol, not validated on this box): C/C++ (`clangd`), PHP (`intelephense`), Ruby (`solargraph`), Kotlin (`kotlin-language-server`), C# (`csharp-ls`), Scala (`metals`), Swift (`sourcekit-lsp`). An LSP-backed language activates automatically when its server is on `PATH` (or pointed at by `CODEGRAPH_<SERVER>`, e.g. `CODEGRAPH_JDTLS` for the JDT LS install dir); resolution quality depends on the server finding the project (`go.mod` / `Cargo.toml` / `compile_commands.json` / a build tool). The generic client waits for async servers to finish indexing before querying. Adding another language is a ~10-line config on `l1/lsp_base.py`.
 
 Why L1 matters: `certain` edges are semantic facts, not name guesses — so an agent can trust a `reaches`/`impact`/`callers` answer and stop, instead of re-verifying by reading files. In our reachability benchmark this made the graph arm both more correct and ~2.4× cheaper in tokens than a grep/read baseline (see [evals/RESULTS.md](evals/RESULTS.md#rodada-9)). Adding L1 to a language is what turns "graph is sometimes worth it" into "graph wins" there.
 
@@ -156,17 +156,22 @@ This project's design principle is **epistemic honesty** — so are its claims:
   universal token discount. Where it also saves tokens is when `certain` L1 edges
   let the agent trust `reaches` and stop.
 - **Dataflow/taint is *may-taint*** (over-approximates — findings are candidates
-  to verify), flow-insensitive, and does not model field/alias sensitivity yet.
+  to verify) and flow-insensitive. It is now **field-sensitive** (access paths
+  with a prefix rule: a tainted object taints its fields, but tainting one field
+  does not taint its siblings) — validated for Python and JS/TS; the generic tier
+  applies it best-effort with a safe base-name fallback. Alias sensitivity is
+  still out of scope.
 - **L1 semantic resolution** promotes call edges to `certain` via one generic
-  LSP client. *Validated* against a live server: Python (jedi), JS/TS (tsserver),
-  Go (gopls), Rust (`rust-analyzer`), Lua (`lua-language-server`), Clojure
-  (`clojure-lsp`) — four distinct server families proving the generic client
-  generalizes. *Wired and inert until the server is on `PATH`* (same protocol,
-  not yet validated on a live server here): C/C++ (`clangd`), PHP
-  (`intelephense`), Ruby (`solargraph`), Kotlin (`kotlin-language-server`). Each
-  activates only when its binary exists; languages without an active resolver
-  keep honest `inferred`/`possible` edges. JVM/toolchain-launched servers (jdtls,
-  metals, sourcekit-lsp, Roslyn) need a custom launcher and are future work.
+  LSP client, and **every dedicated language now has a resolver wired.**
+  *Validated* against a live server: Python (jedi), JS/TS (tsserver), Go (gopls),
+  Rust (`rust-analyzer`), Lua (`lua-language-server`), Clojure (`clojure-lsp`),
+  and Java (`jdtls`) — seven server families including the first *launcher-based*
+  one (JDT LS runs on the JVM via an Eclipse launcher, not a bare `PATH` binary).
+  *Wired and inert until the toolchain is present* (same protocol, not validated
+  on this box): C/C++ (`clangd`), PHP (`intelephense`), Ruby (`solargraph`),
+  Kotlin (`kotlin-language-server`), C# (`csharp-ls`), Scala (`metals`), Swift
+  (`sourcekit-lsp`). Each activates only when its server/toolchain exists;
+  languages without an active resolver keep honest `inferred`/`possible` edges.
 - Static analysis can miss dynamic/reflective calls — every answer says so.
 - **Concurrency:** one `CodeGraph`/`QueryEngine` instance is single-threaded —
   share it only under external serialization (the MCP server does this with a

@@ -49,6 +49,9 @@ class LspResolver:
     cmd_name: str = ""
     cmd_env: str | None = None
     cmd_args: tuple[str, ...] = ()
+    # opções passadas em `initialize` (jdtls/metals usam para configurar o
+    # projeto); None = omitir. Neutro para os servidores simples.
+    init_options: dict | None = None
     # servidores que carregam o projeto de forma assíncrona (rust-analyzer,
     # clangd) só respondem `definition` depois de indexar — espera até isto.
     ready_timeout: float = 40.0
@@ -70,10 +73,15 @@ class LspResolver:
     def available(cls) -> bool:
         return cls._binary() is not None
 
+    def _popen_argv(self) -> list[str]:
+        """Argv para lançar o servidor. Servidores simples = binário no PATH;
+        subclasses com launcher (jdtls: java -jar equinox…) sobrescrevem."""
+        return [self._binary(), *self.cmd_args]
+
     def __init__(self, root: Path) -> None:
         self.root = Path(root).resolve()
         self.proc = subprocess.Popen(
-            [self._binary(), *self.cmd_args], stdin=subprocess.PIPE,
+            self._popen_argv(), stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
         self._seq = 0
         self._opened: set[str] = set()
@@ -183,11 +191,16 @@ class LspResolver:
 
     def _initialize(self) -> bool:
         try:
-            self._request("initialize", {
+            params = {
                 "processId": os.getpid(),
                 "rootUri": self.root.as_uri(),
+                "workspaceFolders": [{"uri": self.root.as_uri(),
+                                      "name": self.root.name}],
                 "capabilities": {"textDocument": {"definition": {}}},
-            })
+            }
+            if self.init_options is not None:
+                params["initializationOptions"] = self.init_options
+            self._request("initialize", params)
             self._notify("initialized", {})
             return True
         except Exception:
