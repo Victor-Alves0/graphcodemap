@@ -43,13 +43,27 @@ DEFAULT_IGNORES = [
 ]
 
 
-def load_ignore_spec(root: Path) -> pathspec.PathSpec:
+def _ignore_lines(root: Path) -> list[str]:
     lines = list(DEFAULT_IGNORES)
     for name in (".gitignore", ".codegraphignore"):
         p = root / name
         if p.is_file():
             lines += p.read_text(encoding="utf-8", errors="replace").splitlines()
-    return pathspec.GitIgnoreSpec.from_lines(lines)
+    return lines
+
+
+def load_ignore_spec(root: Path) -> pathspec.PathSpec:
+    return pathspec.GitIgnoreSpec.from_lines(_ignore_lines(root))
+
+
+def _file_ignore_spec(lines: list[str]) -> pathspec.PathSpec:
+    """Spec para checar ARQUIVOS: descarta padrões terminados em '/' — no
+    gitignore eles casam SÓ diretórios, então nunca alteram o status de um
+    arquivo (cujos ancestrais já passaram na poda de diretório). Remover essas
+    linhas é exato (independe de ordem) e corta o custo por arquivo: dos ~15
+    ignores default, só `*.min.js` casa arquivo — 15x menos regex por arquivo."""
+    file_lines = [ln for ln in lines if not ln.rstrip().endswith("/")]
+    return pathspec.GitIgnoreSpec.from_lines(file_lines)
 
 
 def iter_source_files(root: Path, spec: pathspec.PathSpec | None = None):
@@ -72,7 +86,9 @@ def scan_source_stats(root: Path,
     pela varredura de frescor (read-repair de resultado vazio) para que ela possa
     rodar a CADA query sem custo proibitivo, preservando a garantia anti-staleness
     em escala. Mesmo conjunto de arquivos que ``iter_source_files``."""
-    spec = spec or load_ignore_spec(root)
+    lines = _ignore_lines(root)
+    dir_spec = spec or pathspec.GitIgnoreSpec.from_lines(lines)  # poda de diretório
+    file_spec = _file_ignore_spec(lines)                        # check de arquivo (barato)
     out: dict[str, tuple[int, int]] = {}
     # Constrói o caminho relativo por concatenação enquanto desce (o prefixo do
     # diretório vem na pilha), em vez de os.path.relpath por entrada — relpath
@@ -90,12 +106,13 @@ def scan_source_stats(root: Path,
                 rel = e.name if not rel_dir else f"{rel_dir}/{e.name}"
                 try:
                     if e.is_dir(follow_symlinks=False):
-                        if not spec.match_file(rel + "/"):   # poda dir ignorado
+                        if not dir_spec.match_file(rel + "/"):   # poda dir ignorado
                             stack.append((e.path, rel))
                     elif e.is_file(follow_symlinks=False):
                         # language_for (lookup de extensão) primeiro: descarta
-                        # não-fontes sem pagar o match do gitignore (regex).
-                        if language_for(rel) is None or spec.match_file(rel):
+                        # não-fontes sem pagar o match do gitignore; file_spec só
+                        # tem os padrões que podem casar arquivo (sem os de dir).
+                        if language_for(rel) is None or file_spec.match_file(rel):
                             continue
                         st = e.stat()
                         out[rel] = (st.st_size, int(st.st_mtime))

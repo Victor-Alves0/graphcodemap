@@ -112,15 +112,19 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
   before — so `test_repeated_misses_still_catch_edits` and the no-watcher path are
   unchanged. Wired via `QueryEngine.attach_watcher()`; covered by
   `tests/test_watcher_freshness.py`.
-- **Freshness sweep ~3.5× faster (`scan_source_stats`).** The O(files) staleness
-  sweep that runs on every empty query result was dominated by `os.path.relpath`
-  (72% of its time — millions of `normcase`/`LCMapStringEx` calls on Windows), not
-  I/O. Building the relative path by concatenation during the directory descent
-  (the parent's relative prefix rides the walk stack) and checking `language_for`
-  before the gitignore regex cut a full 100k-file sweep from ~4.65s to ~1.33s —
-  same file set, same strong anti-staleness guarantee (no throttle; the
-  every-miss sweep test still holds). This lowers scale ceiling #1 from the
-  100k-file scale proof, pushing the comfortable freshness ceiling to ~100k.
+- **Freshness sweep ~7.7× faster (`scan_source_stats`, ~4.65s → ~0.6s at 100k).**
+  The O(files) staleness sweep that runs on every empty query result was, in two
+  successive profiles, dominated by pure overhead — not I/O. (1) `os.path.relpath`
+  was 72% (millions of `normcase`/`LCMapStringEx` calls on Windows); replaced by
+  building the relative path via concatenation during the directory descent (the
+  parent's prefix rides the walk stack) → ~4.65s→~1.33s. (2) `pathspec` matching
+  then dominated (15 default patterns × 100k files); since a gitignore pattern
+  ending in `/` matches only directories (already pruned during descent) it can
+  never change a *file's* status, so files are now checked against a reduced spec
+  with those dir-only patterns dropped — exact, order-independent, ~15× fewer
+  regex evals per file → ~1.33s→~0.6s. Same file set (guarded by a scan==iter
+  test with a mixed dir/file gitignore), same strong anti-staleness guarantee (no
+  throttle; the every-miss sweep test still holds).
 
 - **Indexing restructured (batched writes + in-memory edge resolution).** The
   full-scan (`index_repo`) commits in batches (a per-file `SAVEPOINT` preserves

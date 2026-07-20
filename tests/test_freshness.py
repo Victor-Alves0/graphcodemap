@@ -80,6 +80,27 @@ def test_scan_source_stats_matches_iter(cg, repo):
     assert scanned == indexed
 
 
+def test_scan_matches_iter_with_gitignore(tmp_path):
+    # a varredura de arquivo usa um spec reduzido (sem padrões de diretório);
+    # deve casar EXATAMENTE o conjunto de iter_source_files (spec completo),
+    # inclusive com um .gitignore que mistura padrão de dir e de arquivo.
+    from codegraph.indexer import iter_source_files, scan_source_stats
+
+    (tmp_path / ".gitignore").write_text("build/\n*.skip.py\n", encoding="utf-8")
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "b.skip.py").write_text("x = 1\n", encoding="utf-8")   # padrão de arquivo
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "c.py").write_text("x = 1\n", encoding="utf-8")  # dir ignorado
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "d.py").write_text("x = 1\n", encoding="utf-8")
+
+    scanned = set(scan_source_stats(tmp_path))
+    assert scanned == set(iter_source_files(tmp_path))
+    assert {"a.py", "src/d.py"} <= scanned
+    assert "b.skip.py" not in scanned     # padrão de arquivo respeitado
+    assert "build/c.py" not in scanned    # padrão de diretório respeitado
+
+
 def test_repeated_misses_still_catch_edits(cg, repo):
     # garantia FORTE preservada em escala: sem throttle, cada resultado vazio
     # faz a varredura barata — uma edição é vista mesmo após outras queries.

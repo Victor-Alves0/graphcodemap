@@ -341,8 +341,12 @@ por evento).
   descida (o prefixo do diretório vem na pilha): **4,65s → 1,33s a 100k**, mesmo
   conjunto de arquivos, mesma garantia forte (sem throttle — o teste
   `test_repeated_misses_still_catch_edits` continua exigindo varredura a cada
-  miss). Continua O(N), mas com constante 3,5× menor, empurrando o teto
-  confortável de ~30k para ~100k.
+  miss). Depois disso o `pathspec` passou a dominar (15 padrões × 100k arquivos):
+  como um padrão gitignore terminado em `/` só casa diretório (já podado na
+  descida), ele nunca muda o status de um ARQUIVO — então os arquivos são
+  checados contra um spec reduzido sem esses padrões (exato, ~15× menos regex por
+  arquivo): **1,33s → 0,61s**. Total **~7,7×** (4,65s → 0,61s), mesmo conjunto de
+  arquivos, empurrando o teto confortável de ~30k para ~100k.
 - **✅ Watcher-aware: no caminho de produção a varredura é PULADA.** Com o MCP
   server (watcher ligado), uma query não paga mais a varredura a cada miss — o
   watcher mantém o índice quente, então quando ele está vivo e drenado

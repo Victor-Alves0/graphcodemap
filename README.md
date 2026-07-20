@@ -185,9 +185,11 @@ This project's design principle is **epistemic honesty** — so are its claims:
   **324 MB peak, no OOM**, on the one-time-index + hot-watcher model. Two honest
   ceilings surfaced: (1) the strong freshness guarantee is an O(files)
   `os.scandir` sweep on every empty result — profiling found 72% of it was
-  `os.path.relpath` (millions of `normcase` calls on Windows), now removed by
-  building the relative path during descent: **~5s → ~1.3s per missed query at
-  100k**, same files and same guarantee (no throttle), comfortable to ~100k — and
+  `os.path.relpath` (millions of `normcase` calls on Windows) and then `pathspec`
+  matching; removed by building the relative path during descent and checking
+  files against a reduced ignore spec (dir-only gitignore patterns can't match a
+  file): **~5s → ~0.6s per missed query at 100k** (~7.7×), same files and same
+  guarantee (no throttle), comfortable to ~100k — and
   in the production path (MCP server with the watcher on) the sweep is **skipped
   entirely while a live watcher already guarantees freshness** (a 30s backstop
   sweep covers dropped OS events; the every-miss sweep still runs without a
