@@ -8,6 +8,7 @@ a consulta; arquivo sumiu → sai do índice; tudo anotado no envelope.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 
 from .community import ensure_communities
@@ -62,6 +63,18 @@ class QueryEngine:
         self.conn = indexer.conn
         self.root = indexer.root
         self.l3_provider = None  # injetável (testes/outros providers)
+        # frescor watcher-aware: quando um watcher vivo mantém o índice quente, a
+        # varredura O(N) da query é redundante e é pulada — com um backstop
+        # periódico p/ cobrir eventos que o watchdog possa ter perdido. Sem
+        # watcher, a varredura roda a cada miss (garantia forte inalterada).
+        self._watcher = None
+        self._last_full_sweep = 0.0
+        self._sweep_backstop = 30.0
+
+    def attach_watcher(self, watcher) -> None:
+        """Liga um Watcher vivo a este engine (o MCP server faz isso). Só precisa
+        expor `is_current()`. Sem isto, o comportamento é o de sempre."""
+        self._watcher = watcher
 
     # -- read-repair ----------------------------------------------------------
 
@@ -98,11 +111,20 @@ class QueryEngine:
         e precisa da mesma garantia de frescor.
 
         Escala: `scan_source_stats` lê size/mtime via os.scandir (sem syscall por
-        arquivo), ~60x mais rápido que stat individual (21ms vs 1.3s em 8k). Só os
-        arquivos com stat divergente (ou sumidos) entram no _repair — então roda a
-        CADA query vazia sem throttle, preservando a garantia forte anti-staleness
-        mesmo em repos grandes.
+        arquivo), ~60x mais rápido que stat individual. Só os arquivos com stat
+        divergente (ou sumidos) entram no _repair.
+
+        Watcher-aware: se um watcher vivo está drenado (`is_current()`), o índice
+        já reflete tudo que ele observou → a varredura é pulada, com um backstop
+        periódico (a cada `_sweep_backstop`s) p/ cobrir eventos perdidos pelo
+        watchdog. Sem watcher (ou durante o debounce dele), a varredura roda a
+        cada miss — a garantia forte anti-staleness é preservada nesse caminho.
         """
+        w = self._watcher
+        if (w is not None and w.is_current()
+                and (time.monotonic() - self._last_full_sweep) < self._sweep_backstop):
+            return False  # watcher garante frescor; pula a varredura O(N)
+        self._last_full_sweep = time.monotonic()
         on_disk = scan_source_stats(self.root)
         stale: set[str] = set()
         for r in self.conn.execute("SELECT path, size, mtime FROM files"):

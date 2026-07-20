@@ -100,6 +100,18 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Performance
 
+- **Watcher-aware freshness: the O(files) sweep is skipped when a live watcher
+  already guarantees freshness.** In the production path (MCP server with the file
+  watcher on), a query no longer pays the freshness sweep on every empty result —
+  the watcher keeps the index hot, so when it is alive and drained
+  (`Watcher.is_current()`) the sweep is redundant and skipped, driving the
+  per-miss cost toward zero. A periodic backstop sweep (default 30s) still runs to
+  cover events the OS watcher may have dropped. The strong guarantee is untouched
+  where it matters: **without** a watcher, and **during** the watcher's debounce
+  window (event noted but not yet applied), the full sweep runs on every miss as
+  before — so `test_repeated_misses_still_catch_edits` and the no-watcher path are
+  unchanged. Wired via `QueryEngine.attach_watcher()`; covered by
+  `tests/test_watcher_freshness.py`.
 - **Freshness sweep ~3.5× faster (`scan_source_stats`).** The O(files) staleness
   sweep that runs on every empty query result was dominated by `os.path.relpath`
   (72% of its time — millions of `normcase`/`LCMapStringEx` calls on Windows), not

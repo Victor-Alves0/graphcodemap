@@ -59,10 +59,14 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
     threading.Thread(target=_refine_async, daemon=True).start()
     if watch:
         # M2 (§2.2): mantém o índice quente em background; conexão própria.
-        # A garantia continua sendo o read-repair na query.
+        # A garantia continua sendo o read-repair na query — mas com o watcher
+        # ligado ao engine, uma query só paga a varredura O(N) quando o watcher
+        # NÃO está drenado (ou a cada backstop), não a cada miss.
         from .watcher import Watcher
 
-        Watcher(root, db_path).start()
+        _watcher = Watcher(root, db_path)
+        _watcher.start()
+        engine.attach_watcher(_watcher)
     mcp = FastMCP("codegraph", instructions=INSTRUCTIONS)
 
     # o engine é UMA conexão SQLite; FastMCP pode despachar tools em paralelo

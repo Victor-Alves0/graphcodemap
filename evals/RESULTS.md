@@ -342,9 +342,14 @@ por evento).
   conjunto de arquivos, mesma garantia forte (sem throttle — o teste
   `test_repeated_misses_still_catch_edits` continua exigindo varredura a cada
   miss). Continua O(N), mas com constante 3,5× menor, empurrando o teto
-  confortável de ~30k para ~100k. Reduzir o pathspec (agora o maior custo
-  restante) e um caminho "watcher-aware" (pular a varredura quando um watcher
-  vivo já garante frescor) são o próximo passo.
+  confortável de ~30k para ~100k.
+- **✅ Watcher-aware: no caminho de produção a varredura é PULADA.** Com o MCP
+  server (watcher ligado), uma query não paga mais a varredura a cada miss — o
+  watcher mantém o índice quente, então quando ele está vivo e drenado
+  (`is_current()`) a varredura é redundante e pulada (custo/miss → ~0), com um
+  backstop a cada 30s para cobrir eventos que o SO possa ter perdido. A garantia
+  forte fica intacta onde importa: SEM watcher, e DURANTE o debounce do watcher,
+  a varredura roda a cada miss como antes. Reduzir o pathspec é o que resta.
 - **⚠️ `index()` completo é O(N) re-hash** (102s a 100k). Incremental de verdade
   é via watcher, não chamando `index()` de novo.
 
@@ -379,10 +384,10 @@ chamada**, gerando um DB de 2,4 GB + 1,2 GB de WAL — antes mesmo do resolve.
 - **Código bem-estruturado (namespaced) escala limpo até 100k+** no modelo
   "índice único + watcher quente": ~8 min, 324 MB, sem OOM.
 - **Dois tetos reais, medidos, não escondidos:** (1) a varredura de frescor é
-  O(N) — reduzida de ~5s para ~1,3s/miss a 100k (eliminando `os.path.relpath`),
-  confortável até ~100k; acima disso precisa de camadas (pathspec + watcher-aware);
-  (2) C denso em escala (kernel) exige L1 ativo para não explodir por fan-out de
-  nomes.
+  O(N) — reduzida de ~5s para ~1,3s/miss a 100k (eliminando `os.path.relpath`) e
+  PULADA no caminho de produção quando um watcher vivo já garante frescor
+  (custo/miss → ~0, com backstop de 30s); (2) C denso em escala (kernel) exige L1
+  ativo para não explodir por fan-out de nomes.
 - **Não validado como pronto para monorepo de 100k+ em C sem L1.** Indexação
-  incremental/parcial e um caminho watcher-aware para a varredura de frescor são
-  o próximo trabalho de escala. Números honestos > alegação de SOTA.
+  incremental/parcial é o próximo trabalho de escala. Números honestos > alegação
+  de SOTA.

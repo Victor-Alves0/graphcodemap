@@ -115,6 +115,20 @@ class Watcher:
                           type(e).__name__, e, exc_info=True)
         return stats
 
+    def is_current(self) -> bool:
+        """True se o watcher está vivo E drenado — sem eventos pendentes nem
+        rescan pendente. Nesse estado o índice reflete tudo que o watcher
+        observou, então a varredura de frescor O(N) da query é redundante e pode
+        ser pulada. Durante o debounce (evento anotado, ainda não aplicado)
+        retorna False, e a query cai na varredura — a garantia é preservada.
+        Não cobre eventos que o watchdog tenha PERDIDO (overflow); por isso o
+        chamador mantém uma varredura-backstop periódica."""
+        obs = self._observer
+        if obs is None or not obs.is_alive():
+            return False
+        with self._lock:
+            return not self._pending and not self._full_rescan
+
     # -- ciclo de vida -------------------------------------------------------
 
     def start(self) -> None:

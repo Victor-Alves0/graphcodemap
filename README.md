@@ -187,14 +187,17 @@ This project's design principle is **epistemic honesty** — so are its claims:
   `os.scandir` sweep on every empty result — profiling found 72% of it was
   `os.path.relpath` (millions of `normcase` calls on Windows), now removed by
   building the relative path during descent: **~5s → ~1.3s per missed query at
-  100k**, same files and same guarantee (no throttle), comfortable to ~100k;
+  100k**, same files and same guarantee (no throttle), comfortable to ~100k — and
+  in the production path (MCP server with the watcher on) the sweep is **skipped
+  entirely while a live watcher already guarantees freshness** (a 30s backstop
+  sweep covers dropped OS events; the every-miss sweep still runs without a
+  watcher and during its debounce, so the strong guarantee is intact);
   (2) **dense C at scale needs active L1.** The full Linux kernel (72k C files)
   did *not* complete on the dev box — C is ~30× denser on disk (55 KB/file) and
   name-based resolution fans out pathologically without namespaces (`dev_err`
   called 35k×, `ARRAY_SIZE` 31k×), so `certain` L1 resolution (clangd) becomes a
   *feasibility* requirement there, not a nicety. Indexing is single-threaded;
-  parallel/lazy/partial indexing and a watcher-aware freshness sweep are the next
-  scale work.
+  parallel/lazy/partial indexing are the next scale work.
 
 Configuration: set `OPENROUTER_API_KEY` (env or `.env`) to enable L3/eval;
 model via `CODEGRAPH_L3_MODEL`. Contributions and issue reports welcome.
