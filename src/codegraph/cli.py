@@ -21,7 +21,8 @@ def cmd_index(args) -> int:
         args.root = str(Path(args.path).resolve())
     ix = Indexer(args.root, args.db)
     t0 = time.perf_counter()
-    stats = ix.index_repo(force=args.force, scope=getattr(args, "scope", None))
+    stats = ix.index_repo(force=args.force, scope=getattr(args, "scope", None),
+                          workers=getattr(args, "workers", None))
     dt = time.perf_counter() - t0
     from .indexer import get_index_scopes
 
@@ -274,6 +275,9 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--scope", default=None,
                     help="indexa só esta subárvore do repo (parcial; acumula "
                          "entre execuções e é lembrado nas próximas)")
+    sp.add_argument("--workers", type=int, default=None,
+                    help="threads de prepare no índice (default: min(4, CPUs); "
+                         "1 = serial). A escrita no SQLite é sempre serial.")
     sp.set_defaults(fn=cmd_index)
 
     sp = sub.add_parser("refine", help="refinamento L1: promove arestas a 'certain'")

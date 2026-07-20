@@ -111,6 +111,18 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Performance
 
+- **Parallel indexing (prepare in threads, writes stay serial).** The index is
+  write-bound — profiling puts SQLite `executemany`/`execute` at ~48% and
+  parse+extract at only ~7% — so the honest lever is overlapping the parallelizable
+  *prepare* (read + tree-sitter parse + extract, all of which release the GIL) with
+  the serial writer. `index_repo(workers=N)` (auto `min(4, cpus)`, CLI `--workers`)
+  runs prepare in a small thread pool for repos ≥1000 files; the single-connection
+  writer consumes results **in input order**, so the graph is **bit-for-bit
+  identical to the serial index** (proven by an equivalence test). Measured a
+  reliable **~1.16×** on the synthetic 100k-style workload (tiny files, so writes
+  dominate even more); larger real files parallelize more of the per-file cost.
+  Not a linear speedup — the SQLite single-writer is the ceiling, and this is
+  stated plainly rather than oversold. Serial path unchanged below the threshold.
 - **Watcher-aware freshness: the O(files) sweep is skipped when a live watcher
   already guarantees freshness.** In the production path (MCP server with the file
   watcher on), a query no longer pays the freshness sweep on every empty result —

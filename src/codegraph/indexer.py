@@ -31,6 +31,12 @@ MAX_CANDIDATES = 5
 # arquivo dominava o tempo de indexação). Savepoint por arquivo preserva o
 # isolamento de erro. Só afeta index_repo — o caminho incremental é per-arquivo.
 BULK_BATCH = 500
+# Indexação paralela: só o PREPARE (ler+parsear+extrair, que solta o GIL no I/O
+# e no tree-sitter) roda em threads; a ESCRITA no SQLite continua serial (writer
+# único). Gera resultados na ordem de entrada → ordem de escrita idêntica à
+# serial → grafo bit-a-bit igual. Ganho limitado pelo teto de escrita (~1,3x).
+PARALLEL_MIN_FILES = 1000        # abaixo disso o overhead de thread não compensa
+INDEX_WORKERS_MAX = 4            # ponto ótimo medido (acima, contenção de GIL piora)
 CALLABLE_KINDS = ("function", "method", "class")
 
 # Versão da lógica de extração/resolução: mudou → força re-index completo,
@@ -207,7 +213,8 @@ class Indexer:
 
     # -- indexação -----------------------------------------------------------
 
-    def index_repo(self, force: bool = False, scope: str | None = None) -> dict:
+    def index_repo(self, force: bool = False, scope: str | None = None,
+                   workers: int | None = None) -> dict:
         row = self.conn.execute(
             "SELECT value FROM meta WHERE key='indexer_version'").fetchone()
         if row is None or row["value"] != INDEXER_VERSION:
@@ -231,46 +238,14 @@ class Indexer:
             self.conn.commit()
         scope_arg = scopes or None
         spec = load_ignore_spec(self.root)
-        seen: set[str] = set()
-        stats = {"scanned": 0, "indexed": 0, "removed": 0, "errors": 0}
-        cur = self.conn.cursor()
-        cur.execute("BEGIN")
-        pending = 0
-        for rel in iter_source_files(self.root, spec, scope_arg):
-            seen.add(rel)
-            stats["scanned"] += 1
-            cur.execute("SAVEPOINT f")           # isolamento de erro por arquivo
-            try:
-                prep = self._prepare(rel, force)
-                if prep is None:                 # sem linguagem / grande demais
-                    cur.execute("RELEASE f")
-                elif prep[0] == "unchanged":
-                    _, frow, st = prep
-                    cur.execute("UPDATE files SET mtime=?, size=? WHERE id=?",
-                                (int(st.st_mtime), st.st_size, frow["id"]))
-                    cur.execute("RELEASE f")
-                else:
-                    self._write_parsed(cur, rel, prep)
-                    cur.execute("RELEASE f")
-                    stats["indexed"] += 1
-            except Exception as e:
-                cur.execute("ROLLBACK TO f")
-                cur.execute("RELEASE f")
-                stats["errors"] += 1
-                log.warning("falha ao indexar %s: %s: %s",
-                            rel, type(e).__name__, e)
-                log.debug("traceback de %s", rel, exc_info=True)
-                cur.execute(
-                    "INSERT INTO files(path, language, content_hash, size, mtime, "
-                    "parse_status, indexed_at) VALUES(?,?,?,?,?,'failed',?) "
-                    "ON CONFLICT(path) DO UPDATE SET parse_status='failed'",
-                    (rel, language_for(rel), "", 0, 0, int(time.time())))
-            pending += 1
-            if pending >= BULK_BATCH:            # flush do lote
-                cur.execute("COMMIT")
-                cur.execute("BEGIN")
-                pending = 0
-        cur.execute("COMMIT")
+        files = list(iter_source_files(self.root, spec, scope_arg))
+        if workers is None:
+            workers = min(INDEX_WORKERS_MAX, os.cpu_count() or 1)
+        stats = {"scanned": len(files), "indexed": 0, "removed": 0, "errors": 0}
+        if workers > 1 and len(files) >= PARALLEL_MIN_FILES:
+            seen = self._index_files_parallel(files, force, workers, stats)
+        else:
+            seen = self._index_files_serial(files, force, stats)
         # arquivos que sumiram do disco (delete/rename/branch switch) — só
         # dentro do escopo, para não apagar o que outra subárvore indexou.
         for row in self.conn.execute("SELECT path FROM files").fetchall():
@@ -337,6 +312,135 @@ class Indexer:
             cur.execute("ROLLBACK")
             raise
         return True
+
+    def _mark_failed(self, cur, rel: str) -> None:
+        cur.execute(
+            "INSERT INTO files(path, language, content_hash, size, mtime, "
+            "parse_status, indexed_at) VALUES(?,?,?,?,?,'failed',?) "
+            "ON CONFLICT(path) DO UPDATE SET parse_status='failed'",
+            (rel, language_for(rel), "", 0, 0, int(time.time())))
+
+    def _index_files_serial(self, files, force, stats) -> set[str]:
+        seen: set[str] = set()
+        cur = self.conn.cursor()
+        cur.execute("BEGIN")
+        pending = 0
+        for rel in files:
+            seen.add(rel)
+            cur.execute("SAVEPOINT f")           # isolamento de erro por arquivo
+            try:
+                prep = self._prepare(rel, force)
+                if prep is None:                 # sem linguagem / grande demais
+                    cur.execute("RELEASE f")
+                elif prep[0] == "unchanged":
+                    _, frow, st = prep
+                    cur.execute("UPDATE files SET mtime=?, size=? WHERE id=?",
+                                (int(st.st_mtime), st.st_size, frow["id"]))
+                    cur.execute("RELEASE f")
+                else:
+                    self._write_parsed(cur, rel, prep)
+                    cur.execute("RELEASE f")
+                    stats["indexed"] += 1
+            except Exception as e:
+                cur.execute("ROLLBACK TO f")
+                cur.execute("RELEASE f")
+                stats["errors"] += 1
+                log.warning("falha ao indexar %s: %s: %s",
+                            rel, type(e).__name__, e)
+                log.debug("traceback de %s", rel, exc_info=True)
+                self._mark_failed(cur, rel)
+            pending += 1
+            if pending >= BULK_BATCH:            # flush do lote
+                cur.execute("COMMIT")
+                cur.execute("BEGIN")
+                pending = 0
+        cur.execute("COMMIT")
+        return seen
+
+    def _prepare_pure(self, rel: str, force: bool, known: dict):
+        """Versão thread-safe de _prepare: NÃO toca self.conn. `known`
+        (path→content_hash, lido 1x na main thread) permite pular inalterados sem
+        parsear. Roda em worker; qualquer exceção vira ('error', rel, msg)."""
+        try:
+            path = self.root / rel
+            lang = language_for(rel)
+            if lang is None:
+                return ("skip", rel)
+            data = path.read_bytes()
+            if len(data) > MAX_FILE_SIZE:
+                return ("skip", rel)
+            h = content_hash(data)
+            st = path.stat()
+            if not force and known.get(rel) == h:
+                return ("unchanged", rel, st, h)
+            tree = get_parser(lang).parse(data)
+            if lang == "cpp" and rel.endswith(".h") and tree.root_node.has_error:
+                c_tree = get_parser("c").parse(data)
+                if not c_tree.root_node.has_error:
+                    lang, tree = "c", c_tree
+            syms, refs = extract.extract(lang, data, module_fqn_for(rel), tree)
+            status = "partial" if tree.root_node.has_error else "ok"
+            return ("changed", rel, st, h, lang, syms, refs, status)
+        except Exception as e:
+            return ("error", rel, f"{type(e).__name__}: {e}")
+
+    def _index_files_parallel(self, files, force, workers, stats) -> set[str]:
+        """Prepare em threads (I/O + tree-sitter soltam o GIL), escrita serial no
+        writer único. `ex.map` devolve na ORDEM de entrada → a ordem de escrita é
+        idêntica à serial → mesmos ids e mesmo grafo. Memória limitada por chunk."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        known = {r["path"]: r["content_hash"]
+                 for r in self.conn.execute("SELECT path, content_hash FROM files")}
+        id_map = {r["path"]: r["id"]
+                  for r in self.conn.execute("SELECT path, id FROM files")}
+        seen: set[str] = set(files)
+        cur = self.conn.cursor()
+        cur.execute("BEGIN")
+        pending = 0
+        chunk = max(BULK_BATCH, workers * 16)     # limita prepares em voo (memória)
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for i in range(0, len(files), chunk):
+                batch = files[i:i + chunk]
+                for res in ex.map(lambda r: self._prepare_pure(r, force, known), batch):
+                    rel = res[1]
+                    cur.execute("SAVEPOINT f")
+                    try:
+                        tag = res[0]
+                        if tag == "skip":
+                            cur.execute("RELEASE f")
+                        elif tag == "unchanged":
+                            _, r, st, h = res
+                            cur.execute("UPDATE files SET mtime=?, size=? WHERE path=?",
+                                        (int(st.st_mtime), st.st_size, r))
+                            cur.execute("RELEASE f")
+                        elif tag == "changed":
+                            _, r, st, h, lang, syms, refs, status = res
+                            row = {"id": id_map[r]} if r in id_map else None
+                            self._write_parsed(
+                                cur, r, ("changed", row, st, lang, h, syms, refs, status))
+                            cur.execute("RELEASE f")
+                            stats["indexed"] += 1
+                        else:                     # ('error', rel, msg)
+                            cur.execute("ROLLBACK TO f")
+                            cur.execute("RELEASE f")
+                            stats["errors"] += 1
+                            log.warning("falha ao indexar %s: %s", rel, res[2])
+                            self._mark_failed(cur, rel)
+                    except Exception as e:
+                        cur.execute("ROLLBACK TO f")
+                        cur.execute("RELEASE f")
+                        stats["errors"] += 1
+                        log.warning("falha ao escrever %s: %s: %s",
+                                    rel, type(e).__name__, e)
+                        self._mark_failed(cur, rel)
+                    pending += 1
+                    if pending >= BULK_BATCH:
+                        cur.execute("COMMIT")
+                        cur.execute("BEGIN")
+                        pending = 0
+        cur.execute("COMMIT")
+        return seen
 
     def _prepare(self, rel: str, force: bool, data: bytes | None = None):
         """Lê+parseia um arquivo, SEM tocar o banco (além de 1 SELECT de frescor).

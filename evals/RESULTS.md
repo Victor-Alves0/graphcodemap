@@ -398,6 +398,11 @@ chamada**, gerando um DB de 2,4 GB + 1,2 GB de WAL — antes mesmo do resolve.
   então só anda nessa subárvore (~4ms para um escopo de 500 arquivos num repo de
   100k, vs ~0,7s no inteiro = 185×). Não resolve indexar o kernel INTEIRO, mas
   torna tratável trabalhar numa parte dele.
+- **Indexação paralela (prepare em threads, escrita serial):** ~1,16× confiável e
+  grafo bit-a-bit idêntico ao serial. Modesto de propósito — o índice é limitado
+  pela escrita serial no SQLite (~48% do tempo; parse+extract são só ~7%), então
+  não há ganho linear a extrair aqui. Dito sem enfeite.
 - **Ainda não validado como pronto para indexar um monorepo de 100k+ em C por
-  completo sem L1.** Indexação paralela é o trabalho de escala que resta. Números
+  completo sem L1.** O que destravaria de verdade o caso denso é um armazenamento
+  com escrita não-serial (fora do escopo) — não mais paralelismo de CPU. Números
   honestos > alegação de SOTA.

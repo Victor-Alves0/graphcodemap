@@ -25,8 +25,9 @@ class CodeGraph:
         self.indexer = Indexer(root, db_path)
         self.query = QueryEngine(self.indexer)
 
-    def index(self, force: bool = False, scope: str | None = None) -> dict:
-        return self.indexer.index_repo(force=force, scope=scope)
+    def index(self, force: bool = False, scope: str | None = None,
+              workers: int | None = None) -> dict:
+        return self.indexer.index_repo(force=force, scope=scope, workers=workers)
 
     def find_symbol(self, query: str, kind: str | None = None, limit: int = 10):
         return self.query.find_symbol(query, kind=kind, limit=limit)

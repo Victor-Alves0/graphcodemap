@@ -202,8 +202,12 @@ This project's design principle is **epistemic honesty** — so are its claims:
   *feasibility* requirement there, not a nicety. For repos too big or dense to
   index whole, **`index --scope <subtree>`** indexes only the part you care about
   (persisted, additive, and the freshness sweep then walks only that subtree —
-  ~4ms for a 500-file scope of a 100k repo vs ~0.7s for the whole). Indexing is
-  single-threaded; parallel indexing is the remaining scale work.
+  ~4ms for a 500-file scope of a 100k repo vs ~0.7s for the whole). Indexing now
+  parallelizes the *prepare* phase (read+parse+extract) across a small thread pool
+  while keeping the SQLite writer serial (`index --workers N`, auto for repos
+  ≥1000 files) — bit-for-bit identical to the serial graph, a reliable but modest
+  ~1.16× (the single-writer SQLite is the ceiling; parse is only ~7% of index
+  time, so this is not a linear speedup, and we say so).
 
 Configuration: set `OPENROUTER_API_KEY` (env or `.env`) to enable L3/eval;
 model via `CODEGRAPH_L3_MODEL`. Contributions and issue reports welcome.
