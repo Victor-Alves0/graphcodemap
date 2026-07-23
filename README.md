@@ -127,7 +127,7 @@ cg.describe("auth.TokenService", llm=other_users_key)   # per-call credential
 Three tiers:
 
 - **Dedicated extractors** (refined fqn/imports/calls): Python, TypeScript/TSX, JavaScript, Rust, Go, Java, Kotlin, C#, C, C++/CUDA/Metal, PHP, Ruby, Lua/Luau, Swift, Scala, Clojure/ClojureScript.
-- **Web markup/style** (dedicated too): HTML and CSS/SCSS — CSS *defines* selectors (`css_class`/`css_id`, plus SCSS `@mixin`/`@function`); HTML contributes `id` anchors, treats `class="…"` as *usage* of those selectors, and records `<script src>`/`<link href>` as file dependencies. No dataflow (stylesheets have none).
+- **Web markup/style** (dedicated too): HTML and CSS/SCSS — CSS *defines* selectors (`css_class`/`css_id`, plus SCSS `@mixin`/`@function`); HTML contributes `id` anchors, treats `class="…"` as *usage* of those selectors, and records `<script src>`/`<link href>` as file dependencies. No dataflow (stylesheets have none). Usage is also emitted from **`className=`/`class=` in JSX/TSX**, which is where a React/Vue codebase actually consumes its classes — so `references` edges link markup *and* components to the stylesheet that defines them. This is the only cross-language edge at L0, and it makes two questions answerable: *who uses `.menu-item`?* and *which classes are dead?*
 - **Generic tier** (structural heuristics over any tree-sitter grammar): Zig, PowerShell, Elixir, Objective-C, Julia, Vue, Svelte, Astro, Groovy/Gradle, Dart, Verilog/SystemVerilog, SQL, Fortran, Pascal/Delphi, Bash, Apex, Razor, XML project files.
 
 Dataflow & taint analysis covers all 18 dedicated languages (Python, JS/TS,

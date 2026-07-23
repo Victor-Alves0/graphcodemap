@@ -88,10 +88,15 @@ class ChangeSet:
                 "signature_changed": self.signature_changed,
                 "counts": dict(self.counts), "truncated": self.truncated}
 CALLABLE_KINDS = ("function", "method", "class")
+# Alvos válidos de uma aresta `references` (uso de estilo). Cross-language por
+# natureza — o TSX/HTML usa a classe que o CSS define, e o CSS estiliza o id que
+# o HTML declara —, então aqui NÃO se filtra por língua; o kind é o que protege
+# contra religar numa função homônima.
+STYLE_DEF_KINDS = ("css_class", "html_id")
 
 # Versão da lógica de extração/resolução: mudou → força re-index completo,
 # mesmo com content-hashes iguais (o índice é derivado de código+extractor).
-INDEXER_VERSION = "14"
+INDEXER_VERSION = "15"
 
 DEFAULT_IGNORES = [
     ".git/", ".codegraph/", "__pycache__/", ".venv/", "venv/", "node_modules/",
@@ -783,6 +788,13 @@ class Indexer:
                 cands = _dedup_cap(
                     c for c in by_name.get(guess, ())
                     if c["kind"] in kinds and c["language"] == lang)
+            elif e["kind"] == "references":
+                # uso de estilo: `className="card"` no TSX/HTML → `.card` no
+                # CSS. Sem filtro de língua (é justamente o vínculo entre elas);
+                # o kind restrito impede casar com uma função chamada `card`.
+                cands = _dedup_cap(
+                    c for c in by_name.get(guess, ())
+                    if c["kind"] in STYLE_DEF_KINDS)
             else:
                 continue
             if not cands or len(cands) > MAX_CANDIDATES:

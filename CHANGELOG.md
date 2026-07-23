@@ -17,10 +17,28 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
   `<img src>` as imports — skipping external URLs and stripping query strings.
   Measured motivation: routing these through the generic tier yielded **0 symbols
   for HTML** and, for CSS, missed every id while inventing a false `hover`
-  "class" out of `.btn:hover`. Declared limit: asset/class refs stay *dangling*
-  (`dst_name` preserved) because the graph has no file-level symbol to resolve
-  to. HTML/CSS/SCSS join `DEDICATED` but are excluded from the dataflow parity
-  invariant via the new `MARKUP` set — stylesheets have no data flow.
+  "class" out of `.btn:hover`. HTML/CSS/SCSS join `DEDICATED` but are excluded
+  from the dataflow parity invariant via the new `MARKUP` set — stylesheets have
+  no data flow. Declared limit: *asset* refs (`<script src>`, `@import`) stay
+  *dangling* (`dst_name` preserved) because the graph has no file-level symbol
+  to resolve to.
+- **Style usage is linked across languages.** Measuring the extractor above on a
+  real React app exposed that it only delivered half the model: 2 web files
+  produced **597 symbols (24% of the graph) and 597 islands — 0 resolved edges**,
+  because in a modern codebase the consumer of a CSS class is `className=` in
+  TSX, not HTML. The TS/JS extractor now emits `references` for `className=` /
+  `class=` (string literals, static chunks of template literals, and literals
+  inside `clsx(...)`-style calls), and the resolver relinks `references` to
+  `css_class`/`html_id` **without a language filter** — the kind is what prevents
+  binding to a homonymous function (`indexer.STYLE_DEF_KINDS`). An interpolated
+  chunk (`col-${n}`) is a *prefix*, not a class name, and is discarded rather
+  than invented; `className={styles.card}` (CSS Modules) has no literal and
+  yields nothing. Same repo after: **islands 597 → 174 (29%)**, **`references`
+  edges 0 → 689 of 721 resolved**, 688 of them `tsx → css`. The islands that
+  remain are now *signal* — 173 of 595 classes with no use anywhere, i.e. dead
+  CSS, which nothing in the toolchain reported before. CSS `#id` selectors also
+  reference the `html_id` they style, so they stop being islands too. Checked
+  for the obvious regression: zero CSS classes reach the top-30 by rank.
 - **Host-integration API** (for embedding GraphCodeMap as a service, not the CLI):
   - **`index()` now reports which symbols changed** — `stats["changes"]` carries
     `added` / `removed` / `signature_changed` (with `before`/`after` signatures)

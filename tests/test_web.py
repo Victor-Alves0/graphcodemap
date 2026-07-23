@@ -129,3 +129,116 @@ def test_html_local_assets_become_imports(cgweb):
 def test_html_is_dedicated_not_generic(cgweb):
     # regressão do diagnóstico: no tier genérico, HTML rendia ZERO símbolos
     assert _syms(cgweb, "index.html")
+
+
+# -- vínculo cross-language: quem usa a classe que o CSS define ---------------
+#
+# Medido no Flowen (repo React real) ANTES desta religação: 597 símbolos web,
+# 597 ilhas, 0 arestas resolvidas — o extractor via as definições e nenhum uso,
+# porque num app React quem usa classe é `className=` no TSX, não HTML.
+
+TSX = """\
+import { clsx } from "clsx";
+
+export function Card({ on, n }) {
+  return <div className="container main">
+    <b className={`btn ${on ? "is-on" : ""} tail`} />
+    <u className={`col-${n} fixo`} />
+    <i className={clsx("card", on && "is-on")} />
+    <s className={styles.container} />
+    <p class="btn" />
+  </div>;
+}
+"""
+
+
+@pytest.fixture()
+def cgapp(tmp_path):
+    (tmp_path / "index.html").write_text(HTML, encoding="utf-8")
+    (tmp_path / "main.css").write_text(CSS, encoding="utf-8")
+    (tmp_path / "theme.scss").write_text(SCSS, encoding="utf-8")
+    (tmp_path / "Card.tsx").write_text(TSX, encoding="utf-8")
+    g = CodeGraph(tmp_path)
+    g.index()
+    yield g
+    g.close()
+
+
+def _resolved(cg, path, kind="references"):
+    """dst_name -> kind do símbolo alvo, só das arestas RESOLVIDAS."""
+    return {r["dst_name"]: r["k"] for r in cg.indexer.conn.execute(
+        "SELECT e.dst_name, s.kind k FROM edges e JOIN files f ON e.file_id=f.id "
+        "JOIN symbols s ON e.dst=s.id WHERE f.path=? AND e.kind=?", (path, kind))}
+
+
+def test_tsx_classname_resolves_to_css_class(cgapp):
+    got = _resolved(cgapp, "Card.tsx")
+    assert got.get("container") == "css_class"      # string literal simples
+    assert got.get("btn") == "css_class"            # estático dentro de template
+    assert got.get("card") == "css_class"           # literal dentro de clsx(...)
+
+
+def test_html_class_resolves_to_css_class(cgapp):
+    # a modelagem original (HTML usa) agora fecha o ciclo de verdade
+    assert _resolved(cgapp, "index.html").get("container") == "css_class"
+
+
+def test_css_id_resolves_to_the_html_element(cgapp):
+    # `#root` no CSS estiliza o `id="root"` do HTML — sem isto ficava ilhado
+    assert _resolved(cgapp, "main.css").get("root") == "html_id"
+
+
+def test_interpolated_prefix_is_not_a_class_name(cgapp):
+    # `col-${n}` é PREFIXO, não classe: registrar 'col-' seria inventar nome
+    names = _refs(cgapp, "Card.tsx", "references")
+    assert "col-" not in names
+    assert "fixo" in names                          # o vizinho completo entra
+
+
+def test_css_modules_expression_yields_no_reference(cgapp):
+    # `className={styles.container}` não tem literal: nada a afirmar.
+    # 'container' entra pelos OUTROS usos; o que se checa é que não há ref
+    # inventada a partir do acesso a propriedade (senão 'styles' apareceria).
+    assert "styles" not in _refs(cgapp, "Card.tsx", "references")
+
+
+def test_classname_does_not_swallow_the_call(cgapp):
+    # a expressão do atributo continua sendo visitada: clsx(...) segue sendo
+    # uma chamada (qualificada pelo import, como qualquer outra)
+    calls = _refs(cgapp, "Card.tsx", "calls")
+    assert any(c.rsplit(".", 1)[-1] == "clsx" for c in calls), calls
+
+
+def test_reference_never_binds_to_a_homonym_function(tmp_path):
+    # sem filtro de língua, o kind é a única proteção: uma função `btn` não
+    # pode virar alvo de um `className="btn"`
+    (tmp_path / "a.tsx").write_text(
+        'export const A = () => <i className="btn" />;\n', encoding="utf-8")
+    (tmp_path / "b.ts").write_text("export function btn() { return 1; }\n",
+                                   encoding="utf-8")
+    g = CodeGraph(tmp_path)
+    g.index()
+    rows = list(g.indexer.conn.execute(
+        "SELECT s.kind FROM edges e JOIN symbols s ON e.dst=s.id "
+        "WHERE e.kind='references' AND e.dst_name='btn'"))
+    assert [r["kind"] for r in rows] == []          # nenhum css_class existe
+    g.close()
+
+
+def test_unused_css_class_is_detectable_as_dead(tmp_path):
+    """A ilha que SOBRA vira sinal: classe definida e nunca usada.
+
+    Capacidade nova — antes toda classe era ilha, então "sem uso" não
+    distinguia nada. No Flowen isto apontou 173 de 595 classes sem uso.
+    """
+    (tmp_path / "a.css").write_text(".viva { color: red; }\n"
+                                    ".morta { color: blue; }\n", encoding="utf-8")
+    (tmp_path / "a.tsx").write_text(
+        'export const A = () => <i className="viva" />;\n', encoding="utf-8")
+    g = CodeGraph(tmp_path)
+    g.index()
+    dead = {r["name"] for r in g.indexer.conn.execute(
+        "SELECT name FROM symbols WHERE kind='css_class' "
+        "AND NOT EXISTS(SELECT 1 FROM edges e WHERE e.dst=symbols.id)")}
+    assert dead == {"morta"}
+    g.close()

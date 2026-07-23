@@ -2,7 +2,8 @@
 
 Símbolos: funções, arrow functions nomeadas, classes, métodos, interfaces,
 type aliases, enums, const/let de módulo.
-Refs: calls (com rastreio de import), new (→ calls da classe), imports, inherits.
+Refs: calls (com rastreio de import), new (→ calls da classe), imports, inherits,
+references (`className=`/`class=` no JSX → seletor definido no CSS/SCSS).
 """
 
 from __future__ import annotations
@@ -12,6 +13,10 @@ import posixpath
 from .base import BaseExtractor
 
 _FUNCTION_VALUES = {"arrow_function", "function_expression", "function", "generator_function"}
+# `class` cobre Preact/Solid, que não renomeiam o atributo
+_CLASS_ATTRS = {"className", "class"}
+# marcador de trecho interpolado: não pode ser espaço, senão partiria o token
+_HOLE = "\x00"
 
 
 class TsJsExtractor(BaseExtractor):
@@ -57,6 +62,10 @@ class TsJsExtractor(BaseExtractor):
             for c in node.children:
                 self.visit(c)
             return
+        if t == "jsx_attribute":
+            self._jsx_attribute(node)
+            # SEM return: o valor pode conter chamadas (clsx(...), cn(...))
+            # que continuam sendo `calls` como em qualquer outra expressão
         if t == "new_expression":
             ctor = node.child_by_field_name("constructor")
             if ctor is not None and ctor.type == "identifier":
@@ -251,6 +260,52 @@ class TsJsExtractor(BaseExtractor):
                 joined = joined[: -len(ext)]
                 break
         return joined.replace("/", ".").lstrip(".")
+
+    # -- uso de estilo (JSX) --------------------------------------------------
+
+    def _jsx_attribute(self, node) -> None:
+        """`className="card btn"` → uma referência por classe usada.
+
+        Quem DEFINE a classe é a folha de estilo (`.card` vira `css_class`);
+        a marcação apenas usa. O resolver religa esses nomes cross-language.
+        """
+        key = node.named_children[0] if node.named_children else None
+        if key is None or key.type != "property_identifier":
+            return
+        if self.text(key) not in _CLASS_ATTRS:
+            return
+        for value in node.named_children[1:]:
+            tokens: list[str] = []
+            self._collect_classes(value, tokens)
+            for token in tokens:
+                self.add_ref(value, "references", token)
+
+    def _collect_classes(self, node, out: list[str]) -> None:
+        """Nomes de classe ESTÁTICOS sob um valor de atributo.
+
+        `className={styles.card}` (CSS Modules) não tem literal → nada a
+        registrar, e é melhor não registrar do que inventar.
+        """
+        t = node.type
+        if t == "template_string":
+            # um pedaço colado numa interpolação (`col-${n}`) é PREFIXO, não
+            # nome de classe: monta o texto com um furo e descarta o que o toca
+            parts: list[str] = []
+            for c in node.children:
+                if c.type == "string_fragment":
+                    parts.append(self.text(c))
+                elif c.type == "template_substitution":
+                    parts.append(_HOLE)
+                    self._collect_classes(c, out)   # literais dentro do ${...}
+            out.extend(tok for tok in "".join(parts).split() if _HOLE not in tok)
+            return
+        if t == "string":
+            for c in node.named_children:
+                if c.type == "string_fragment":
+                    out.extend(self.text(c).split())
+            return
+        for c in node.named_children:
+            self._collect_classes(c, out)
 
     # -- calls ---------------------------------------------------------------
 

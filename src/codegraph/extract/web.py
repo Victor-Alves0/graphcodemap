@@ -8,12 +8,16 @@ Modelagem (o ponto que o tier genérico erra): **o CSS define, o HTML usa.**
   definido no CSS). E `<script src>` / `<link href>` / `<img src>` viram
   `imports`, registrando a dependência entre arquivos.
 
-Limite declarado (docs/DESIGN.md §3.1 — nunca esconder o que não se sabe):
-o grafo não tem símbolo de ARQUIVO, e o resolver só religa nome nu para
-`calls`/`inherits`. Então os refs de asset e de classe ficam *dangling*
-(`dst=NULL`) com o `dst_name` preservado: a dependência é registrada e legível,
-mas ainda não é navegável como aresta resolvida. Melhorar isso exige símbolo de
-módulo/arquivo — decisão de design separada.
+O consumidor de uma classe raramente é HTML: num app React/Vue ele é o
+`className=` do TSX. Por isso o uso é emitido também pelo extractor TS/JS, e o
+resolver religa `references` → `css_class`/`html_id` SEM filtro de língua
+(indexer.STYLE_DEF_KINDS). É a única aresta cross-language do L0.
+
+Limite declarado (docs/DESIGN.md §3.1 — nunca esconder o que não se sabe): os
+refs de ASSET (`<script src>`, `@import`) seguem *dangling* (`dst=NULL`) com o
+`dst_name` preservado — o grafo não tem símbolo de ARQUIVO para ser o alvo. A
+dependência fica registrada e legível, mas não navegável como aresta resolvida;
+resolvê-la exige símbolo de módulo/arquivo, decisão de design separada.
 
 `<script>` inline não é parseado como JS aqui (o span do elemento é indexado;
 a análise de JS embutido seria outro extractor).
@@ -134,6 +138,10 @@ class CssExtractor(BaseExtractor):
             return                      # mesma classe redefinida (ex.: @media)
         self._seen.add((kind, name))
         self.add_sym(node, kind, name, signature=self.text(node).strip())
+        if kind == "css_id":
+            # `#app` é seletor (definição de regra) E uso do elemento que o
+            # HTML declara com `id="app"` — sem isto o `css_id` fica ilhado
+            self.add_ref(node, "references", name)
 
     def _named_at_rule(self, node) -> None:
         n = node.child_by_field_name("name")
