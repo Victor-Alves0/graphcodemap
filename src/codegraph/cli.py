@@ -22,7 +22,8 @@ def cmd_index(args) -> int:
     ix = Indexer(args.root, args.db)
     t0 = time.perf_counter()
     stats = ix.index_repo(force=args.force, scope=getattr(args, "scope", None),
-                          workers=getattr(args, "workers", None))
+                          workers=getattr(args, "workers", None),
+                          exclude=getattr(args, "exclude", None))
     dt = time.perf_counter() - t0
     from .indexer import get_index_scopes
 
@@ -278,6 +279,10 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--workers", type=int, default=None,
                     help="threads de prepare no índice (default: min(4, CPUs); "
                          "1 = serial). A escrita no SQLite é sempre serial.")
+    sp.add_argument("--exclude", action="append", default=None, metavar="PADRAO",
+                    help="padrão estilo gitignore a excluir (repetível). Fica "
+                         "guardado no índice — não escreve nada no repo. "
+                         "Substitui a política anterior; use --exclude '' p/ limpar")
     sp.set_defaults(fn=cmd_index)
 
     sp = sub.add_parser("refine", help="refinamento L1: promove arestas a 'certain'")

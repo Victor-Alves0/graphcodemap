@@ -29,9 +29,9 @@ def _count_sweeps(monkeypatch):
     calls = {"n": 0}
     real = q.scan_source_stats
 
-    def counting(root, spec=None, scopes=None):
+    def counting(*a, **kw):          # tolerante a novos parâmetros da varredura
         calls["n"] += 1
-        return real(root, spec, scopes)
+        return real(*a, **kw)
 
     monkeypatch.setattr(q, "scan_source_stats", counting)
     return calls

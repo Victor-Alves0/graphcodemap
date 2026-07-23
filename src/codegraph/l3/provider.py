@@ -51,6 +51,26 @@ def openrouter_key_model(root: Path) -> tuple[str, str] | None:
     return key, (get("CODEGRAPH_L3_MODEL") or DEFAULT_MODEL)
 
 
+def make_provider(api_key: str, model: str | None = None, timeout: float = 60.0):
+    """Provider a partir de uma chave EXPLÍCITA — sem tocar em os.environ.
+
+    Para hosts multi-usuário: a chave é do usuário final (guardada cifrada, por
+    requisição), e mexer no env global por chamada é corrida entre requisições
+    além de esconder o custo do ledger do host. O objeto devolvido expõe
+    `.usage` (tokens acumulados), então o custo fica atribuível por chamada."""
+    return OpenRouterProvider(api_key, model or DEFAULT_MODEL, timeout)
+
+
+def coerce_provider(llm):
+    """Aceita callable `(system, user) -> str`, ou uma chave de API (str), ou
+    None. Devolve um provider utilizável ou None."""
+    if llm is None:
+        return None
+    if isinstance(llm, str):
+        return make_provider(llm)
+    return llm
+
+
 def provider_from_env(root: Path):
     dotenv = _load_dotenv(root)
 

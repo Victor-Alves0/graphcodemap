@@ -60,6 +60,14 @@ def extract(lang: str, source: bytes, module_fqn: str, tree) -> tuple[list[Sym],
         from .clojure import ClojureExtractor
 
         return ClojureExtractor(source, module_fqn).run(tree)
+    if lang == "html":
+        from .web import HtmlExtractor
+
+        return HtmlExtractor(source, module_fqn).run(tree)
+    if lang in ("css", "scss"):
+        from .web import CssExtractor
+
+        return CssExtractor(source, module_fqn).run(tree)
     if lang == "markdown":
         from .docs import MarkdownExtractor
 

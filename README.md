@@ -98,11 +98,36 @@ for s in cg.find_symbol("validate"):
     print(s.fqn, s.kind, f"{s.path}:{s.start_line}")
 ```
 
+### Embedding it (host API)
+
+Beyond the CLI, the library is built to be embedded by a service:
+
+```python
+# the index tells you what changed — close the edit loop without a git diff
+cg = CodeGraph(repo, llm=user_api_key)      # credential injected, never from env
+changes = cg.index(exclude=["vendor/", "*.min.css"])["changes"]
+for c in changes["signature_changed"]:
+    print(c["fqn"], c["before"], "->", c["after"])
+    cg.impact(c["fqn"])                     # who breaks if this ships?
+
+cg.describe("auth.TokenService", llm=other_users_key)   # per-call credential
+```
+
+- **`index()["changes"]`** — `added` / `removed` / `signature_changed`
+  (with `before`/`after`), exact `counts`, `truncated` flag.
+- **`llm=`** on the constructor or per call: a callable `(system, user) -> str`
+  or an API key. Multi-tenant safe (no global env mutation) and the provider
+  exposes `.usage` so cost stays attributable.
+- **`exclude=`** — gitignore-style patterns stored *in the index*, so the policy
+  is the host's without writing files into the user's working copy.
+- **`doctor()`** returns `root_name`, never the absolute server path.
+
 ## Languages
 
 Three tiers:
 
 - **Dedicated extractors** (refined fqn/imports/calls): Python, TypeScript/TSX, JavaScript, Rust, Go, Java, Kotlin, C#, C, C++/CUDA/Metal, PHP, Ruby, Lua/Luau, Swift, Scala, Clojure/ClojureScript.
+- **Web markup/style** (dedicated too): HTML and CSS/SCSS — CSS *defines* selectors (`css_class`/`css_id`, plus SCSS `@mixin`/`@function`); HTML contributes `id` anchors, treats `class="…"` as *usage* of those selectors, and records `<script src>`/`<link href>` as file dependencies. No dataflow (stylesheets have none).
 - **Generic tier** (structural heuristics over any tree-sitter grammar): Zig, PowerShell, Elixir, Objective-C, Julia, Vue, Svelte, Astro, Groovy/Gradle, Dart, Verilog/SystemVerilog, SQL, Fortran, Pascal/Delphi, Bash, Apex, Razor, XML project files.
 
 Dataflow & taint analysis covers all 18 dedicated languages (Python, JS/TS,

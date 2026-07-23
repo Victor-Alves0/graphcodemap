@@ -278,7 +278,7 @@ def _age(seconds) -> str:
 
 
 def doctor(d) -> str:
-    lines = [f"saúde do índice — {d['root']}",
+    lines = [f"saúde do índice — {d.get('root_name', '?')}",
              f"  indexer v{d['indexer_version']}  •  último scan completo: "
              f"{_age(d['last_full_scan_age_s'])}"]
 

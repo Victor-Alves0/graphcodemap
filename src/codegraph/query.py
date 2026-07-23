@@ -12,7 +12,8 @@ import time
 from dataclasses import dataclass, field
 
 from .community import ensure_communities
-from .indexer import Indexer, get_index_scopes, scan_source_stats
+from .indexer import (Indexer, get_index_excludes, get_index_scopes,
+                      scan_source_stats)
 from .languages import get_parser
 from .rank import ensure_ranks
 from .util import like_escape
@@ -127,7 +128,9 @@ class QueryEngine:
         self._last_full_sweep = time.monotonic()
         # com índice parcial, varre só as subárvores indexadas (barato em
         # monorepo grande); sem escopo, o repo inteiro.
-        on_disk = scan_source_stats(self.root, scopes=get_index_scopes(self.conn) or None)
+        on_disk = scan_source_stats(
+            self.root, scopes=get_index_scopes(self.conn) or None,
+            excludes=get_index_excludes(self.conn) or None)
         stale: set[str] = set()
         for r in self.conn.execute("SELECT path, size, mtime FROM files"):
             cur = on_disk.get(r["path"])
@@ -839,16 +842,24 @@ class QueryEngine:
         data = build_graph_data(self.conn, level=level, scope=scope, top=top)
         return data, env
 
-    def describe(self, target: str, refresh: bool = False):
+    def describe(self, target: str, refresh: bool = False, llm=None):
         """Camada L3: descrição de comportamento (símbolo ou módulo/arquivo).
 
         Frescor verificado na leitura: código mudou → STALE declarado no
         envelope (refresh=True re-gera).
+
+        `llm` injeta a credencial POR CHAMADA (callable `(system, user) -> str`
+        ou a própria chave de API). Sem ele cai no provider do engine e, por
+        último, no env. Num host multi-usuário, injetar evita a corrida de mexer
+        em os.environ por requisição e mantém o custo atribuível.
         """
         from .l3 import Describer
+        from .l3.provider import coerce_provider
 
         env = Envelope()
-        describer = Describer(self.root, self.conn, provider=self.l3_provider)
+        describer = Describer(
+            self.root, self.conn,
+            provider=coerce_provider(llm) or self.l3_provider)
         norm = target.replace("\\", "/").strip("/")
         if norm.startswith("domain:"):
             ensure_communities(self.conn)
@@ -943,7 +954,10 @@ class QueryEngine:
         last_scan = meta.get("last_full_scan")
         age = (int(_time.time()) - int(last_scan)) if last_scan else None
         return {
-            "root": str(self.root),
+            # só o NOME do diretório: o caminho absoluto do servidor não é
+            # informação do consumidor (todo host teria de removê-lo), e o
+            # payload do MCP/API não deve expor o layout do disco.
+            "root_name": self.root.name,
             "indexer_version": meta.get("indexer_version"),
             "files": g("SELECT COUNT(*) FROM files"),
             "symbols": g("SELECT COUNT(*) FROM symbols"),

@@ -44,6 +44,49 @@ INDEX_WORKERS_MAX = 4            # ponto ótimo medido (acima, contenção de GI
 # mantêm o WAL pequeno e tornam o índice resumível se interrompido.
 WRITE_CHUNK = 50_000             # linhas por commit nas escritas em massa
 CHECKPOINT_EVERY_BATCHES = 20    # a cada N commits de arquivo, encolhe o WAL
+MAX_TRACKED_CHANGES = 1000       # teto das listas de mudança (contadores são exatos)
+
+
+class ChangeSet:
+    """Símbolos que entraram, saíram ou mudaram de ASSINATURA numa passada.
+
+    Fecha o loop de quem edita código: reindexa → sabe que `save_user` mudou de
+    assinatura → chama `impact()` e avisa antes de commitar, sem precisar de
+    diff de git nem adivinhar o símbolo. O indexador já sabia disso (apaga os
+    símbolos antigos e insere os novos); só não contava.
+
+    As listas são limitadas (`truncated`) para não estourar num índice inicial
+    de repo inteiro; os CONTADORES são sempre exatos."""
+
+    def __init__(self, cap: int = MAX_TRACKED_CHANGES) -> None:
+        self.cap = cap
+        self.added: list[str] = []
+        self.removed: list[str] = []
+        self.signature_changed: list[dict] = []
+        self.counts = {"added": 0, "removed": 0, "signature_changed": 0}
+        self.truncated = False
+
+    def _push(self, bucket: list, key: str, item) -> None:
+        self.counts[key] += 1
+        if len(bucket) < self.cap:
+            bucket.append(item)
+        else:
+            self.truncated = True
+
+    def add(self, fqn: str) -> None:
+        self._push(self.added, "added", fqn)
+
+    def remove(self, fqn: str) -> None:
+        self._push(self.removed, "removed", fqn)
+
+    def signature(self, fqn: str, before: str | None, after: str | None) -> None:
+        self._push(self.signature_changed, "signature_changed",
+                   {"fqn": fqn, "before": before, "after": after})
+
+    def as_dict(self) -> dict:
+        return {"added": self.added, "removed": self.removed,
+                "signature_changed": self.signature_changed,
+                "counts": dict(self.counts), "truncated": self.truncated}
 CALLABLE_KINDS = ("function", "method", "class")
 
 # Versão da lógica de extração/resolução: mudou → força re-index completo,
@@ -57,17 +100,20 @@ DEFAULT_IGNORES = [
 ]
 
 
-def _ignore_lines(root: Path) -> list[str]:
+def _ignore_lines(root: Path, extra: list[str] | None = None) -> list[str]:
     lines = list(DEFAULT_IGNORES)
     for name in (".gitignore", ".codegraphignore"):
         p = root / name
         if p.is_file():
             lines += p.read_text(encoding="utf-8", errors="replace").splitlines()
+    if extra:
+        lines += list(extra)          # política do host (meta), sem tocar o repo
     return lines
 
 
-def load_ignore_spec(root: Path) -> pathspec.PathSpec:
-    return pathspec.GitIgnoreSpec.from_lines(_ignore_lines(root))
+def load_ignore_spec(root: Path,
+                     extra: list[str] | None = None) -> pathspec.PathSpec:
+    return pathspec.GitIgnoreSpec.from_lines(_ignore_lines(root, extra))
 
 
 def _file_ignore_spec(lines: list[str]) -> pathspec.PathSpec:
@@ -96,14 +142,32 @@ def in_scope(rel: str, scopes: list[str] | None) -> bool:
     return any(rel == s or rel.startswith(s + "/") for s in scopes)
 
 
-def get_index_scopes(conn) -> list[str]:
-    row = conn.execute("SELECT value FROM meta WHERE key='index_scopes'").fetchone()
+def _get_meta_list(conn, key: str) -> list[str]:
+    row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     if row is None or not row["value"]:
         return []
     try:
         return list(json.loads(row["value"]))
     except (ValueError, TypeError):
         return []
+
+
+def _set_meta_list(conn, key: str, values: list[str]) -> None:
+    conn.execute("INSERT INTO meta(key, value) VALUES(?, ?) "
+                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                 (key, json.dumps(values)))
+    conn.commit()
+
+
+def get_index_scopes(conn) -> list[str]:
+    return _get_meta_list(conn, "index_scopes")
+
+
+def get_index_excludes(conn) -> list[str]:
+    """Padrões de exclusão (estilo gitignore) guardados no índice — política do
+    HOST, sem exigir escrever `.codegraphignore` na working copy do usuário.
+    Complemento negativo do escopo."""
+    return _get_meta_list(conn, "index_excludes")
 
 
 def _scope_roots(root: Path, scopes: list[str] | None) -> list[tuple[Path, str]]:
@@ -130,7 +194,8 @@ def iter_source_files(root: Path, spec: pathspec.PathSpec | None = None,
 
 def scan_source_stats(root: Path,
                       spec: pathspec.PathSpec | None = None,
-                      scopes: list[str] | None = None) -> dict[str, tuple[int, int]]:
+                      scopes: list[str] | None = None,
+                      excludes: list[str] | None = None) -> dict[str, tuple[int, int]]:
     """``{rel: (size, int(mtime))}`` de todos os arquivos-fonte, via ``os.scandir``.
 
     size/mtime vêm da leitura do diretório (no Windows, sem syscall extra por
@@ -138,7 +203,7 @@ def scan_source_stats(root: Path,
     pela varredura de frescor (read-repair de resultado vazio) para que ela possa
     rodar a CADA query sem custo proibitivo, preservando a garantia anti-staleness
     em escala. Mesmo conjunto de arquivos que ``iter_source_files``."""
-    lines = _ignore_lines(root)
+    lines = _ignore_lines(root, excludes)
     dir_spec = spec or pathspec.GitIgnoreSpec.from_lines(lines)  # poda de diretório
     file_spec = _file_ignore_spec(lines)                        # check de arquivo (barato)
     out: dict[str, tuple[int, int]] = {}
@@ -190,6 +255,10 @@ class Indexer:
         self.root = Path(root).resolve()
         self.db_path = Path(db_path) if db_path else default_db_path(self.root)
         self.conn = connect(self.db_path)
+        # coletor da passada corrente (escrita é sempre single-thread) e o
+        # resultado da última — ver ChangeSet.
+        self._changes: ChangeSet | None = None
+        self.last_changes: dict | None = None
 
     def close(self) -> None:
         self.conn.close()
@@ -221,7 +290,9 @@ class Indexer:
     # -- indexação -----------------------------------------------------------
 
     def index_repo(self, force: bool = False, scope: str | None = None,
-                   workers: int | None = None) -> dict:
+                   workers: int | None = None,
+                   exclude: list[str] | None = None) -> dict:
+        self._changes = ChangeSet()      # ver stats["changes"] no retorno
         row = self.conn.execute(
             "SELECT value FROM meta WHERE key='indexer_version'").fetchone()
         if row is None or row["value"] != INDEXER_VERSION:
@@ -244,7 +315,14 @@ class Indexer:
                 (json.dumps(scopes),))
             self.conn.commit()
         scope_arg = scopes or None
-        spec = load_ignore_spec(self.root)
+        # exclusões: política do host guardada no índice. `exclude=None` mantém
+        # a salva; uma lista SUBSTITUI (é política, não acumulável como o
+        # escopo); `[]` limpa. Nunca exige escrever arquivo no repo do usuário.
+        if exclude is not None:
+            _set_meta_list(self.conn, "index_excludes",
+                           [str(p) for p in exclude if str(p).strip()])
+        excludes = get_index_excludes(self.conn)
+        spec = load_ignore_spec(self.root, excludes)
         files = list(iter_source_files(self.root, spec, scope_arg))
         if workers is None:
             workers = min(INDEX_WORKERS_MAX, os.cpu_count() or 1)
@@ -269,6 +347,9 @@ class Indexer:
             (str(int(time.time())),),
         )
         self.conn.commit()
+        stats["changes"] = self._changes.as_dict()
+        self.last_changes = stats["changes"]
+        self._changes = None
         return stats
 
     def diagnose_file(self, rel: str) -> str | None:
@@ -292,8 +373,21 @@ class Indexer:
         return None
 
     def index_file(self, rel: str, force: bool = False, data: bytes | None = None) -> bool:
-        """Re-indexa um arquivo (com retry-on-locked p/ escrita concorrente)."""
-        return retry_on_locked(lambda: self._index_file(rel, force=force, data=data))
+        """Re-indexa um arquivo (com retry-on-locked p/ escrita concorrente).
+
+        Popula `self.last_changes` com os símbolos que entraram/saíram/mudaram
+        de assinatura — a menos que já haja uma passada maior coletando (ex.:
+        index_repo), caso em que contribui para ela."""
+        own = self._changes is None
+        if own:
+            self._changes = ChangeSet()
+        try:
+            return retry_on_locked(
+                lambda: self._index_file(rel, force=force, data=data))
+        finally:
+            if own:
+                self.last_changes = self._changes.as_dict()
+                self._changes = None
 
     def _index_file(self, rel: str, force: bool = False, data: bytes | None = None) -> bool:
         """Re-indexa um arquivo em transação PRÓPRIA (caminho incremental:
@@ -512,8 +606,16 @@ class Indexer:
         manutenção dos índices de edges, não por esta escrita.)"""
         _, row, st, lang, h, syms, refs, status = prep
         saved_descriptions: list = []
+        track = self._changes
+        old_sigs: dict[str, str | None] = {}
         if row is not None:
             file_id = row["id"]
+            if track is not None:
+                # só para arquivo PRÉ-EXISTENTE: no índice inicial não há
+                # consulta extra (tudo é 'added', derivado dos próprios syms)
+                old_sigs = {r["fqn"]: r["signature"] for r in cur.execute(
+                    "SELECT fqn, signature FROM symbols WHERE file_id=?",
+                    (file_id,))}
             # descrições L3 sobrevivem ao re-index (ids de símbolo são estáveis;
             # source_hash antigo preservado → stale detectável)
             saved_descriptions = cur.execute(
@@ -538,6 +640,19 @@ class Indexer:
                 (rel, lang, h, st.st_size, int(st.st_mtime), status,
                  int(time.time())))
             file_id = cur.lastrowid
+
+        if track is not None:
+            new_sigs: dict[str, str | None] = {}
+            for s in syms:
+                new_sigs.setdefault(s.fqn, s.signature)
+            for fqn, sig in new_sigs.items():
+                if fqn not in old_sigs:
+                    track.add(fqn)
+                elif (old_sigs[fqn] or "") != (sig or ""):
+                    track.signature(fqn, old_sigs[fqn], sig)
+            for fqn in old_sigs:
+                if fqn not in new_sigs:
+                    track.remove(fqn)
 
         ordinals: dict[tuple[str, str], int] = {}
         fqn_to_uid: dict[str, str] = {}
@@ -599,6 +714,10 @@ class Indexer:
         row = self.conn.execute("SELECT id FROM files WHERE path=?", (rel,)).fetchone()
         if row is None:
             return
+        if self._changes is not None:      # arquivo sumiu → símbolos saíram
+            for r in self.conn.execute(
+                    "SELECT fqn FROM symbols WHERE file_id=?", (row["id"],)):
+                self._changes.remove(r["fqn"])
         self.conn.execute(
             "DELETE FROM symbols_fts WHERE symbol_id IN "
             "(SELECT id FROM symbols WHERE file_id=?)", (row["id"],))

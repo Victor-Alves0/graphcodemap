@@ -13,7 +13,8 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from .indexer import Indexer, get_index_scopes, in_scope, load_ignore_spec
+from .indexer import (Indexer, get_index_excludes, get_index_scopes, in_scope,
+                      load_ignore_spec)
 from .languages import language_for
 from .log import get as _get_log
 
@@ -27,8 +28,9 @@ class Watcher:
         self._db_path = db_path
         self.debounce = debounce
         self.ix: Indexer | None = None  # criado na thread do drain
-        self.spec = load_ignore_spec(self.root)
-        self._scopes = self._load_scopes()   # índice parcial: ignora fora do escopo
+        self._scopes, self._excludes = self._load_policy()
+        # spec inclui as exclusões do host (meta), não só os ignores do repo
+        self.spec = load_ignore_spec(self.root, self._excludes)
         self._pending: set[str] = set()
         self._full_rescan = False
         self._lock = threading.Lock()
@@ -36,17 +38,20 @@ class Watcher:
         self._timer: threading.Timer | None = None
         self._observer = None
 
-    def _load_scopes(self) -> list[str]:
+    def _load_policy(self) -> tuple[list[str], list[str]]:
+        """(escopos, exclusões) persistidos no índice — o watcher respeita a
+        mesma política do index_repo, senão editar um arquivo fora do escopo (ou
+        excluído) o traria de volta ao grafo pelas costas."""
         from .db import connect, default_db_path
 
         try:
             conn = connect(self._db_path or default_db_path(self.root))
             try:
-                return get_index_scopes(conn)
+                return get_index_scopes(conn), get_index_excludes(conn)
             finally:
                 conn.close()
         except Exception:
-            return []
+            return [], []
 
     # -- eventos -------------------------------------------------------------
 

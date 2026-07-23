@@ -21,13 +21,26 @@ __version__ = "0.1.0"
 class CodeGraph:
     """Fachada: indexação + consultas sobre um repositório."""
 
-    def __init__(self, root: str | Path, db_path: str | Path | None = None) -> None:
+    def __init__(self, root: str | Path, db_path: str | Path | None = None,
+                 llm=None) -> None:
+        """`llm`: provider L3 injetado — callable `(system, user) -> str` ou a
+        própria chave de API. Evita depender de os.environ/.env (essencial para
+        host multi-usuário, onde a chave é do usuário e o custo precisa ficar
+        atribuível). Também pode ser passado por chamada em `describe(llm=...)`."""
+        from .l3.provider import coerce_provider
+
         self.indexer = Indexer(root, db_path)
         self.query = QueryEngine(self.indexer)
+        self.query.l3_provider = coerce_provider(llm)
 
     def index(self, force: bool = False, scope: str | None = None,
-              workers: int | None = None) -> dict:
-        return self.indexer.index_repo(force=force, scope=scope, workers=workers)
+              workers: int | None = None, exclude: list[str] | None = None) -> dict:
+        """Indexa. O retorno inclui `changes` (símbolos que entraram/saíram/
+        mudaram de assinatura). `exclude` é a política de exclusão do host
+        (padrões estilo gitignore), guardada no índice — sem escrever arquivo
+        no repo do usuário; `None` mantém a salva, `[]` limpa."""
+        return self.indexer.index_repo(force=force, scope=scope, workers=workers,
+                                       exclude=exclude)
 
     def find_symbol(self, query: str, kind: str | None = None, limit: int = 10):
         return self.query.find_symbol(query, kind=kind, limit=limit)
@@ -69,8 +82,8 @@ class CodeGraph:
                 depth: int = 8):
         return self.query.reaches(selector, sink=sink, via=via, depth=depth)
 
-    def describe(self, target: str, refresh: bool = False):
-        return self.query.describe(target, refresh=refresh)
+    def describe(self, target: str, refresh: bool = False, llm=None):
+        return self.query.describe(target, refresh=refresh, llm=llm)
 
     def stats(self) -> dict:
         return self.query.stats()

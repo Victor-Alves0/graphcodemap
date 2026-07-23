@@ -38,6 +38,8 @@ EXT_TO_LANG: dict[str, str] = {
     ".scala": "scala",
     ".clj": "clojure", ".cljs": "clojure", ".cljc": "clojure",
     ".edn": "clojure",
+    ".html": "html", ".htm": "html",
+    ".css": "css", ".scss": "scss",
     # --- nível genérico (heurística estrutural) ---
     ".zig": "zig",
     ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
@@ -65,10 +67,16 @@ EXT_TO_LANG: dict[str, str] = {
     ".toml": "toml",
 }
 
+# Marcação/estilo: têm extractor dedicado (estrutura navegável: seletores,
+# âncoras, dependências entre arquivos), mas NÃO têm fluxo de dados — dataflow/
+# taint não se aplica a HTML/CSS. Separado para a paridade "toda linguagem de
+# programação dedicada tem dataflow" continuar significando o que diz.
+MARKUP = {"html", "css", "scss"}
+
 # linguagens com extractor dedicado (extract/__init__.py)
 DEDICATED = {"python", "typescript", "tsx", "javascript", "rust", "go", "java",
              "kotlin", "csharp", "c", "cpp", "cuda", "php",
-             "ruby", "lua", "luau", "swift", "scala", "clojure"}
+             "ruby", "lua", "luau", "swift", "scala", "clojure"} | MARKUP
 
 
 def language_for(path: str) -> str | None:

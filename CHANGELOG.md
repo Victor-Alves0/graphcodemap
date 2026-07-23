@@ -8,6 +8,42 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Dedicated HTML and CSS/SCSS extractors.** Modelled the way the languages
+  actually work: **CSS defines, HTML uses.** CSS/SCSS emit a symbol per class
+  (`css_class`) and id (`css_id`) selector, plus SCSS `@mixin`/`@function`, and
+  `@import`/`@use` become import refs. HTML emits `html_id` symbols for `id=`
+  anchors, turns `class="a b"` into *references* (the definition lives in the
+  stylesheet, not the markup), and records `<script src>` / `<link href>` /
+  `<img src>` as imports — skipping external URLs and stripping query strings.
+  Measured motivation: routing these through the generic tier yielded **0 symbols
+  for HTML** and, for CSS, missed every id while inventing a false `hover`
+  "class" out of `.btn:hover`. Declared limit: asset/class refs stay *dangling*
+  (`dst_name` preserved) because the graph has no file-level symbol to resolve
+  to. HTML/CSS/SCSS join `DEDICATED` but are excluded from the dataflow parity
+  invariant via the new `MARKUP` set — stylesheets have no data flow.
+- **Host-integration API** (for embedding GraphCodeMap as a service, not the CLI):
+  - **`index()` now reports which symbols changed** — `stats["changes"]` carries
+    `added` / `removed` / `signature_changed` (with `before`/`after` signatures)
+    plus exact `counts` and a `truncated` flag. This closes the edit loop: reindex
+    → see that `save_user` changed signature → run `impact()` and warn before
+    committing, with no git diff and no guessing the symbol. The indexer already
+    knew this (it deletes the old symbols and inserts the new); it just never
+    reported it. Costs one indexed lookup per *pre-existing* file, so a first
+    index pays nothing. Also on `Indexer.index_file` via `last_changes`.
+  - **Injectable L3 credential**: `CodeGraph(root, llm=...)` and
+    `describe(target, llm=...)` accept a callable `(system, user) -> str` **or an
+    API key string**, bypassing `os.environ`/`.env` entirely. Multi-tenant hosts
+    hold a per-user key and can't mutate global env per request (race) nor lose
+    the cost from their ledger — the provider exposes `.usage`.
+  - **`index(exclude=[...])`**: gitignore-style exclusion patterns stored in the
+    index (`meta['index_excludes']`), so the policy belongs to the host without
+    writing `.codegraphignore` into the user's working copy. The negative
+    complement of `scope`. Honoured by indexing, the freshness sweep and the
+    watcher. `None` keeps the stored policy, a list replaces it, `[]` clears.
+  - **`doctor()` no longer returns the absolute server path** — `root` was
+    replaced by `root_name` (directory name only), so MCP/API payloads don't
+    expose the server's filesystem layout and hosts don't have to strip it.
+
 - **Partial / scoped indexing** (`index --scope <subtree>`, `CodeGraph.index(scope=...)`).
   Index only the subtree(s) you care about — the escape hatch for monorepos too
   big or too dense to index whole (the scale proof showed the full Linux kernel,
