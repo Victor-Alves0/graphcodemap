@@ -133,7 +133,10 @@ class CssExtractor(BaseExtractor):
         n = next((c for c in node.named_children if c.type == name_type), None)
         if n is None:
             return                      # ex.: `&__inner` (nesting SCSS), sem nome
-        name = self.text(n).strip()
+        # o seletor escapa o que não é identificador (`.mt-1\.5`,
+        # `.hover\:bg-blue` — o padrão do Tailwind), mas o atributo no HTML/JSX
+        # traz o nome CRU: sem desescapar, as duas pontas nunca se encontram
+        name = self.text(n).strip().replace("\\", "")
         if not name or (kind, name) in self._seen:
             return                      # mesma classe redefinida (ex.: @media)
         self._seen.add((kind, name))

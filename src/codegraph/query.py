@@ -227,12 +227,6 @@ class QueryEngine:
 
     def _find_rows(self, query: str, kind: str | None, limit: int) -> list:
         rows = self._search_tiers(query, kind, limit, only_code=False)[:limit]
-        if kind is not None:
-            return rows                      # o chamador já escolheu o kind
-        code = [r for r in rows if r["kind"] not in LOW_INFO_KINDS]
-        quota = limit // 2
-        if len(code) >= quota:
-            return rows
         # Piso de código. Marcação/estilo são numerosos e pouco informativos:
         # num app React `.menu-item`, `.title-menu` etc. tomavam 10 de 10 slots
         # de find_symbol("menu"). Pior, um símbolo camelCase como
@@ -240,17 +234,28 @@ class QueryEngine:
         # que nunca rodava, porque os níveis anteriores já tinham enchido o
         # limite. Uma segunda passada restrita a código não é reordenação: é
         # alcançar o que a primeira nem chegou a consultar.
-        have = {r["id"] for r in rows}
-        more = [r for r in self._search_tiers(query, kind, limit, only_code=True)
-                if r["id"] not in have]
-        need = min(quota - len(code), len(more))
-        if need:
-            rows = rows[:limit - need] + more[:need]
+        #   `kind=` explícito é escolha do chamador — o piso não se aplica.
+        #   Resultado vazio: a passada restrita é um SUBCONJUNTO da primeira,
+        #   então também viria vazia; e é o caminho caro (dispara a varredura
+        #   de frescor), onde queries à toa custam.
+        quota = limit // 2
+        if rows and kind is None:
+            code = [r for r in rows if r["kind"] not in LOW_INFO_KINDS]
+            if len(code) < quota:
+                have = {r["id"] for r in rows}
+                more = [r for r in self._search_tiers(query, kind, limit,
+                                                      only_code=True)
+                        if r["id"] not in have]
+                need = min(quota - len(code), len(more))
+                if need:
+                    rows = rows[:limit - need] + more[:need]
         # Estar no resultado não basta: no fim da lista o código continua sem
         # ser visto. Casamento EXATO no topo (buscar "menu" deve mostrar `.menu`
         # primeiro, seja ele CSS), código antes de marcação, e o resto na ordem
         # dos níveis — `sort` é estável, então a precisão do casamento sobrevive
-        # como desempate dentro de cada grupo.
+        # como desempate dentro de cada grupo. Aplicado SEMPRE: ordenar só no
+        # ramo do piso deixaria a ordenação dependendo de quanta marcação o repo
+        # tem, que é exatamente o tipo de inconsistência difícil de depurar.
         rows.sort(key=lambda r: (r["fqn"] != query and r["name"] != query,
                                  r["kind"] in LOW_INFO_KINDS))
         return rows

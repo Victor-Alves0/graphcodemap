@@ -225,6 +225,28 @@ def test_reference_never_binds_to_a_homonym_function(tmp_path):
     g.close()
 
 
+def test_escaped_selector_matches_the_raw_attribute(tmp_path):
+    """`.mt-1\\.5` no CSS é a classe `mt-1.5` no atributo (padrão do Tailwind).
+
+    Trava duas coisas de uma vez: desescapar o seletor, e o ramo `references`
+    do resolver vir ANTES do ramo de guess qualificado — com o ponto no nome,
+    aquele ramo procuraria por um símbolo chamado "5" e a classe seria
+    permanentemente inalcançável.
+    """
+    (tmp_path / "a.css").write_text(
+        ".mt-1\\.5 { margin: 4px; }\n.hover\\:bg { color: red; }\n",
+        encoding="utf-8")
+    (tmp_path / "a.tsx").write_text(
+        'export const A = () => <i className="mt-1.5 hover:bg" />;\n',
+        encoding="utf-8")
+    g = CodeGraph(tmp_path)
+    g.index()
+    got = _resolved(g, "a.tsx")
+    assert got.get("mt-1.5") == "css_class"
+    assert got.get("hover:bg") == "css_class"
+    g.close()
+
+
 # -- refs de asset agora têm alvo: o símbolo de ARQUIVO -----------------------
 #
 # Era o limite declarado do commit anterior: `<script src>` / `@import` ficavam
@@ -286,6 +308,49 @@ def test_external_url_never_resolves(cgassets):
     # CDN não é arquivo do repo: continua sem alvo, e é o correto
     assert not any("cdn.example.com" in n
                    for n in _refs(cgassets, "index.html", "imports"))
+
+
+def test_relative_asset_import_from_tsx_resolves(tmp_path):
+    # `import "./styles.css"` é o padrão de todo app React. Virava fqn
+    # pontilhado (`src.styles.css`), destruindo o caminho — e nunca resolvia.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "styles.css").write_text(".x { color: red; }\n",
+                                                 encoding="utf-8")
+    (tmp_path / "src" / "App.tsx").write_text(
+        'import "./styles.css";\nexport const A = () => <i className="x" />;\n',
+        encoding="utf-8")
+    g = CodeGraph(tmp_path)
+    g.index()
+    assert _import_targets(g, "src/App.tsx")["./styles.css"] == "src/styles.css"
+    g.close()
+
+
+def test_bare_specifier_never_binds_to_a_homonym_file(tmp_path):
+    # `import "constants"` resolve para node_modules, NÃO para o irmão
+    # constants.ts — resolver por caminho inventava aresta local para toda
+    # dependência externa homônima de um arquivo do repo
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "constants.ts").write_text("export const X = 1;\n",
+                                                   encoding="utf-8")
+    (tmp_path / "src" / "a.ts").write_text('import "constants";\n',
+                                           encoding="utf-8")
+    g = CodeGraph(tmp_path)
+    g.index()
+    assert _import_targets(g, "src/a.ts") == {}
+    g.close()
+
+
+def test_root_init_file_symbol_has_a_name(tmp_path):
+    # `__init__.py` na raiz tem module fqn vazio: sem fallback o grafo ganhava
+    # um símbolo de nome e fqn vazios, inalcançável e sujo no FTS
+    (tmp_path / "__init__.py").write_text("def a():\n    return 1\n",
+                                          encoding="utf-8")
+    g = CodeGraph(tmp_path)
+    g.index()
+    row = g.indexer.conn.execute(
+        "SELECT name, fqn FROM symbols WHERE kind='file'").fetchone()
+    assert row["name"] and row["fqn"]
+    g.close()
 
 
 def test_file_symbol_is_not_reported_as_a_code_change(tmp_path):

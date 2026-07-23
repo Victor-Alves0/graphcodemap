@@ -13,6 +13,7 @@ import posixpath
 from .base import BaseExtractor
 
 _FUNCTION_VALUES = {"arrow_function", "function_expression", "function", "generator_function"}
+_JS_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
 # `class` cobre Preact/Solid, que não renomeiam o atributo
 _CLASS_ATTRS = {"className", "class"}
 # marcador de trecho interpolado: não pode ser espaço, senão partiria o token
@@ -222,20 +223,27 @@ class TsJsExtractor(BaseExtractor):
         source = node.child_by_field_name("source")
         if source is None:
             return
-        module = self._module_from_source(self.text(source).strip("'\"`"))
+        spec = self.text(source).strip("'\"`")
+        module = self._module_from_source(spec)
+        # `import "./styles.css"` é o padrão de todo app React, e virar fqn
+        # pontilhado (`src.styles.css`) destruía a única coisa útil ali: o
+        # caminho. Para ASSET relativo o alvo é o arquivo, então o ref preserva
+        # o caminho; `module` continua sendo o fqn para os aliases, que servem
+        # a outra coisa (qualificar chamadas).
+        target = spec if self._is_relative_asset(spec) else module
         clause = next((c for c in node.named_children if c.type == "import_clause"), None)
         if clause is None:
-            self.add_ref(node, "imports", module)
+            self.add_ref(node, "imports", target)
             return
         for c in clause.named_children:
             if c.type == "identifier":  # default import
                 self.aliases[self.text(c)] = f"{module}.{self.text(c)}"
-                self.add_ref(node, "imports", module)
+                self.add_ref(node, "imports", target)
             elif c.type == "namespace_import":
                 ident = next((n for n in c.named_children if n.type == "identifier"), None)
                 if ident is not None:
                     self.aliases[self.text(ident)] = module
-                    self.add_ref(node, "imports", module)
+                    self.add_ref(node, "imports", target)
             elif c.type == "named_imports":
                 for spec in c.named_children:
                     if spec.type != "import_specifier":
@@ -249,13 +257,22 @@ class TsJsExtractor(BaseExtractor):
                     self.aliases[local] = f"{module}.{name}"
                     self.add_ref(node, "imports", f"{module}.{name}")
 
+    @staticmethod
+    def _is_relative_asset(spec: str) -> bool:
+        """`./x.css` sim; `./utils` e `./a.ts` não (módulo, resolve por fqn);
+        `react` não (specifier bare — resolveria para node_modules)."""
+        if not spec.startswith("."):
+            return False
+        ext = posixpath.splitext(spec)[1]
+        return bool(ext) and ext not in _JS_EXTS
+
     def _module_from_source(self, spec: str) -> str:
         if not spec.startswith("."):
             return spec.replace("/", ".")
         # relativo ao diretório do módulo atual
         cur_dir = "/".join(self.module_fqn.split(".")[:-1])
         joined = posixpath.normpath(posixpath.join(cur_dir, spec))
-        for ext in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"):
+        for ext in _JS_EXTS:
             if joined.endswith(ext):
                 joined = joined[: -len(ext)]
                 break

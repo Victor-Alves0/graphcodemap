@@ -71,6 +71,38 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
   then code, then the rest. Same query now returns both matching functions in
   the top 3. `find_symbol(kind=…)` is untouched — the caller already chose.
   Costs one extra query pass only when markup dominates (~+3ms per query).
+- **`import "./styles.css"` now links the component to its stylesheet.** The
+  single most common asset import in a React codebase was silently lost:
+  relative specifiers were rewritten to a dotted module fqn, which for a
+  non-JS extension (`src.styles.css`) destroyed the only useful thing in them —
+  the path. Relative *asset* imports now keep their path so the file resolver
+  can reach them; `module` is still the fqn for call aliases, a different job.
+- **A bare specifier no longer binds to a same-named local file.**
+  `import "constants"` resolves to node_modules in Node and every bundler, but
+  path resolution was happily linking it to a sibling `constants.ts` — inventing
+  a local edge for any external dependency sharing a name with a file in the
+  repo. Path resolution now requires evidence of an actual path: a slash, an
+  explicit `./`, or a stylesheet/markup source, where every import *is* a path.
+- **Escaped CSS selectors match the class actually written in the markup.**
+  `.mt-1\.5` and `.hover\:bg-blue` (how Tailwind, and any non-identifier class,
+  must be written in CSS) never matched `className="mt-1.5"`, because the
+  selector keeps the escapes and the attribute does not. Related: `references`
+  is now resolved *before* the qualified-guess branch — a dot inside a class
+  name is not scope qualification, and falling into that branch made such a
+  class permanently unreachable.
+- **A root-level `__init__.py` no longer produces a nameless symbol.** Its
+  module fqn is empty by convention (the package is the directory, and there is
+  no directory), which gave the new file symbol an empty `name` and `fqn` —
+  unreachable, and noise in the FTS index.
+- **`resolve_edges` no longer scans `symbols` twice.** The path→file-symbol map
+  is built from the scan that already builds the name index; a second full scan
+  would be paid on every read-repair.
+- **`find_symbol` ordering no longer depends on how much markup the repo has.**
+  The final sort was only applied on the branch where the code floor kicked in,
+  so identical queries ordered differently across repos. It is applied always,
+  and the code floor is skipped for an empty result (the restricted pass is a
+  subset of the first, so it can only be empty too — and that is the expensive
+  path, the one that triggers the freshness sweep).
 - **Host-integration API** (for embedding GraphCodeMap as a service, not the CLI):
   - **`index()` now reports which symbols changed** — `stats["changes"]` carries
     `added` / `removed` / `signature_changed` (with `before`/`after` signatures)

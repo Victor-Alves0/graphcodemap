@@ -21,7 +21,7 @@ import pathspec
 from . import community, extract, rank
 from .db import connect, default_db_path, retry_on_locked
 from .extract.base import Sym
-from .languages import get_parser, language_for
+from .languages import MARKUP, get_parser, language_for
 from .log import get as _get_log
 from .util import content_hash, symbol_uid
 
@@ -263,6 +263,20 @@ PATH_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".scss", ".sass",
              ".css", ".html", ".py")
 
 
+def _is_path_like(guess: str, lang: str | None) -> bool:
+    """O guess de um import é CAMINHO (resolver contra arquivos) ou NOME?
+
+    `import "constants"` é um specifier BARE: em Node/bundler ele resolve para
+    node_modules, não para o irmão `constants.ts`. Resolvê-lo por caminho
+    inventava uma aresta local para toda dependência externa homônima de um
+    arquivo do repo — medido e confirmado. Caminho só quando há prova disso:
+    tem barra, é explicitamente relativo, ou vem de folha de estilo/marcação,
+    onde todo import É caminho (`@import "base.css"`, `@use "buttons"`).
+    """
+    return ("/" in guess or guess.startswith(".")
+            or (lang is not None and lang in MARKUP))
+
+
 def _file_symbol(rel: str, data: bytes, h: str) -> Sym:
     """O ARQUIVO como símbolo — o alvo que faltava para `imports` locais.
 
@@ -275,7 +289,10 @@ def _file_symbol(rel: str, data: bytes, h: str) -> Sym:
     resolução por guess qualificado procura por `fqn.rsplit('.')[-1]` no índice
     de nomes, então `main.tsx` como nome tornaria o símbolo inalcançável.
     """
-    fqn = module_fqn_for(rel)
+    # `__init__.py` NA RAIZ do repo tem module fqn vazio (a convenção é o pacote
+    # ser o diretório, e aqui não há diretório) — sem este fallback o grafo
+    # ganhava um símbolo de nome e fqn vazios, inalcançável e sujo no FTS.
+    fqn = module_fqn_for(rel) or rel.rsplit("/", 1)[-1].split(".", 1)[0]
     return Sym(kind="file", name=fqn.rsplit(".", 1)[-1], fqn=fqn,
                parent_fqn=None, signature=rel, doc=None,
                start_line=1, start_col=0, end_line=data.count(b"\n") + 1,
@@ -787,21 +804,24 @@ class Indexer:
         for r in cur.execute("SELECT id, language, path FROM files"):
             lang_of[r["id"]] = r["language"]
             path_of[r["id"]] = r["path"]
-        # caminho do repo -> símbolo `file` daquele arquivo (alvo dos imports
-        # que são caminho e não nome: `<script src>`, `<link href>`, `@import`)
-        file_sym: dict[str, str] = {
-            path_of[r["file_id"]]: r["id"] for r in cur.execute(
-                "SELECT id, file_id FROM symbols WHERE kind='file'")
-            if r["file_id"] in path_of}
         # Índice de símbolos EM MEMÓRIA (um único SELECT). O cache-por-guess
         # degradava para ~1 SELECT por dangling quando os guesses são quase únicos
         # (o grosso do custo de resolução em repos grandes): 20k+ queries. Os
         # símbolos cabem em memória; resolver por dict elimina essas queries.
         by_name: dict[str, list] = {}
+        # caminho do repo -> símbolo `file` daquele arquivo (alvo dos imports
+        # que são caminho e não nome: `<script src>`, `<link href>`, `@import`).
+        # Sai da MESMA varredura: uma segunda passada por `symbols` custaria
+        # outro full scan a cada resolve_edges (que roda no read-repair).
+        file_sym: dict[str, str] = {}
         for r in cur.execute(
                 "SELECT s.id, s.file_id, s.fqn, s.name, s.kind, f.language "
                 "FROM symbols s JOIN files f ON s.file_id=f.id ORDER BY s.id"):
             by_name.setdefault(r["name"], []).append(r)
+            if r["kind"] == "file":
+                p = path_of.get(r["file_id"])
+                if p is not None:
+                    file_sym[p] = r["id"]
 
         class_kinds = ("class", "interface", "struct")
 
@@ -854,13 +874,24 @@ class Indexer:
             guess = e["dst_name"]
             if not guess or "*" in guess:
                 continue
-            if e["kind"] == "imports":
+            if e["kind"] == "imports" and _is_path_like(
+                    guess, lang_of.get(e["file_id"])):
                 # caminho é evidência mais forte que nome — tenta primeiro
                 sid = _by_path(guess, path_of.get(e["file_id"], ""))
                 if sid is not None:
                     inferred.append((sid, e["id"]))
                     continue
-            if "." in guess:
+            if e["kind"] == "references":
+                # uso de estilo: `className="card"` no TSX/HTML → `.card` no
+                # CSS. ANTES do ramo qualificado: um ponto no nome da classe
+                # (`mt-1.5`, do Tailwind) não é qualificação de escopo, e cair
+                # naquele ramo tornaria a classe permanentemente inalcançável.
+                # Sem filtro de língua (é justamente o vínculo entre elas); o
+                # kind restrito impede casar com uma função chamada `card`.
+                cands = _dedup_cap(
+                    c for c in by_name.get(guess, ())
+                    if c["kind"] in STYLE_DEF_KINDS)
+            elif "." in guess:
                 # guess qualificado (via import/escopo): match por fqn exato/sufixo
                 seg, suffix = guess.rsplit(".", 1)[-1], "." + guess
                 cands = _dedup_cap(
@@ -873,13 +904,6 @@ class Indexer:
                 cands = _dedup_cap(
                     c for c in by_name.get(guess, ())
                     if c["kind"] in kinds and c["language"] == lang)
-            elif e["kind"] == "references":
-                # uso de estilo: `className="card"` no TSX/HTML → `.card` no
-                # CSS. Sem filtro de língua (é justamente o vínculo entre elas);
-                # o kind restrito impede casar com uma função chamada `card`.
-                cands = _dedup_cap(
-                    c for c in by_name.get(guess, ())
-                    if c["kind"] in STYLE_DEF_KINDS)
             else:
                 continue
             if not cands or len(cands) > MAX_CANDIDATES:
