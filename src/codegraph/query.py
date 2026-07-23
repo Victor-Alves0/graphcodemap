@@ -19,6 +19,13 @@ from .rank import ensure_ranks
 from .util import like_escape
 
 CALL_KINDS = ("calls",)
+# Kinds que não são código declarado: numerosos e pouco informativos numa busca
+# por nome (uma folha de estilo sozinha rende centenas de `css_class`). Não são
+# excluídos — só não podem tomar mais que metade dos resultados.
+LOW_INFO_KINDS = ("css_class", "css_id", "html_id", "file")
+# o FTS não conhece rank; buscar com folga evita que o corte dele decida o
+# resultado antes da ordenação
+FTS_OVERFETCH = 4
 IMPACT_KINDS = ("calls", "imports", "inherits", "references")
 _CONF_ORD = {"certain": 2, "inferred": 1, "possible": 0}
 
@@ -150,13 +157,28 @@ class QueryEngine:
 
     # -- seleção de símbolo ---------------------------------------------------
 
-    def _find_rows(self, query: str, kind: str | None, limit: int) -> list:
+    def _search_tiers(self, query: str, kind: str | None, limit: int,
+                      only_code: bool) -> list:
+        """Níveis de casamento, do mais preciso ao mais frouxo.
+
+        A ordem ENTRE níveis (fqn exato > sufixo > nome > FTS > substring) é a
+        precisão do casamento e é o que manda. `order` só desempata DENTRO de um
+        nível, o que antes vinha arbitrário do SQLite: rank primeiro (símbolo
+        central ganha do obscuro) e `file` por último — casar o nome de um
+        arquivo costuma valer menos que casar algo declarado dentro dele.
+        """
         kind_sql = " AND s.kind=?" if kind else ""
+        if only_code:
+            ph_low = ",".join("?" * len(LOW_INFO_KINDS))
+            kind_sql += f" AND s.kind NOT IN ({ph_low})"
         base = (
             "SELECT s.*, f.path, f.parse_status FROM symbols s "
             "JOIN files f ON s.file_id=f.id WHERE {} " + kind_sql
         )
+        order = " ORDER BY (s.kind='file'), s.rank DESC, s.fqn"
         args_kind = [kind] if kind else []
+        if only_code:
+            args_kind = [*args_kind, *LOW_INFO_KINDS]
         seen: dict[str, dict] = {}
 
         def take(rows):
@@ -164,33 +186,74 @@ class QueryEngine:
                 if r["id"] not in seen:
                     seen[r["id"]] = dict(r)
 
-        take(self.conn.execute(base.format("s.fqn=?"), [query, *args_kind]).fetchall())
+        take(self.conn.execute(base.format("s.fqn=?") + order,
+                               [query, *args_kind]).fetchall())
         if len(seen) < limit:
             take(self.conn.execute(
-                base.format("s.fqn LIKE ? ESCAPE '\\'") + " LIMIT ?",
+                base.format("s.fqn LIKE ? ESCAPE '\\'") + order + " LIMIT ?",
                 [f"%.{like_escape(query)}", *args_kind, limit]).fetchall())
         if len(seen) < limit:
             take(self.conn.execute(
-                base.format("s.name=?") + " LIMIT ?", [query, *args_kind, limit]).fetchall())
+                base.format("s.name=?") + order + " LIMIT ?",
+                [query, *args_kind, limit]).fetchall())
         if len(seen) < limit:
             tokens = [t for t in query.replace(".", " ").split() if t]
             if tokens:
                 match = " ".join(f'"{t}"' for t in tokens)
                 try:
+                    # folga sobre o limite: o FTS não conhece rank, então cortar
+                    # nele decidiria o resultado antes de qualquer ordenação
                     ids = [r["symbol_id"] for r in self.conn.execute(
                         "SELECT symbol_id FROM symbols_fts WHERE symbols_fts MATCH ? LIMIT ?",
-                        (match, limit)).fetchall()]
+                        (match, limit * FTS_OVERFETCH)).fetchall()]
                 except Exception:
                     ids = []
                 if ids:
                     ph = ",".join("?" * len(ids))
                     take(self.conn.execute(
-                        base.format(f"s.id IN ({ph})"), [*ids, *args_kind]).fetchall())
+                        base.format(f"s.id IN ({ph})") + order + " LIMIT ?",
+                        [*ids, *args_kind, limit]).fetchall())
         if len(seen) < limit:
+            # Último nível: substring difusa, e o único que pode ignorar caixa.
+            # O banco roda com case_sensitive_like=ON porque identificador é
+            # case-sensitive e os níveis acima dependem disso — mas aqui isso
+            # tornava `openMenu` inalcançável por "menu" (só `Submenu` casava,
+            # pelo 'menu' minúsculo interno). `%x%` já não usa índice, então
+            # normalizar a caixa não custa plano nenhum.
             take(self.conn.execute(
-                base.format("s.name LIKE ? ESCAPE '\\'") + " LIMIT ?",
-                [f"%{like_escape(query)}%", *args_kind, limit]).fetchall())
-        return list(seen.values())[:limit]
+                base.format("lower(s.name) LIKE ? ESCAPE '\\'") + order + " LIMIT ?",
+                [f"%{like_escape(query).lower()}%", *args_kind, limit]).fetchall())
+        return list(seen.values())
+
+    def _find_rows(self, query: str, kind: str | None, limit: int) -> list:
+        rows = self._search_tiers(query, kind, limit, only_code=False)[:limit]
+        if kind is not None:
+            return rows                      # o chamador já escolheu o kind
+        code = [r for r in rows if r["kind"] not in LOW_INFO_KINDS]
+        quota = limit // 2
+        if len(code) >= quota:
+            return rows
+        # Piso de código. Marcação/estilo são numerosos e pouco informativos:
+        # num app React `.menu-item`, `.title-menu` etc. tomavam 10 de 10 slots
+        # de find_symbol("menu"). Pior, um símbolo camelCase como
+        # `changeModelMenuSubmenu` só é alcançável no ÚLTIMO nível (substring) —
+        # que nunca rodava, porque os níveis anteriores já tinham enchido o
+        # limite. Uma segunda passada restrita a código não é reordenação: é
+        # alcançar o que a primeira nem chegou a consultar.
+        have = {r["id"] for r in rows}
+        more = [r for r in self._search_tiers(query, kind, limit, only_code=True)
+                if r["id"] not in have]
+        need = min(quota - len(code), len(more))
+        if need:
+            rows = rows[:limit - need] + more[:need]
+        # Estar no resultado não basta: no fim da lista o código continua sem
+        # ser visto. Casamento EXATO no topo (buscar "menu" deve mostrar `.menu`
+        # primeiro, seja ele CSS), código antes de marcação, e o resto na ordem
+        # dos níveis — `sort` é estável, então a precisão do casamento sobrevive
+        # como desempate dentro de cada grupo.
+        rows.sort(key=lambda r: (r["fqn"] != query and r["name"] != query,
+                                 r["kind"] in LOW_INFO_KINDS))
+        return rows
 
     def _resolve_selector(self, selector: str) -> dict:
         exact = self.conn.execute(

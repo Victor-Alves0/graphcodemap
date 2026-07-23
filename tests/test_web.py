@@ -225,6 +225,81 @@ def test_reference_never_binds_to_a_homonym_function(tmp_path):
     g.close()
 
 
+# -- refs de asset agora têm alvo: o símbolo de ARQUIVO -----------------------
+#
+# Era o limite declarado do commit anterior: `<script src>` / `@import` ficavam
+# dangling para sempre porque o guess é um CAMINHO e não havia nada no grafo
+# para apontar. Um símbolo `file` por arquivo fecha isso.
+
+@pytest.fixture()
+def cgassets(tmp_path):
+    (tmp_path / "styles").mkdir()
+    (tmp_path / "js").mkdir()
+    (tmp_path / "index.html").write_text(
+        '<html><head><link rel="stylesheet" href="styles/main.css">\n'
+        '<script src="js/app.js?v=2"></script>\n'
+        '<script src="https://cdn.example.com/x.js"></script></head>\n'
+        '<body><div id="root"></div></body></html>\n', encoding="utf-8")
+    (tmp_path / "styles" / "main.css").write_text(
+        '@import "base.css";\n.x { color: red; }\n', encoding="utf-8")
+    # @use é sintaxe SCSS: o grammar de CSS não a reconhece
+    (tmp_path / "styles" / "theme.scss").write_text(
+        '@use "buttons";\n.w { color: gray; }\n', encoding="utf-8")
+    (tmp_path / "styles" / "base.css").write_text(".y { color: blue; }\n",
+                                                  encoding="utf-8")
+    (tmp_path / "styles" / "_buttons.scss").write_text(".z { color: teal; }\n",
+                                                       encoding="utf-8")
+    (tmp_path / "js" / "app.js").write_text("export function go() { return 1; }\n",
+                                            encoding="utf-8")
+    g = CodeGraph(tmp_path)
+    g.index()
+    yield g
+    g.close()
+
+
+def _import_targets(cg, path):
+    """dst_name -> caminho do arquivo alvo, das arestas `imports` resolvidas."""
+    return {r["dst_name"]: r["p"] for r in cg.indexer.conn.execute(
+        "SELECT e.dst_name, fd.path p FROM edges e JOIN files f ON e.file_id=f.id "
+        "JOIN symbols d ON e.dst=d.id JOIN files fd ON d.file_id=fd.id "
+        "WHERE f.path=? AND e.kind='imports' AND d.kind='file'", (path,))}
+
+
+def test_script_and_link_resolve_to_the_file(cgassets):
+    got = _import_targets(cgassets, "index.html")
+    assert got["styles/main.css"] == "styles/main.css"
+    assert got["js/app.js"] == "js/app.js"        # query string já removida
+
+
+def test_css_import_resolves_relative_to_the_importing_file(cgassets):
+    # `@import "base.css"` dentro de styles/main.css é styles/base.css,
+    # não base.css na raiz
+    assert _import_targets(cgassets, "styles/main.css")["base.css"] == "styles/base.css"
+
+
+def test_sass_partial_is_found_by_its_underscore_name(cgassets):
+    # `@use "buttons"` → _buttons.scss (convenção do Sass)
+    assert _import_targets(cgassets, "styles/theme.scss")["buttons"] == "styles/_buttons.scss"
+
+
+def test_external_url_never_resolves(cgassets):
+    # CDN não é arquivo do repo: continua sem alvo, e é o correto
+    assert not any("cdn.example.com" in n
+                   for n in _refs(cgassets, "index.html", "imports"))
+
+
+def test_file_symbol_is_not_reported_as_a_code_change(tmp_path):
+    # o host quer saber que símbolo DECLARADO mudou; "o arquivo existe" só
+    # inflaria o diff de toda integração
+    (tmp_path / "u.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    g = CodeGraph(tmp_path)
+    ch = g.index()["changes"]
+    assert ch["added"] == ["u.a"]
+    (tmp_path / "u.py").unlink()
+    assert g.index()["changes"]["removed"] == ["u.a"]
+    g.close()
+
+
 def test_unused_css_class_is_detectable_as_dead(tmp_path):
     """A ilha que SOBRA vira sinal: classe definida e nunca usada.
 

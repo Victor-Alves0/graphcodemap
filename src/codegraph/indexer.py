@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import time
 from pathlib import Path
 
@@ -19,6 +20,7 @@ import pathspec
 
 from . import community, extract, rank
 from .db import connect, default_db_path, retry_on_locked
+from .extract.base import Sym
 from .languages import get_parser, language_for
 from .log import get as _get_log
 from .util import content_hash, symbol_uid
@@ -253,6 +255,40 @@ def module_fqn_for(rel: str) -> str:
     if parts and parts[-1] == "__init__":
         parts = parts[:-1]
     return ".".join(parts)
+
+
+# extensões tentadas ao resolver um caminho sem extensão (`./utils`, `@use
+# "buttons"`). Ordem = precedência quando várias existem.
+PATH_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".scss", ".sass",
+             ".css", ".html", ".py")
+
+
+def _file_symbol(rel: str, data: bytes, h: str) -> Sym:
+    """O ARQUIVO como símbolo — o alvo que faltava para `imports` locais.
+
+    Sem isto, `<script src="./main.tsx">`, `<link href>` e `@import` ficavam
+    permanentemente dangling: o guess é um caminho, e não havia nada no grafo
+    para apontar. Um símbolo por arquivo é barato (1 por arquivo, contra 596
+    classes CSS num único .css do repo de teste) e é o alvo natural.
+
+    `name` é o ÚLTIMO segmento do fqn (não o basename com extensão): a
+    resolução por guess qualificado procura por `fqn.rsplit('.')[-1]` no índice
+    de nomes, então `main.tsx` como nome tornaria o símbolo inalcançável.
+    """
+    fqn = module_fqn_for(rel)
+    return Sym(kind="file", name=fqn.rsplit(".", 1)[-1], fqn=fqn,
+               parent_fqn=None, signature=rel, doc=None,
+               start_line=1, start_col=0, end_line=data.count(b"\n") + 1,
+               end_col=0, body_hash=h, visibility=None)
+
+
+def _extract_file(lang: str, data: bytes, rel: str, tree, h: str):
+    """extract.extract + o símbolo do arquivo. Ponto único: os dois caminhos de
+    prepare (serial e paralelo) passam por aqui, senão o grafo dependeria de
+    quantos workers rodaram."""
+    syms, refs = extract.extract(lang, data, module_fqn_for(rel), tree)
+    syms.append(_file_symbol(rel, data, h))   # append: fqn de símbolo declarado
+    return syms, refs                         # continua ganhando no fqn_to_uid
 
 
 class Indexer:
@@ -507,7 +543,7 @@ class Indexer:
                 c_tree = get_parser("c").parse(data)
                 if not c_tree.root_node.has_error:
                     lang, tree = "c", c_tree
-            syms, refs = extract.extract(lang, data, module_fqn_for(rel), tree)
+            syms, refs = _extract_file(lang, data, rel, tree, h)
             status = "partial" if tree.root_node.has_error else "ok"
             return ("changed", rel, st, h, lang, syms, refs, status)
         except Exception as e:
@@ -599,7 +635,7 @@ class Indexer:
             c_tree = get_parser("c").parse(data)
             if not c_tree.root_node.has_error:
                 lang, tree = "c", c_tree
-        syms, refs = extract.extract(lang, data, module_fqn_for(rel), tree)
+        syms, refs = _extract_file(lang, data, rel, tree, h)
         status = "partial" if tree.root_node.has_error else "ok"
         return ("changed", row, st, lang, h, syms, refs, status)
 
@@ -618,9 +654,12 @@ class Indexer:
             if track is not None:
                 # só para arquivo PRÉ-EXISTENTE: no índice inicial não há
                 # consulta extra (tudo é 'added', derivado dos próprios syms)
+                # kind='file' fora: o host quer saber que símbolo DECLARADO
+                # mudou; "o arquivo existe" já está em counts/files e só
+                # inflaria o diff de toda integração
                 old_sigs = {r["fqn"]: r["signature"] for r in cur.execute(
-                    "SELECT fqn, signature FROM symbols WHERE file_id=?",
-                    (file_id,))}
+                    "SELECT fqn, signature FROM symbols WHERE file_id=? "
+                    "AND kind<>'file'", (file_id,))}
             # descrições L3 sobrevivem ao re-index (ids de símbolo são estáveis;
             # source_hash antigo preservado → stale detectável)
             saved_descriptions = cur.execute(
@@ -649,7 +688,8 @@ class Indexer:
         if track is not None:
             new_sigs: dict[str, str | None] = {}
             for s in syms:
-                new_sigs.setdefault(s.fqn, s.signature)
+                if s.kind != "file":          # ver old_sigs acima
+                    new_sigs.setdefault(s.fqn, s.signature)
             for fqn, sig in new_sigs.items():
                 if fqn not in old_sigs:
                     track.add(fqn)
@@ -720,8 +760,9 @@ class Indexer:
         if row is None:
             return
         if self._changes is not None:      # arquivo sumiu → símbolos saíram
-            for r in self.conn.execute(
-                    "SELECT fqn FROM symbols WHERE file_id=?", (row["id"],)):
+            for r in self.conn.execute(                 # kind='file' fora:
+                    "SELECT fqn FROM symbols WHERE file_id=? "   # só símbolo
+                    "AND kind<>'file'", (row["id"],)):          # DECLARADO
                 self._changes.remove(r["fqn"])
         self.conn.execute(
             "DELETE FROM symbols_fts WHERE symbol_id IN "
@@ -741,8 +782,17 @@ class Indexer:
         if not danglings:
             return
         cur = self.conn.cursor()
-        lang_of = {r["id"]: r["language"] for r in
-                   cur.execute("SELECT id, language FROM files")}
+        lang_of: dict[int, str] = {}
+        path_of: dict[int, str] = {}
+        for r in cur.execute("SELECT id, language, path FROM files"):
+            lang_of[r["id"]] = r["language"]
+            path_of[r["id"]] = r["path"]
+        # caminho do repo -> símbolo `file` daquele arquivo (alvo dos imports
+        # que são caminho e não nome: `<script src>`, `<link href>`, `@import`)
+        file_sym: dict[str, str] = {
+            path_of[r["file_id"]]: r["id"] for r in cur.execute(
+                "SELECT id, file_id FROM symbols WHERE kind='file'")
+            if r["file_id"] in path_of}
         # Índice de símbolos EM MEMÓRIA (um único SELECT). O cache-por-guess
         # degradava para ~1 SELECT por dangling quando os guesses são quase únicos
         # (o grosso do custo de resolução em repos grandes): 20k+ queries. Os
@@ -754,6 +804,35 @@ class Indexer:
             by_name.setdefault(r["name"], []).append(r)
 
         class_kinds = ("class", "interface", "struct")
+
+        def _by_path(guess: str, from_rel: str) -> str | None:
+            """Import que é CAMINHO (não nome) → símbolo `file` do alvo.
+
+            Tenta o caminho como está e, quando não traz extensão, as extensões
+            usuais — incluindo o parcial do Sass (`@use "buttons"` →
+            `_buttons.scss`) e o `index.*` de diretório. Só casa com arquivo que
+            está no índice: caminho para fora do repo ou pacote externo
+            (`react`, `node:fs`) não casa e segue dangling, que é o correto.
+            """
+            if guess.startswith("/"):
+                base = guess.lstrip("/")            # relativo à raiz do repo
+            else:
+                d = posixpath.dirname(from_rel)
+                base = posixpath.normpath(posixpath.join(d, guess))
+            if base.startswith("..") or base in (".", ""):
+                return None                          # escapou da raiz
+            cands = [base]
+            head, _, tail = base.rpartition("/")
+            prefix = f"{head}/" if head else ""
+            if "." not in tail:
+                cands += [base + e for e in PATH_EXTS]
+                cands += [f"{prefix}_{tail}{e}" for e in (".scss", ".sass")]
+            cands += [f"{base}/index{e}" for e in PATH_EXTS]
+            for c in cands:
+                sid = file_sym.get(c)
+                if sid is not None:
+                    return sid
+            return None
 
         def _dedup_cap(rows) -> list:
             # candidatos distintos por fqn (decl+def de C/C++ = 1 candidato),
@@ -775,6 +854,12 @@ class Indexer:
             guess = e["dst_name"]
             if not guess or "*" in guess:
                 continue
+            if e["kind"] == "imports":
+                # caminho é evidência mais forte que nome — tenta primeiro
+                sid = _by_path(guess, path_of.get(e["file_id"], ""))
+                if sid is not None:
+                    inferred.append((sid, e["id"]))
+                    continue
             if "." in guess:
                 # guess qualificado (via import/escopo): match por fqn exato/sufixo
                 seg, suffix = guess.rsplit(".", 1)[-1], "." + guess

@@ -39,6 +39,38 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
   CSS, which nothing in the toolchain reported before. CSS `#id` selectors also
   reference the `html_id` they style, so they stop being islands too. Checked
   for the obvious regression: zero CSS classes reach the top-30 by rank.
+- **Files are symbols, so local `imports` finally have a target.** This was the
+  previous release's declared limit: `<script src>`, `<link href>` and `@import`
+  carry a *path* as their guess, and the graph had nothing path-shaped to point
+  at, so they were dangling by construction. Every indexed file now gets one
+  `kind='file'` symbol (`fqn` = module fqn, `name` = its last segment so the
+  qualified-guess resolver can reach it), and `imports` are resolved by path
+  first — relative to the importing file, with the usual extension candidates,
+  Sass partials (`@use "buttons"` → `_buttons.scss`) and `index.*`. External
+  packages (`react`, `node:fs`) match nothing and stay dangling, which is
+  correct. On the same repo: **0 of 158 distinct dangling imports still look
+  like a local path.** Cost is 1 symbol per file (5.6% of that graph, against
+  the 596 CSS classes a single stylesheet contributes) and no measurable
+  indexing time (12.39s → 12.30s). `file` symbols are deliberately excluded from
+  `index()["changes"]`: a host wants to know which *declared* symbol changed.
+
+### Fixed
+
+- **Markup no longer crowds code out of `find_symbol`.** Searching `menu` in a
+  React app returned **10 of 10 results as CSS classes**. Three independent
+  causes, all fixed: (1) the match tiers had no `ORDER BY`, so ties inside a
+  tier came out in whatever order SQLite chose — now rank first, `file` last;
+  (2) a camelCase symbol like `openMenu` was *unreachable*, because the fuzzy
+  substring tier inherited the connection's `case_sensitive_like=ON` (correct
+  for the exact tiers, wrong for a fallback) — that tier now folds case, which
+  costs no query plan since `%x%` never used an index anyway; (3) even when
+  reachable, that last tier never ran, because the earlier tiers had already
+  filled the limit with markup — so a second pass restricted to code now
+  guarantees markup takes at most half the results. Ordering keeps an *exact*
+  match on top whatever its kind (searching `menu` still shows `.menu` first),
+  then code, then the rest. Same query now returns both matching functions in
+  the top 3. `find_symbol(kind=…)` is untouched — the caller already chose.
+  Costs one extra query pass only when markup dominates (~+3ms per query).
 - **Host-integration API** (for embedding GraphCodeMap as a service, not the CLI):
   - **`index()` now reports which symbols changed** — `stats["changes"]` carries
     `added` / `removed` / `signature_changed` (with `before`/`after` signatures)
