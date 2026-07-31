@@ -8,6 +8,22 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Java robustness pass — second of the per-language hardening.** A 51-test
+  battery over the full extractor surface exposed five real gaps, all fixed:
+  **fields were not symbols** (only fed the type map) — now each field is a
+  navigable symbol (`static final` → `constant`, else `variable`), scoped to its
+  class; **enum constants** (`RED`, `GREEN`) and **record components**
+  (`record Point(int x, int y)`) are now symbols too; **visibility was never
+  set** on any Java symbol — now read from the modifiers (`public`/`private`/
+  `protected`, `package` default, interface members default to `public`); and
+  **interface `extends`** (`interface C extends Parent`) was silently dropped
+  because it uses an `extends_interfaces` node, not `superclass`/`interfaces`.
+  Also fixed a resolution bug the battery caught: inheritance qualified the
+  supertype through the import (`app.Base`), which never matched the
+  path-derived, class-doubled symbol fqn (`app.Base.Base`) — it now emits the
+  simple name and resolves by name+kind, exactly like calls. Type-tracking and
+  the receiver-type disambiguation are unchanged (verified on the vollmed case).
+
 - **Python robustness pass — first of the per-language hardening.** A 62-test
   battery covering the full extractor surface (symbols, fqn, containment,
   visibility, docstrings, every import form, calls, inheritance, resolution &

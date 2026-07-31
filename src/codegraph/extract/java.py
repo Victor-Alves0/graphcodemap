@@ -10,6 +10,15 @@ _NESTED_SCOPE = {"method_declaration", "constructor_declaration",
                  "class_declaration", "interface_declaration",
                  "enum_declaration", "record_declaration", "lambda_expression"}
 
+_ACCESS = ("public", "private", "protected")
+
+
+def _simple_name(text: str) -> str:
+    """Nome de tipo cru → nome simples: strip de genérico e pacote.
+    `Base<String>` → `Base`; `a.b.Base` → `Base`. (Diferente de _simple_type:
+    aqui NÃO se descarta minúsculo — herança/uso quer o nome como está.)"""
+    return text.split("<", 1)[0].strip().rsplit(".", 1)[-1]
+
 
 def _simple_type(text: str) -> str | None:
     """Nome de classe simples de uma anotação de tipo, ou None quando não há um
@@ -31,6 +40,9 @@ class JavaExtractor(BaseExtractor):
         # pilha de escopos varname->TipoSimples (classe: campos; método: params +
         # locais tipados). O topo é o mais interno, então local sombreia campo.
         self._types: list[dict[str, str]] = []
+        # marca se o tipo-recipiente atual é interface (membro sem modificador é
+        # implicitamente public)
+        self._iface: list[bool] = []
 
     def _lookup_type(self, var: str) -> str | None:
         for scope in reversed(self._types):
@@ -42,20 +54,76 @@ class JavaExtractor(BaseExtractor):
     def _declared_type(self, type_node) -> str | None:
         return _simple_type(self.text(type_node)) if type_node is not None else None
 
-    def _collect_fields(self, body, into: dict) -> None:
+    @staticmethod
+    def _modifiers(node) -> list[str]:
+        m = next((c for c in node.children if c.type == "modifiers"), None)
+        return m.text.decode("utf-8", "replace").split() if m is not None else []
+
+    def _visibility(self, node, default: str = "package") -> str:
+        for a in _ACCESS:
+            if a in self._modifiers(node):
+                return a
+        return default
+
+    def _fields(self, body) -> dict:
+        """Adiciona um símbolo por campo E devolve o mapa nome->TipoSimples para
+        o type-tracking. Campo é parte da API do tipo (navegável); `static final`
+        é constant, o resto variable; a visibilidade vem dos modificadores."""
+        types: dict[str, str] = {}
         if body is None:
-            return
+            return types
         for c in body.children:
             if c.type != "field_declaration":
                 continue
             ty = self._declared_type(c.child_by_field_name("type"))
-            if ty is None:
-                continue
+            mods = self._modifiers(c)
+            kind = "constant" if ("static" in mods and "final" in mods) else "variable"
+            vis = next((a for a in _ACCESS if a in mods), "package")
             for d in c.named_children:
-                if d.type == "variable_declarator":
-                    n = d.child_by_field_name("name")
-                    if n is not None:
-                        into[self.text(n)] = ty
+                if d.type != "variable_declarator":
+                    continue
+                n = d.child_by_field_name("name")
+                if n is None:
+                    continue
+                fname = self.text(n)
+                # nó = o declarator (nome+valor): body_hash detecta mudança de valor
+                self.add_sym(d, kind, fname, signature=None, doc=None,
+                             visibility=vis)
+                if ty is not None:
+                    types[fname] = ty
+        return types
+
+    def _enum_constants(self, body) -> None:
+        if body is None:
+            return
+        for c in body.children:
+            if c.type != "enum_constant":
+                continue
+            n = c.child_by_field_name("name") or next(
+                (g for g in c.named_children if g.type == "identifier"), None)
+            if n is not None:
+                self.add_sym(c, "constant", self.text(n), signature=None,
+                             doc=None, visibility="public")
+
+    def _record_components(self, node) -> dict:
+        """Componentes de um record viram símbolos (campos implícitos) e entram
+        no type-tracking. Devolve nome->TipoSimples."""
+        types: dict[str, str] = {}
+        params = next((c for c in node.children
+                       if c.type == "formal_parameters"), None)
+        if params is None:
+            return types
+        for p in params.named_children:
+            if p.type != "formal_parameter":
+                continue
+            n = p.child_by_field_name("name")
+            ty = self._declared_type(p.child_by_field_name("type"))
+            if n is not None:
+                self.add_sym(p, "variable", self.text(n), signature=None,
+                             doc=None, visibility="private")
+                if ty is not None:
+                    types[self.text(n)] = ty
+        return types
 
     def _collect_locals(self, node, into: dict) -> None:
         """Params + locais tipados de UM método. Aproximação assumida: um local
@@ -126,26 +194,42 @@ class JavaExtractor(BaseExtractor):
         name = self.text(name_node)
         body = node.child_by_field_name("body")
         self.add_sym(node, kind, name, signature=self.sig_of(node, body),
-                     doc=self._doc(node))
+                     doc=self._doc(node), visibility=self._visibility(node))
         self.scope.append((name, "class"))
-        fields: dict[str, str] = {}
-        self._collect_fields(body, fields)
-        self._types.append(fields)
-        sup = node.child_by_field_name("superclass")
-        if sup is not None:
-            for c in sup.named_children:
-                self.add_ref(sup, "inherits", self._qualify(self.text(c).split("<", 1)[0]))
-        ifaces = node.child_by_field_name("interfaces")
-        if ifaces is not None:
-            for lst in ifaces.named_children:
-                for c in lst.named_children:
-                    self.add_ref(ifaces, "inherits",
-                                 self._qualify(self.text(c).split("<", 1)[0]))
+        self._iface.append(node.type == "interface_declaration")
+        # campos + componentes de record alimentam o type-tracking (topo da pilha)
+        types = self._fields(body)
+        if node.type == "record_declaration":
+            types.update(self._record_components(node))
+        self._types.append(types)
+        if node.type == "enum_declaration":
+            self._enum_constants(body)
+        self._inherits(node)
         if body is not None:
             for c in body.children:
                 self.visit(c)
         self._types.pop()
+        self._iface.pop()
         self.scope.pop()
+
+    def _inherits(self, node) -> None:
+        """extends de classe (`superclass`), implements (`interfaces`) e extends
+        de interface (`extends_interfaces`). Emite o NOME SIMPLES, não o fqn do
+        import: o fqn de símbolo é baseado em caminho e duplica a classe
+        (`app.Base.Base`), então o import qualificado `app.Base` nunca casaria —
+        o nome nu resolve por nome+kind, como as chamadas."""
+        sup = node.child_by_field_name("superclass")
+        if sup is not None:
+            for c in sup.named_children:
+                self.add_ref(sup, "inherits", _simple_name(self.text(c)))
+        for child in node.children:
+            if child.type not in ("interfaces", "super_interfaces",
+                                  "extends_interfaces"):
+                continue
+            for lst in child.named_children:          # type_list
+                targets = lst.named_children if lst.type == "type_list" else [lst]
+                for c in targets:
+                    self.add_ref(child, "inherits", _simple_name(self.text(c)))
 
     def _method(self, node) -> None:
         name_node = node.child_by_field_name("name")
@@ -153,8 +237,11 @@ class JavaExtractor(BaseExtractor):
             return
         name = self.text(name_node)
         body = node.child_by_field_name("body")
+        # membro de interface é implicitamente public quando sem modificador
+        default = "public" if (self._iface and self._iface[-1]) else "package"
         self.add_sym(node, "method" if self.in_class() else "function", name,
-                     signature=self.sig_of(node, body), doc=self._doc(node))
+                     signature=self.sig_of(node, body), doc=self._doc(node),
+                     visibility=self._visibility(node, default))
         self.scope.append((name, "function"))
         locals_: dict[str, str] = {}
         self._collect_locals(node, locals_)
