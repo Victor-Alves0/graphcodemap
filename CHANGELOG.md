@@ -8,6 +8,23 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Cross-language invariant + system-integration test batteries (+176 tests).**
+  A new `test_all_languages.py` runs every one of the 18 dedicated languages
+  through a shared contract — symbols always have a non-empty name/fqn anchored on
+  the module, kinds and visibilities from a closed vocabulary, valid spans,
+  containment fqns that extend their parent, refs always carrying `dst_name`, and
+  robustness to empty/truncated/garbage input (never crash). A new
+  `test_system_integration.py` exercises the whole stack on a real multi-language
+  index (Python + Go + Terraform + TSX + CSS + Markdown together): coherent
+  `by_language`, `stats` consistency (`resolved + dangling == edges`), cross-
+  language `find_symbol`, Terraform dependency graph end-to-end, resolution
+  transparency present on every edge query, freshness read-repair (edit/delete on
+  disk), `doctor` diagnostics, and idempotent/force re-index stability. A
+  full-surface invariant sweep over all extractors surfaced no bugs; Terraform
+  edge cases (objects, lists, heredocs, ternaries, `for_each`, `dynamic` blocks,
+  indexed resource refs) were verified to collect the right references and never
+  emit phantoms.
+
 - **L1 keeps multi-definition results — overloads no longer dropped (L1/LSP
   roadmap, tier 3).** Every resolver used to `continue` when the server returned
   more than one definition (`len(locs) != 1`), throwing away real semantic
