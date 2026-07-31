@@ -8,6 +8,21 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Java calls are disambiguated by the receiver's declared type.** Two methods
+  named `atualizarInformacoes` (one on an entity `Medico`, one on a
+  `PacienteService`) made *every* `x.atualizarInformacoes(...)` call fan out to
+  both as `possible` — inventing dependencies that do not exist
+  (`MedicoController → PacienteService`), because the extractor discarded the
+  receiver and the resolver could only match by name. The Java extractor now
+  tracks the declared type of fields, parameters and typed locals (`private
+  PacienteService service`, `this.field`, `Type x = …`) and qualifies the call
+  by that type; the resolver matches it by fqn suffix, so the collision
+  disappears and the edge becomes a single `inferred`. Declared limit, kept
+  honest: `var x = repo.getReferenceById(...)` hides the type (generic Spring
+  Data return), so it stays `possible` — that is L1 (jdtls) territory, and
+  faking precision there would be worse than admitting the gap. Generics and
+  arrays are stripped to the element type; primitives and `var` are rejected by
+  the leading-lowercase rule.
 - **Dedicated HTML and CSS/SCSS extractors.** Modelled the way the languages
   actually work: **CSS defines, HTML uses.** CSS/SCSS emit a symbol per class
   (`css_class`) and id (`css_id`) selector, plus SCSS `@mixin`/`@function`, and
