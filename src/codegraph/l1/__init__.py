@@ -19,8 +19,17 @@ from ..rank import mark_dirty
 log = _get_log(__name__)
 
 
-def available_resolvers() -> list[type]:
-    out: list[type] = []
+def all_resolvers() -> list[type]:
+    """TODAS as classes de resolver (disponíveis ou não), na ordem canônica.
+
+    Cada linguagem dedicada tem um resolver wired; ele só ATIVA quando seu LSP
+    está no PATH (`available()`), inerte caso contrário. Validados ao vivo:
+    Python (jedi), JS/TS (tsserver), Go (gopls), Rust (rust-analyzer), Lua
+    (lua-language-server), Clojure (clojure-lsp), Java (jdtls) — 7 famílias,
+    incluindo a primeira por *launcher* (jdtls). Wired via lsp_base genérico,
+    ativam quando o servidor/toolchain existe (não validados ao vivo aqui):
+    C/C++ (clangd), PHP (intelephense), Ruby (solargraph), Kotlin
+    (kotlin-language-server), C# (csharp-ls), Scala (metals), Swift (sourcekit)."""
     from .clangd import ClangdResolver
     from .clojure_lsp import ClojureLspResolver
     from .csharp_ls import CSharpLsResolver
@@ -36,22 +45,36 @@ def available_resolvers() -> list[type]:
     from .sourcekit_lsp import SourceKitLspResolver
     from .tsjs_ls import TsLsResolver
 
-    # Cada resolver ativa só quando seu LSP está disponível — inerte caso
-    # contrário. TODA linguagem dedicada tem agora um resolver wired.
-    # Validados ao vivo: Python (jedi), JS/TS (tsserver), Go (gopls),
-    # Rust (rust-analyzer), Lua (lua-language-server), Clojure (clojure-lsp),
-    # Java (jdtls) — 7 famílias, incluindo a primeira por *launcher* (jdtls).
-    # Wired via lsp_base genérico, ativam quando o servidor/toolchain existe
-    # (não validados ao vivo aqui): C/C++ (clangd), PHP (intelephense),
-    # Ruby (solargraph), Kotlin (kotlin-language-server), C# (csharp-ls),
-    # Scala (metals), Swift (sourcekit-lsp).
-    for cls in (JediResolver, TsLsResolver, GoplsResolver, RustAnalyzerResolver,
-                ClangdResolver, LuaLsResolver, ClojureLspResolver,
-                IntelephenseResolver, SolargraphResolver, KotlinLsResolver,
-                JdtlsResolver, CSharpLsResolver, MetalsResolver,
-                SourceKitLspResolver):
-        if cls.available():
-            out.append(cls)
+    return [JediResolver, TsLsResolver, GoplsResolver, RustAnalyzerResolver,
+            ClangdResolver, LuaLsResolver, ClojureLspResolver,
+            IntelephenseResolver, SolargraphResolver, KotlinLsResolver,
+            JdtlsResolver, CSharpLsResolver, MetalsResolver,
+            SourceKitLspResolver]
+
+
+def available_resolvers() -> list[type]:
+    return [cls for cls in all_resolvers() if cls.available()]
+
+
+def missing_resolvers(languages, is_available=None) -> list[dict]:
+    """Resolvers cujo LSP FALTA, restrito às linguagens presentes no repo.
+
+    Torna a degradação visível: se o repo tem Go mas `gopls` não está no PATH,
+    as arestas Go ficam em `inferred`/`possible` em vez de `certain` — e o
+    usuário merece saber por quê. `is_available` é injetável (testes).
+
+    Retorna ``[{"languages": [...], "server": "gopls", "env": "GOPLS_BIN"}]``."""
+    langs = set(languages)
+    avail = is_available or (lambda cls: cls.available())
+    out: list[dict] = []
+    for cls in all_resolvers():
+        hit = sorted(l for l in cls.languages if l in langs)
+        if hit and not avail(cls):
+            # JediResolver é in-process (sem cmd_name/cmd_env); os demais são LSP
+            # no PATH. getattr tolera ambos.
+            out.append({"languages": hit,
+                        "server": getattr(cls, "cmd_name", "") or "jedi",
+                        "env": getattr(cls, "cmd_env", None)})
     return out
 
 

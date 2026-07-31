@@ -6,11 +6,34 @@ avisos só quando há desvio, spans `path:linha` para o agente ler o código.
 
 from __future__ import annotations
 
+from . import explain
+
 
 def warnings(env) -> str:
     if not env.warnings:
         return ""
     return "\n".join(f"⚠ {w}" for w in env.warnings) + "\n\n"
+
+
+def _tag(r) -> str:
+    """Selo compacto por aresta: [confiança · resolver] (ex.: [certain · l1/go])."""
+    return f"[{r['confidence']} · {r.get('resolver', 'none')}]"
+
+
+_CONF_ORDER = {"certain": 0, "inferred": 1, "possible": 2, None: 3}
+
+
+def _legend(rows) -> list[str]:
+    """Traduz cada par (resolver, confiança) PRESENTE numa frase — o `reason`,
+    sem repetir por linha. Assim o agente sabe o que cada selo significa."""
+    pairs = {(r.get("resolver", "none"), r["confidence"]) for r in rows
+             if r.get("confidence") is not None}
+    if not pairs:
+        return []
+    out = ["", "como ler [confiança · resolver]:"]
+    for label, conf in sorted(pairs, key=lambda p: (_CONF_ORDER.get(p[1], 9), p[0])):
+        out.append(f"  {conf} · {label} — {explain.reason(label, conf)}")
+    return out
 
 
 def _loc(row) -> str:
@@ -54,9 +77,10 @@ def refs(sym, rows, env) -> str:
     for r in rows:
         src = r["src_fqn"] or "<módulo>"
         lines.append(f"  {r['site_path']}:{r['line']}  {src}  "
-                     f"({r['kind']}) [{r['confidence']}]")
+                     f"({r['kind']}) {_tag(r)}")
     if len(rows) >= 60:
         lines.append("  … (truncado no limite; filtre com kind)")
+    lines += _legend(rows)
     return warnings(env) + "\n".join(lines)
 
 
@@ -71,7 +95,7 @@ def calls(sym, rows, env, label: str, direction: str) -> str:
     for r in strong:
         other = r["other_fqn"] or "<módulo>"
         lines.append(f"{'  ' * r['depth']}{r['site_path']}:{r['line']}  "
-                     f"{other}  [{r['confidence']}]")
+                     f"{other}  {_tag(r)}")
     if weak:
         # agrega por site: um call site ambíguo casa N candidatos por nome —
         # mostrá-los numa linha (em vez de N) corta tokens sem perder recall
@@ -92,6 +116,7 @@ def calls(sym, rows, env, label: str, direction: str) -> str:
         agg = ", ".join(f"{n}×{c}" if c > 1 else n
                         for n, c in sorted(counts.items()))
         lines.append(f"externas (não resolvidas no repo): {agg}")
+    lines += _legend(resolved)
     return warnings(env) + "\n".join(lines)
 
 
@@ -103,11 +128,12 @@ def impact(sym, rows, env) -> str:
              f"por profundidade/importância:"]
     for r in rows[:_IMPACT_CAP]:
         lines.append(f"  [d{r['depth']}] {r['path']}:{r['start_line']}  "
-                     f"{r['fqn']} [{r['confidence']}]")
+                     f"{r['fqn']} {_tag(r)}")
     if len(rows) > _IMPACT_CAP:
         lines.append(f"  … +{len(rows) - _IMPACT_CAP} (reduza depth para focar)")
     if not rows:
         lines.append("  nenhum dependente conhecido no repo.")
+    lines += _legend(rows[:_IMPACT_CAP])
     return warnings(env) + "\n".join(lines)
 
 
@@ -124,12 +150,13 @@ def ego(data, env) -> str:
         for r in data["in"]:
             other = r["other_fqn"] or "<módulo>"
             lines.append(f"    {r['kind']:<9} {other}  "
-                         f"{r['site_path']}:{r['line']} [{r['confidence']}]")
+                         f"{r['site_path']}:{r['line']} {_tag(r)}")
     if data["out"]:
         lines.append("  → saída:")
         for r in data["out"]:
             other = r["other_fqn"] or f"?{r['dst_name']}"
-            lines.append(f"    {r['kind']:<9} {other}  :{r['line']} [{r['confidence']}]")
+            lines.append(f"    {r['kind']:<9} {other}  :{r['line']} {_tag(r)}")
+    lines += _legend(data["in"] + data["out"])
     return warnings(env) + "\n".join(lines)
 
 
@@ -290,6 +317,11 @@ def doctor(d) -> str:
     if not d["l1_resolvers"]:
         flags.append("nenhum resolver L1 ativo — arestas ficam em 'inferred'/"
                      "'possible' (instale: pip install \"graphcodemap[l1]\")")
+    for m in d.get("l1_missing", []):
+        langs = ", ".join(m["languages"])
+        env = f" (ou defina ${m['env']})" if m.get("env") else ""
+        flags.append(f"L1 indisponível para {langs}: '{m['server']}' não está no "
+                     f"PATH{env} — resolução fica em 'inferred'/'possible'")
     if d["call_edges"] and d["certain_pct"] < 20 and d["l1_resolvers"]:
         flags.append(f"só {d['certain_pct']}% das chamadas são 'certain' — "
                      "considere rodar `refine` para promover mais arestas")

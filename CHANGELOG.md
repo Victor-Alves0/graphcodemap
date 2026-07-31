@@ -8,6 +8,22 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Resolution transparency — every edge now explains how it was resolved
+  (L1/LSP roadmap, tier 1).** The graph already stored `resolver` (l0/l1) and
+  `confidence` (possible/inferred/certain) per edge, but never surfaced them.
+  Now `references`, `callers`/`callees`, `ego` and `impact` tag each edge inline
+  as `[confidence · resolver]` (e.g. `[certain · l1/typescript]`,
+  `[inferred · l0]`) and append a compact "como ler" legend translating each
+  present tag into a one-line **reason** ("TypeScript language service resolveu
+  exatamente 1 definição", "L0: casado por nome, homônimos ambíguos — verificar").
+  This lets the agent trust a `certain` edge without re-reading code and makes
+  resolution debuggable. A new pure `explain` module derives label+reason from
+  `(resolver, confidence, language)` with no per-edge storage. `doctor` gained an
+  `l1_missing` diagnostic: for each language present in the repo whose language
+  server is not on the PATH, it now says so explicitly ("L1 indisponível para go:
+  'gopls' não está no PATH — resolução fica em 'inferred'/'possible'"), so
+  degraded resolution is visible instead of silent. 21-test battery.
+
 - **Terraform / HCL — new dedicated extractor (16th dedicated language).**
   `.tf`, `.tfvars` and `.hcl` are now first-class instead of falling outside the
   graph. HCL is block-oriented, so the extractor models Terraform's real

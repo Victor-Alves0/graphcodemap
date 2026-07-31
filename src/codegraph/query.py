@@ -11,6 +11,7 @@ import os
 import time
 from dataclasses import dataclass, field
 
+from . import explain
 from .community import ensure_communities
 from .indexer import (Indexer, get_index_excludes, get_index_scopes,
                       scan_source_stats)
@@ -340,7 +341,8 @@ class QueryEngine:
             kind_sql = " AND e.kind=?" if kind else ""
             args = [sym["id"], *([kind] if kind else []), limit]
             return self.conn.execute(
-                f"SELECT e.kind, e.line, e.confidence, f.path AS site_path, "
+                f"SELECT e.kind, e.line, e.confidence, e.resolver, "
+                f"f.language AS site_language, f.path AS site_path, "
                 f"s.fqn AS src_fqn FROM edges e JOIN files f ON e.file_id=f.id "
                 f"LEFT JOIN symbols s ON e.src=s.id WHERE e.dst=?{kind_sql} "
                 f"ORDER BY f.path, e.line LIMIT ?", args).fetchall()
@@ -356,7 +358,7 @@ class QueryEngine:
             rows = q()
         self._completeness(sym, rows, env)
         self._warn_partial({r["site_path"] for r in rows}, env)
-        return sym, [dict(r) for r in rows], env
+        return sym, [explain.annotate(dict(r)) for r in rows], env
 
     def callers(self, selector: str, depth: int = 1):
         return self._call_walk(selector, depth, direction="in")
@@ -374,7 +376,8 @@ class QueryEngine:
                 ph = ",".join("?" * len(frontier))
                 if direction == "in":
                     rows = self.conn.execute(
-                        f"SELECT e.line, e.confidence, e.dst_name, f.path AS site_path, "
+                        f"SELECT e.line, e.confidence, e.resolver, "
+                        f"f.language AS site_language, e.dst_name, f.path AS site_path, "
                         f"s.id AS other_id, s.fqn AS other_fqn, s.kind AS other_kind "
                         f"FROM edges e JOIN files f ON e.file_id=f.id "
                         f"LEFT JOIN symbols s ON e.src=s.id "
@@ -382,7 +385,8 @@ class QueryEngine:
                         f"ORDER BY f.path, e.line", list(frontier)).fetchall()
                 else:
                     rows = self.conn.execute(
-                        f"SELECT e.line, e.confidence, e.dst_name, f.path AS site_path, "
+                        f"SELECT e.line, e.confidence, e.resolver, "
+                        f"f.language AS site_language, e.dst_name, f.path AS site_path, "
                         f"s.id AS other_id, s.fqn AS other_fqn, s.kind AS other_kind "
                         f"FROM edges e LEFT JOIN symbols s ON e.dst=s.id "
                         f"JOIN files f ON e.file_id=f.id "
@@ -390,7 +394,7 @@ class QueryEngine:
                         f"ORDER BY f.path, e.line", list(frontier)).fetchall()
                 nxt = set()
                 for r in rows:
-                    results.append({**dict(r), "depth": d})
+                    results.append(explain.annotate({**dict(r), "depth": d}))
                     oid = r["other_id"]
                     if oid and oid not in seen:
                         seen.add(oid)
@@ -430,7 +434,8 @@ class QueryEngine:
             for d in range(1, depth + 1):
                 ph = ",".join("?" * len(frontier))
                 rows = self.conn.execute(
-                    f"SELECT e.src, e.dst, e.kind, e.confidence, s.fqn, s.kind AS skind, "
+                    f"SELECT e.src, e.dst, e.kind, e.confidence, e.resolver, "
+                    f"f.language AS site_language, s.fqn, s.kind AS skind, "
                     f"s.rank, s.start_line, f.path FROM edges e "
                     f"JOIN symbols s ON e.src=s.id JOIN files f ON s.file_id=f.id "
                     f"WHERE e.dst IN ({ph}) AND e.kind IN ({kinds_ph}) "
@@ -448,6 +453,8 @@ class QueryEngine:
                         "fqn": r["fqn"], "kind": r["skind"], "rank": r["rank"],
                         "path": r["path"], "start_line": r["start_line"],
                         "depth": d, "confidence": path_conf, "via": r["kind"],
+                        "resolver": explain.resolver_label(
+                            r["resolver"], r["site_language"]),
                     })
                 if not nxt:
                     break
@@ -577,11 +584,14 @@ class QueryEngine:
         if self._repair({sym["path"]}, env):
             sym = self._resolve_selector(sym["fqn"])
         out_rows = self.conn.execute(
-            "SELECT e.kind, e.confidence, e.line, e.dst_name, s.fqn AS other_fqn "
-            "FROM edges e LEFT JOIN symbols s ON e.dst=s.id "
+            "SELECT e.kind, e.confidence, e.resolver, f.language AS site_language, "
+            "e.line, e.dst_name, s.fqn AS other_fqn "
+            "FROM edges e JOIN files f ON e.file_id=f.id "
+            "LEFT JOIN symbols s ON e.dst=s.id "
             "WHERE e.src=? ORDER BY e.kind, e.line", (sym["id"],)).fetchall()
         in_rows = self.conn.execute(
-            "SELECT e.kind, e.confidence, e.line, f.path AS site_path, "
+            "SELECT e.kind, e.confidence, e.resolver, f.language AS site_language, "
+            "e.line, f.path AS site_path, "
             "s.fqn AS other_fqn FROM edges e JOIN files f ON e.file_id=f.id "
             "LEFT JOIN symbols s ON e.src=s.id "
             "WHERE e.dst=? ORDER BY e.kind, f.path, e.line", (sym["id"],)).fetchall()
@@ -597,8 +607,8 @@ class QueryEngine:
         data = {
             "symbol": sym, "parent": parent,
             "children": [dict(c) for c in children],
-            "out": [dict(r) for r in out_rows],
-            "in": [dict(r) for r in in_rows],
+            "out": [explain.annotate(dict(r)) for r in out_rows],
+            "in": [explain.annotate(dict(r)) for r in in_rows],
         }
         return data, env
 
@@ -1011,12 +1021,18 @@ class QueryEngine:
             "LIMIT ?", (failed_limit,)).fetchall()]
         failed_total = g("SELECT COUNT(*) FROM files WHERE parse_status='failed'")
 
+        repo_langs = {r["language"] for r in self.conn.execute(
+            "SELECT DISTINCT language FROM files")}
         try:
-            from .l1 import available_resolvers
+            from .l1 import available_resolvers, missing_resolvers
             resolvers = sorted({lang for cls in available_resolvers()
                                 for lang in cls.languages})
+            # degradação visível: linguagens do repo cujo LSP não está no PATH →
+            # as arestas ficam em inferred/possible em vez de certain.
+            l1_missing = missing_resolvers(repo_langs)
         except Exception:  # dependências L1 ausentes não devem quebrar o doctor
             resolvers = []
+            l1_missing = []
 
         call_edges = sum(conf.values()) or 1
         last_scan = meta.get("last_full_scan")
@@ -1037,6 +1053,7 @@ class QueryEngine:
             "certain_pct": round(100 * conf.get("certain", 0) / call_edges, 1),
             "dangling": g("SELECT COUNT(*) FROM edges WHERE kind='calls' AND dst IS NULL"),
             "l1_resolvers": resolvers,
+            "l1_missing": l1_missing,
             "last_full_scan": int(last_scan) if last_scan else None,
             "last_full_scan_age_s": age,
             "by_language": {
