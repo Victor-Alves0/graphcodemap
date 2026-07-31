@@ -6,6 +6,10 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-07-31
+
+First public release. Everything below is the initial feature set at cut time.
+
 ### Added
 
 - **Contract tests for the graph's invariants (Priority 3).** The product's

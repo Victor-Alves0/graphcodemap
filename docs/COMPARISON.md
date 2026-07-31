@@ -1,4 +1,9 @@
-# CodeGraph vs Graphify — análise honesta (2026-07-18)
+# GraphCodeMap vs Graphify — análise honesta (2026-07-18, atualizado 2026-07-31)
+
+> Nota (2026-07-31): documento vivo. As colunas "nós" abaixo foram atualizadas
+> para o estado atual — o projeto agora se chama **GraphCodeMap**, tem 23
+> extractors dedicados, visualização investigativa e dataflow em 18 linguagens.
+> A análise do concorrente permanece a do levantamento original.
 
 [Graphify](https://github.com/Graphify-Labs/graphify) (Graphify Labs, YC S26, ~90k stars, MIT)
 é o projeto mais popular do espaço. Análise do que eles fazem melhor, do que
@@ -6,14 +11,14 @@ fazemos melhor, e do que falta para superá-los.
 
 ## Onde o Graphify está à frente
 
-| Área | Graphify | CodeGraph hoje |
+| Área | Graphify | GraphCodeMap hoje |
 |---|---|---|
-| Linguagens | ~40 (36 gramáticas tree-sitter + regex p/ 4) | 11 |
-| Além de código | docs, PDFs, imagens, áudio/vídeo via LLM | só código |
+| Linguagens | ~40 (36 gramáticas tree-sitter + regex p/ 4) | **23 dedicadas** (18 código + web HTML/CSS + Terraform) + tier genérico p/ dezenas de gramáticas |
+| Além de código | docs, PDFs, imagens, áudio/vídeo via LLM | só código (por tese) + Markdown/JSON/YAML/TOML |
 | Comunidades | Leiden + labels por LLM (camada "domínio") | **temos** (Louvain próprio + labels L3 opcionais, invalidados por assinatura de membros); Leiden é refinamento futuro |
-| Visualização | HTML interativo | não temos |
-| Time/CI | PR tools, triage, HTTP multi-user, merge driver | local-first single-user |
-| Ecossistema | 20+ plataformas, skills por IDE, 164 releases | MCP + CLI + lib |
+| Visualização | HTML interativo | **temos** — subgrafos de investigação semeados (neighborhood/callers/callees/impact/domains), arestas por confiança, destaque de git-diff; HTML autocontido |
+| Time/CI | PR tools, triage, HTTP multi-user, merge driver | local-first single-user; `change-impact`/`affected-modules` já respondem a um diff |
+| Ecossistema | 20+ plataformas, skills por IDE, 164 releases | MCP (20 tools) + CLI + lib |
 
 ## Onde o CodeGraph é tecnicamente superior
 
@@ -35,8 +40,8 @@ fazemos melhor, e do que falta para superá-los.
    handler): intra-procedural may-taint composto ao longo do call graph, sob
    demanda (sempre fresco), confiança herdada — o esqueleto de um Code Property
    Graph sem o custo whole-program do Joern, e incremental/fresco (que Joern
-   não é). **17 linguagens** (todas as dedicadas: py, js/ts, java, c#, c/c++,
-   go, rust, ruby, php, kotlin, swift, scala, lua) — paridade total com o
+   não é). **18 linguagens dedicadas** (py, js/ts, java, c#, c/c++, go, rust,
+   ruby, php, kotlin, swift, scala, lua, clojure) — paridade total com o
    grafo. Ver docs/RESEARCH.md §6.
 3. **Honestidade epistêmica na resposta.** Ambos etiquetam arestas
    (EXTRACTED/INFERRED ≈ nosso inferred/possible), mas só nós declaramos
@@ -57,27 +62,31 @@ fazemos melhor, e do que falta para superá-los.
 ## O que falta para superá-los de fato
 
 Curto prazo (engenharia direta):
-- ~~**Cobertura de linguagens**~~ **EM ANDAMENTO** (2026-07-18): tier genérico
-  cobre qualquer gramática; extractors DEDICADOS agora em 17 linguagens
-  (Ruby, Lua/Luau, Swift, Scala adicionados — fqn com escopo, herança, imports,
-  calls no site do nome), e o dataflow/taint cobre todas elas. Próximos
-  candidatos: Dart, Elixir (adiados por irregularidade de gramática).
+- ~~**Cobertura de linguagens**~~ **MUITO AVANÇADO** (2026-07-31): tier genérico
+  cobre qualquer gramática; extractors DEDICADOS agora em **23 linguagens**
+  (18 código — incl. Clojure/ClojureScript — mais web HTML/CSS/SCSS e
+  Terraform/HCL), com fqn com escopo, herança, imports e calls no site do nome;
+  dataflow/taint cobre as 18 de código. Cada linguagem dedicada tem um resolver
+  L1/LSP conectado (7 validados ao vivo). Falta ainda ampliar além disso
+  (Graphify ~40).
 - ~~**Camada domínio**: detecção de comunidades~~ **FEITO** (2026-07-18):
   Louvain próprio sobre o grafo de símbolos (calls/imports/inherits),
   recompute lazy, `communities` na CLI/MCP; labels via L3 opcionais e
   preservados por assinatura de membros. Leiden (garante comunidades
   bem-conectadas) fica como refinamento futuro sobre a mesma interface.
-- ~~**Visualização**: export JSON/HTML do grafo~~ **FEITO** (2026-07-18):
-  `visualize` exporta um HTML autocontido (offline, sem CDN) com grafo
-  force-directed em canvas, nós = arquivos ou símbolos, cor por domínio,
-  tamanho por PageRank; ou `--json` para os dados brutos. Corte declarado
-  aos N nós mais conectados em repos grandes.
+- ~~**Visualização**: export JSON/HTML do grafo~~ **FEITO + EVOLUÍDO**
+  (2026-07-31): de hairball para **ferramenta de investigação** — subgrafos
+  semeados por query (neighborhood/callers/callees/impact/domains), filtros
+  ortogonais (confiança mínima, linguagem, arquivos alterados no git), arestas
+  direcionais estilizadas por confiança, anel vermelho=changed, anel
+  branco=seed, toggles in-page; HTML autocontido ou `--json`.
 
 Médio prazo (produto):
-- PR/CI tooling (impact diff de um PR é nossa força natural: temos impact
-  transitivo com confiança).
+- ~~PR/CI tooling~~ **PARCIAL** (2026-07-31): `change-impact`/`affected-modules`
+  já operam a partir de um diff; falta o wrapper de PR/CI propriamente dito.
 - Multi-repo/HTTP para times.
-- Distribuição: publicar no PyPI, skills por IDE, docs.
+- ~~Distribuição~~ **EM ANDAMENTO** (2026-07-31): documentação completa
+  (`docs/`), CONTRIBUTING; publicação no PyPI e skills por IDE pendentes.
 
 Não copiar: ingestão de PDF/mídia (fora da tese; SIFT/RAG cobrem isso melhor).
 
