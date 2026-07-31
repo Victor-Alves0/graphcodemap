@@ -8,6 +8,19 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Scala robustness pass — thirteenth of the per-language hardening.** A 38-test
+  battery exposed the recurring trio, all fixed: **primary-constructor member
+  parameters** — a `case class Point(x, y)` promotes every parameter to a public
+  `val`, and `class C(val x)` / `class C(var x)` promote the annotated ones;
+  plain `class C(x)` parameters stay non-members (all three distinguished);
+  **Scala 3 enums** (`enum Color { case Red, Green }`) — the `enum_definition`
+  node and its `simple_enum_case`/`full_enum_case` children were unhandled, now
+  the enum and each case are symbols; **visibility was never set** — now read
+  from the `modifiers` node (`private`/`protected`, default `public`). Class-level
+  `val`/`var` members already worked; inheritance now emits the simple supertype
+  name (stripping a qualified `pkg.Base`) so `with`-mixins and qualified
+  supertypes resolve.
+
 - **Swift robustness pass — twelfth of the per-language hardening.** A 43-test
   battery exposed the recurring trio, all fixed: **stored, computed and static
   properties** (`var name: String`, `let id: Int`, `var area: Int { … }`) and
