@@ -8,6 +8,18 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Go robustness pass — fifth of the per-language hardening.** A 48-test
+  battery hit the familiar trio: **named struct fields** (`type Point struct { X,
+  Y int }`) were not symbols — only embedded (anonymous) fields were handled, as
+  `inherits` — now each named field is a navigable symbol scoped to the struct
+  (multiple names per line, `X, Y int`, handled); **type visibility** (struct/
+  interface/type-alias) and **interface-method visibility** were never set —
+  Go's rule is capitalization, now applied (`Exported` → `public`, `unexported`
+  → `private`) consistently across types and members, matching what functions/
+  methods/vars already did. Embedded types now emit the simple name and resolve
+  by name+kind (a locally-embedded `pkg.Base` no longer risks the qualified
+  mismatch). Builtins (`make`, `len`, `append`…) stay filtered from call edges.
+
 - **TypeScript/TSX/JavaScript robustness pass — fourth of the per-language
   hardening.** A 60-test battery hit the same recurring trio plus one extra, all
   fixed: **class fields/properties** (`count = 0`, `name: string`, `static V`,

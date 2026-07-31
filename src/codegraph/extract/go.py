@@ -17,6 +17,11 @@ _BUILTINS = {
 
 
 class GoExtractor(BaseExtractor):
+    @staticmethod
+    def _vis(name: str) -> str:
+        """Visibilidade Go é por CAPITALIZAÇÃO: inicial maiúscula = exportado."""
+        return "public" if name[:1].isupper() else "private"
+
     def visit(self, node) -> None:
         t = node.type
         if t == "import_declaration":
@@ -102,26 +107,33 @@ class GoExtractor(BaseExtractor):
             name = self.text(name_node)
             if type_node.type == "struct_type":
                 self.add_sym(spec, "struct", name,
-                             signature=f"type {name} struct", doc=self._doc(node))
+                             signature=f"type {name} struct", doc=self._doc(node),
+                             visibility=self._vis(name))
                 self.scope.append((name, "class"))
-                self._struct_embeds(type_node)
+                self._struct_body(type_node)
                 self.scope.pop()
             elif type_node.type == "interface_type":
                 self.add_sym(spec, "interface", name,
-                             signature=f"type {name} interface", doc=self._doc(node))
+                             signature=f"type {name} interface", doc=self._doc(node),
+                             visibility=self._vis(name))
                 self.scope.append((name, "class"))
                 for m in type_node.named_children:
                     if m.type in ("method_spec", "method_elem"):
                         mn = m.child_by_field_name("name")
                         if mn is not None:
-                            self.add_sym(m, "method", self.text(mn),
-                                         signature=self.text(m), doc=None)
+                            mname = self.text(mn)
+                            self.add_sym(m, "method", mname,
+                                         signature=self.text(m), doc=None,
+                                         visibility=self._vis(mname))
                 self.scope.pop()
             else:
                 self.add_sym(spec, "type_alias", name,
-                             signature=self.text(spec), doc=self._doc(node))
+                             signature=self.text(spec), doc=self._doc(node),
+                             visibility=self._vis(name))
 
-    def _struct_embeds(self, struct_type) -> None:
+    def _struct_body(self, struct_type) -> None:
+        """Campos NOMEADOS viram símbolos (API do struct); campo ANÔNIMO
+        (embedding) vira `inherits` — é a composição do Go no lugar de herança."""
         body = next((c for c in struct_type.named_children
                      if c.type == "field_declaration_list"), None)
         if body is None:
@@ -129,13 +141,19 @@ class GoExtractor(BaseExtractor):
         for fd in body.named_children:
             if fd.type != "field_declaration":
                 continue
-            has_name = any(c.type == "field_identifier"
-                           for c in fd.children if c.is_named)
+            names = [c for c in fd.named_children if c.type == "field_identifier"]
             type_node = fd.child_by_field_name("type")
-            if not has_name and type_node is not None and \
+            if names:
+                for n in names:                       # `X, Y int` → dois campos
+                    fname = self.text(n)
+                    self.add_sym(n, "variable", fname, signature=None,
+                                 doc=None, visibility=self._vis(fname))
+            elif type_node is not None and \
                     type_node.type in ("type_identifier", "qualified_type"):
-                self.add_ref(fd, "inherits",
-                             self._qualify(self.text(type_node).replace("/", ".")))
+                # embedding: nome SIMPLES (o resolver casa por nome+kind; o
+                # qualificado `io.Reader` não alinharia com o fqn de símbolo)
+                embed = self.text(type_node).replace("/", ".").rsplit(".", 1)[-1]
+                self.add_ref(fd, "inherits", embed)
 
     def _vars(self, node, kind: str) -> None:
         for spec in node.named_children:
