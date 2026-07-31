@@ -8,6 +8,21 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Ruby robustness pass — tenth of the per-language hardening.** Ruby is
+  dynamic, so the recurring trio adapts; a 43-test battery exposed all of it,
+  fixed: **`attr_accessor`/`attr_reader`/`attr_writer`** (Ruby's property idiom)
+  now emit a member symbol per attribute instead of a bare `attr_*` call;
+  **class/module constants** were dropped by a `if self.scope: return` guard —
+  now captured; **section visibility** (`private`/`public`/`protected` are bare
+  statements that toggle the access of the methods that follow, like C++ access
+  specifiers) is now tracked statefully (default `public`; `def self.x` singleton
+  methods stay public); and **mixins** (`include`/`extend`/`prepend Mod`) now
+  become `inherits` edges instead of calls — and `module` was added to the
+  inheritance-resolution target kinds so those edges resolve. Declared boundary:
+  a bare argument-less identifier (`helper`) is parsed as an identifier
+  indistinguishable from a local-variable read, so it is not a call edge (needs
+  local tracking / L1); with parens, args, or a receiver it is captured.
+
 - **Kotlin robustness pass — ninth of the per-language hardening.** A 44-test
   battery exposed the recurring trio, all fixed: **class properties** (`val
   count: Int`, the `property_declaration` handler had a `not self.scope` guard

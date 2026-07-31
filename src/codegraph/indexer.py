@@ -98,7 +98,7 @@ STYLE_DEF_KINDS = ("css_class", "html_id")
 
 # Versão da lógica de extração/resolução: mudou → força re-index completo,
 # mesmo com content-hashes iguais (o índice é derivado de código+extractor).
-INDEXER_VERSION = "26"
+INDEXER_VERSION = "27"
 
 DEFAULT_IGNORES = [
     ".git/", ".codegraph/", "__pycache__/", ".venv/", "venv/", "node_modules/",
@@ -823,7 +823,9 @@ class Indexer:
                 if p is not None:
                     file_sym[p] = r["id"]
 
-        class_kinds = ("class", "interface", "struct")
+        # 'module' é alvo válido de herança para os MIXINS (Ruby include/extend/
+        # prepend apontam para um module); os demais casam class/interface/struct
+        class_kinds = ("class", "interface", "struct", "module")
 
         def _by_path(guess: str, from_rel: str) -> str | None:
             """Import que é CAMINHO (não nome) → símbolo `file` do alvo.
