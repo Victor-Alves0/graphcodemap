@@ -6,7 +6,31 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ## [Unreleased]
 
+### Fixed
+
+- **Read-repair now discovers NEW files, not just drift in known ones.** The
+  empty-result freshness sweep (`_repair_all`) compared on-disk stats only against
+  already-indexed files, so a file added after the last index was invisible to a
+  query until a full re-index — even though the code's own contract says an empty
+  result "também é resposta e precisa da mesma garantia de frescor." It now adds
+  on-disk source files missing from the index to the repair set, and `_repair`
+  indexes a path whose row is absent (new file) instead of skipping it. Surfaced
+  by the new cross-method workflow battery.
+
 ### Added
+
+- **Cross-method workflow/invariant battery (+30 tests).** Beyond per-method
+  batteries, `test_workflows.py` chains calls and checks that data stays coherent
+  across them: selector round-trips (`find_symbol → symbol_info`, every impacted/
+  caller fqn resolves), call-graph duality (`callees(A)∋B ⇒ callers(B)∋A`,
+  `references(X, calls).src == callers(X)`, `symbol_info.counts` match edges),
+  `ego_graph` consistency with callers/callees, `impact ⊇ direct callers` and
+  transitivity/monotonicity, `change_impact == union of impacts` and
+  `find_affected_modules` grouping, `find_related_tests ⊆ transitive callers` in
+  test files, `explain_symbol` matching the primitives, sequential freshness
+  (edit/add/delete on disk reflected in the next call), `stats`/`doctor` internal
+  consistency, idempotent L1 refine with correct `certain · l1/python` labels, and
+  overview/communities pointing at resolvable symbols.
 
 - **Agent-oriented MCP: stable response envelope + high-level tools
   (Priority 5).** Every MCP tool now returns a stable structured envelope

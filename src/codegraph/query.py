@@ -151,6 +151,12 @@ class QueryEngine:
                 "SELECT size, mtime, content_hash FROM files WHERE path=?", (rel,)
             ).fetchone()
             if row is None:
+                # arquivo NOVO no disco (apareceu após a indexação): a resposta
+                # pode estar nele. index_file ignora extensão não-fonte, então é
+                # seguro tentar — a mesma garantia anti-staleness do 'sumiu'.
+                if self.ix.index_file(rel):
+                    env.warn(f"freshness: {rel} é novo no disco; indexado agora (L0).")
+                    changed = True
                 continue
             st = path.stat()
             if st.st_size == row["size"] and int(st.st_mtime) == row["mtime"]:
@@ -191,12 +197,17 @@ class QueryEngine:
             self.root, scopes=get_index_scopes(self.conn) or None,
             excludes=get_index_excludes(self.conn) or None)
         stale: set[str] = set()
+        indexed: set[str] = set()
         for r in self.conn.execute("SELECT path, size, mtime FROM files"):
+            indexed.add(r["path"])
             cur = on_disk.get(r["path"])
             if cur is None:                          # sumiu do disco
                 stale.add(r["path"])
             elif cur[0] != r["size"] or cur[1] != r["mtime"]:
                 stale.add(r["path"])
+        # arquivos NOVOS no disco que o índice ainda não viu: a resposta vazia
+        # pode ser justamente por causa de um deles. _repair os indexa.
+        stale |= set(on_disk) - indexed
         return self._repair(stale, env) if stale else False
 
     def _warn_partial(self, rels: set[str], env: Envelope) -> None:
