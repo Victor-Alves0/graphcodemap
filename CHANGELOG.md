@@ -8,6 +8,18 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Lua/Luau robustness pass — eleventh of the per-language hardening.** Lua is
+  minimal and dynamic — no classes, no visibility keywords — so the extractor
+  only knew functions and calls; a 32-test battery mapped the missing surface,
+  now added: **module-level variables/constants** (`local x`, `X = 5`, multiple
+  per line, `UPPER` → `constant`), **module tables** (`local M = {}` becomes a
+  symbol and its methods scope under it), **table-constructor fields** (`{ name =
+  …, foo = function() … }` → member per field, function fields as methods),
+  and **field-assignment functions** (`M.bar = function() … end`). **Visibility**
+  follows Lua's real model — `local` is file-private, global is public. Local
+  variables inside a function are still not symbols (only module-level
+  declarations are), and `require` remains an import, not a call.
+
 - **Ruby robustness pass — tenth of the per-language hardening.** Ruby is
   dynamic, so the recurring trio adapts; a 43-test battery exposed all of it,
   fixed: **`attr_accessor`/`attr_reader`/`attr_writer`** (Ruby's property idiom)
