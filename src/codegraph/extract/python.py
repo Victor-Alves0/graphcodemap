@@ -46,8 +46,15 @@ class PythonExtractor(BaseExtractor):
             for c in node.children:
                 self.visit(c)
             return
-        if t == "expression_statement" and not self.scope:
-            self._module_assignment(node)
+        if not self.scope:
+            # constante/variável de módulo. A gramática emite `assignment` CRU no
+            # topo (não embrulhado em expression_statement como se esperava), e
+            # `MAX: int = 3` também é `assignment` — os dois caem aqui. Ausência
+            # de teste dedicado escondia que TODO símbolo de módulo Python sumia.
+            if t == "assignment":
+                self._record_assignment(node)
+            elif t == "expression_statement":
+                self._module_assignment(node)
         for c in node.children:
             self.visit(c)
 
@@ -96,19 +103,23 @@ class PythonExtractor(BaseExtractor):
         self.scope.pop()
 
     def _module_assignment(self, node) -> None:
+        # caminho legado: assignment embrulhado em expression_statement (algumas
+        # versões da gramática). O caminho cru é _record_assignment direto.
         for child in node.named_children:
-            if child.type != "assignment":
-                continue
-            left = child.child_by_field_name("left")
-            if left is None or left.type != "identifier":
-                continue
-            name = self.text(left)
-            kind = "constant" if name.isupper() else "variable"
-            self.add_sym(
-                child, kind, name,
-                signature=None, doc=None,
-                visibility="private" if name.startswith("_") else "public",
-            )
+            if child.type == "assignment":
+                self._record_assignment(child)
+
+    def _record_assignment(self, child) -> None:
+        left = child.child_by_field_name("left")
+        if left is None or left.type != "identifier":
+            return                       # tupla/subscrito/atributo: não é símbolo
+        name = self.text(left)
+        kind = "constant" if name.isupper() else "variable"
+        self.add_sym(
+            child, kind, name,
+            signature=None, doc=None,
+            visibility="private" if name.startswith("_") else "public",
+        )
 
     def _docstring(self, body) -> str | None:
         if body is None or not body.named_children:

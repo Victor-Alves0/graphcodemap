@@ -6,6 +6,16 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ## [Unreleased]
 
+### Fixed
+
+- **Python module-level constants and variables were silently dropped.** The
+  extractor expected top-level assignments wrapped in `expression_statement`,
+  but the grammar emits a bare `assignment` node at module scope (`MAX = 3` and
+  `MAX: int = 3` alike) — so *every* module constant/variable was invisible to
+  the graph (`SECRET`, a `service = Foo()` singleton, config values). No Python
+  test asserted module-symbol extraction, which is exactly why it slipped;
+  Kotlin/Go/Rust/C# had such tests and worked. Fixed and covered.
+
 ### Added
 
 - **Java calls are disambiguated by the receiver's declared type.** Two methods

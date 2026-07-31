@@ -20,6 +20,16 @@ def test_index_extracts_symbols(cg):
     assert "app.utils.formatUser" in fqns(rows)
 
 
+def test_module_level_constant_and_variable_are_symbols(cg):
+    # regressão: a gramática emite `assignment` CRU no topo (sem embrulho em
+    # expression_statement), então TODO símbolo de módulo Python sumia — SECRET
+    # e service não existiam no grafo. Sem teste dedicado, passava batido.
+    rows, _ = cg.find_symbol("SECRET", kind="constant")
+    assert "app.auth.SECRET" in fqns(rows)
+    rows, _ = cg.find_symbol("service", kind="variable")
+    assert "app.routes.service" in fqns(rows)
+
+
 def test_docstring_and_signature(cg):
     info, _ = cg.symbol_info("app.auth.TokenService.validate")
     s = info["symbol"]
