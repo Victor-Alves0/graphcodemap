@@ -1,7 +1,8 @@
 /**
  * Serviço L1 para JS/TS: TypeScript LanguageService via stdin/stdout.
  * Protocolo JSON-lines: {id, file, line(1-based), col(0-based)} →
- * {id, file, line} da definição (só quando única e dentro do repo), ou {id}.
+ * {id, defs: [{file, line}, ...]} das definições dentro do repo (1 = alvo único;
+ * N = overloads/múltiplas defs, que o cliente promove como fan-out), ou {id}.
  *
  * Uso: node ts_service.js <caminho-do-modulo-typescript> <raiz-do-repo>
  */
@@ -14,6 +15,7 @@ const readline = require("readline");
 const ts = require(path.resolve(process.argv[2]));
 const root = path.resolve(process.argv[3]);
 
+const MAX_DEFS = 5;  // espelha promote.MAX_L1_TARGETS; acima disso é ruído
 const EXTS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]);
 const SKIP_DIRS = new Set(["node_modules", ".git", ".codegraph", "dist", "build",
   "coverage", ".next", "vendor"]);
@@ -97,13 +99,21 @@ rl.on("line", (raw) => {
                        path.resolve(d.fileName).startsWith(root));
       const uniq = new Map();
       for (const d of defs) uniq.set(d.fileName + ":" + d.textSpan.start, d);
-      if (uniq.size === 1) {
-        const d = uniq.values().next().value;
-        const line = lineOf(d.fileName, d.textSpan.start);
-        if (line !== null) {
-          out.file = path.relative(root, d.fileName).split(path.sep).join("/");
-          out.line = line;
+      // devolve TODAS as definições no repo (até MAX_DEFS): 1 = alvo único, N =
+      // overloads/múltiplas defs. O cliente (promote) decide certain vs fan-out.
+      if (uniq.size >= 1 && uniq.size <= MAX_DEFS) {
+        const seen = new Set();
+        const list = [];
+        for (const d of uniq.values()) {
+          const line = lineOf(d.fileName, d.textSpan.start);
+          if (line === null) continue;
+          const file = path.relative(root, d.fileName).split(path.sep).join("/");
+          const key = file + ":" + line;
+          if (seen.has(key)) continue;   // mesma linha (span diferente) = 1 alvo
+          seen.add(key);
+          list.push({ file, line });
         }
+        if (list.length) out.defs = list;
       }
     }
   } catch {}

@@ -11,6 +11,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from . import promote
+
 
 class JediResolver:
     languages = ("python",)
@@ -64,30 +66,18 @@ class JediResolver:
                                    follow_builtin_imports=False)
             except Exception:
                 continue
-            defs = [d for d in defs if d.module_path is not None and d.line]
-            if len(defs) != 1:
-                continue
-            try:
-                drel = Path(defs[0].module_path).resolve() \
-                    .relative_to(root).as_posix()
-            except ValueError:
-                continue  # definição fora do repo (stdlib/site-packages)
-            drow = conn.execute("SELECT id FROM files WHERE path=?", (drel,)).fetchone()
-            if drow is None:
-                continue
-            srow = conn.execute(
-                "SELECT id FROM symbols WHERE file_id=? AND start_line<=? "
-                "AND end_line>=? ORDER BY (end_line-start_line) LIMIT 1",
-                (drow["id"], defs[0].line, defs[0].line)).fetchone()
-            if srow is None:
-                continue
-            conn.execute(
-                "UPDATE edges SET dst=?, confidence='certain', resolver='l1' "
-                "WHERE id=?", (srow["id"], e["id"]))
-            # clones 'possible' do mesmo site viraram redundância
-            conn.execute(
-                "DELETE FROM edges WHERE kind='calls' AND file_id=? AND line=? "
-                "AND col=? AND id!=? AND resolver='l0' AND confidence='possible'",
-                (file_id, e["line"], e["col"], e["id"]))
-            promoted += 1
+            # multi-def não é descartado: cada def no repo vira um alvo;
+            # promote decide certain (1) vs fan-out inferred (2..MAX).
+            targets = []
+            for d in defs:
+                if d.module_path is None or not d.line:
+                    continue
+                try:
+                    drel = Path(d.module_path).resolve().relative_to(root).as_posix()
+                except ValueError:
+                    continue  # definição fora do repo (stdlib/site-packages)
+                sid = promote.target_symbol(conn, drel, d.line)
+                if sid is not None:
+                    targets.append(sid)
+            promoted += promote.apply(conn, file_id, e, targets)
         return promoted

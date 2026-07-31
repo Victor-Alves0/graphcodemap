@@ -30,6 +30,7 @@ from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
 from ..log import get as _get_log
+from . import promote
 
 log = _get_log(__name__)
 
@@ -311,32 +312,20 @@ class LspResolver:
             seen_sites.add(site)
             col = self._query_col(rel, e["line"], e["col"], e["dst_name"])
             locs = self._definition(rel, e["line"] - 1, col)
-            if len(locs) != 1:
-                continue
-            dpath = _uri_to_path(locs[0][0])
-            if dpath is None:
-                continue
-            try:
-                drel = dpath.resolve().relative_to(self.root).as_posix()
-            except ValueError:
-                continue  # definição fora do repo (stdlib/módulo externo)
-            drow = conn.execute("SELECT id FROM files WHERE path=?",
-                                (drel,)).fetchone()
-            if drow is None:
-                continue
-            dline = locs[0][1] + 1
-            srow = conn.execute(
-                "SELECT id FROM symbols WHERE file_id=? AND start_line<=? "
-                "AND end_line>=? ORDER BY (end_line-start_line) LIMIT 1",
-                (drow["id"], dline, dline)).fetchone()
-            if srow is None:
-                continue
-            conn.execute(
-                "UPDATE edges SET dst=?, confidence='certain', resolver='l1' "
-                "WHERE id=?", (srow["id"], e["id"]))
-            conn.execute(
-                "DELETE FROM edges WHERE kind='calls' AND file_id=? AND line=? "
-                "AND col=? AND id!=? AND resolver='l0' AND confidence='possible'",
-                (file_id, e["line"], e["col"], e["id"]))
-            promoted += 1
+            # multi-def (overloads / interface+impls / decl+def) NÃO é descartado:
+            # cada definição no repo vira um alvo; promote.apply decide certain
+            # (1 alvo) vs fan-out inferred (2..MAX).
+            targets = []
+            for uri, line0 in locs:
+                dpath = _uri_to_path(uri)
+                if dpath is None:
+                    continue
+                try:
+                    drel = dpath.resolve().relative_to(self.root).as_posix()
+                except ValueError:
+                    continue  # definição fora do repo (stdlib/módulo externo)
+                sid = promote.target_symbol(conn, drel, line0 + 1)
+                if sid is not None:
+                    targets.append(sid)
+            promoted += promote.apply(conn, file_id, e, targets)
         return promoted

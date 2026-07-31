@@ -51,6 +51,11 @@ def reason(label: str, confidence: str | None, *, resolved: bool = True) -> str:
         engine = _L1_ENGINE.get(lang, "language server")
         # jedi é in-process (goto); os demais são LSP (textDocument/definition)
         how = "goto in-process" if lang == "python" else "LSP textDocument/definition"
+        if confidence == "inferred":
+            # L1 resolveu, mas para VÁRIAS definições (overloads / interface+impls
+            # / decl+def): semântico — mais forte que o palpite por nome do L0.
+            return (f"{engine} resolveu para várias definições (overloads/múltiplas "
+                    f"defs) — semânticas, mas não únicas; verificar qual se aplica")
         return f"{engine} resolveu exatamente 1 definição ({how})"
     if confidence == "certain":
         return "resolução semântica encontrou 1 definição"

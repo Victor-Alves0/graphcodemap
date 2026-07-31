@@ -8,6 +8,27 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **L1 keeps multi-definition results — overloads no longer dropped (L1/LSP
+  roadmap, tier 3).** Every resolver used to `continue` when the server returned
+  more than one definition (`len(locs) != 1`), throwing away real semantic
+  information — overloads, an interface and its impls, decl+def (C++), a name
+  bound in multiple branches — and leaving the edge as L0's name-based `possible`.
+  Now a shared `l1/promote.py` promotes the site: **1 in-repo target → `certain`**
+  (unique semantic resolution); **2..MAX targets → a fan-out of `inferred` edges
+  with `resolver='l1'`** (semantically grounded, so stronger than L0's `possible`,
+  but honestly not unique); **0 targets → unchanged** (external → predictable L0
+  fallback); **>MAX → unchanged**. The three resolvers (lsp_base, jedi,
+  `ts_service`) were refactored onto this shared helper, removing the duplicated
+  promotion SQL; `ts_service` now returns all in-repo definitions (`out.defs[]`)
+  instead of only the unique one. The transparency layer distinguishes
+  `l1`+`inferred` (overloads: "resolveu para várias definições…") from
+  `l0`+`inferred` (unique by name) via the resolver label. Much of the rest of
+  tier 3 (reexports, aliases, relative imports, generics, instance methods) is
+  resolved natively by the language server once it is rooted correctly (tier 2)
+  and its multi-def answers are kept (this change); per-package tsconfig and
+  generated-file handling remain. 13-test battery (fan-out, idempotency via the
+  unique index, guards, transparency).
+
 - **L1 monorepo support + LSP result cache (L1/LSP roadmap, tier 2).** Language
   servers only resolve correctly when opened at the **subproject** root (`go.mod`,
   `Cargo.toml`, `pom.xml`, `composer.json`…), not the repo root — in a monorepo,

@@ -14,6 +14,8 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
+from . import promote
+
 _DEV_ROOT = Path(__file__).resolve().parents[3]  # layout src/: raiz do repo
 
 
@@ -97,24 +99,14 @@ class TsLsResolver:
                 continue
             seen_sites.add(site)
             resp = self._query(rel, e["line"], e["col"])
-            if not resp or "file" not in resp:
+            if not resp or "defs" not in resp:
                 continue
-            drow = conn.execute("SELECT id FROM files WHERE path=?",
-                                (resp["file"],)).fetchone()
-            if drow is None:
-                continue
-            srow = conn.execute(
-                "SELECT id FROM symbols WHERE file_id=? AND start_line<=? "
-                "AND end_line>=? ORDER BY (end_line-start_line) LIMIT 1",
-                (drow["id"], resp["line"], resp["line"])).fetchone()
-            if srow is None:
-                continue
-            conn.execute(
-                "UPDATE edges SET dst=?, confidence='certain', resolver='l1' "
-                "WHERE id=?", (srow["id"], e["id"]))
-            conn.execute(
-                "DELETE FROM edges WHERE kind='calls' AND file_id=? AND line=? "
-                "AND col=? AND id!=? AND resolver='l0' AND confidence='possible'",
-                (file_id, e["line"], e["col"], e["id"]))
-            promoted += 1
+            # multi-def (overloads) não é descartado: cada def vira um alvo;
+            # promote decide certain (1) vs fan-out inferred (2..MAX).
+            targets = []
+            for d in resp["defs"]:
+                sid = promote.target_symbol(conn, d["file"], d["line"])
+                if sid is not None:
+                    targets.append(sid)
+            promoted += promote.apply(conn, file_id, e, targets)
         return promoted
