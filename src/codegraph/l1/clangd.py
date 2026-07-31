@@ -17,3 +17,5 @@ class ClangdResolver(LspResolver):
     language_id = "cpp"        # clangd infere pela extensão; 'cpp' é seguro
     cmd_name = "clangd"
     cmd_env = "CODEGRAPH_CLANGD"
+    root_markers = ("compile_commands.json", "compile_flags.txt", ".clangd",
+                    "CMakeLists.txt")

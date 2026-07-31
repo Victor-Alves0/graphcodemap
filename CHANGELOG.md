@@ -8,6 +8,25 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **L1 monorepo support + LSP result cache (L1/LSP roadmap, tier 2).** Language
+  servers only resolve correctly when opened at the **subproject** root (`go.mod`,
+  `Cargo.toml`, `pom.xml`, `composer.json`…), not the repo root — in a monorepo,
+  opening everything at the repo root degrades or zeroes resolution. `refine` now
+  groups each language's files by their detected project root (nearest ancestor
+  with a marker, bounded by the repo root) and opens **one server per root**. A
+  new pure `l1/roots.py` does the detection; each resolver declares
+  `root_markers`. `lsp_base` was decoupled: `self.root` stays the repo root (for
+  opening repo-relative files and relativizing definitions back) while the
+  advertised `rootUri`/`workspaceFolders` is the subproject `project_root` (file
+  URIs are absolute, so matching is unaffected). Non-monorepo repos yield a single
+  group = the repo root, so behavior is unchanged. jedi (`jedi.Project`) is
+  rooted per subproject too; TS stays repo-rooted (the `ts_service` protocol
+  relativizes to its spawn root — per-package tsconfig is tier-3 depth work).
+  Added an in-run **definition cache** (`lsp_base` memoizes `textDocument/
+  definition` by position; `ts_service` queries memoized) that removes the
+  warmup-then-requery round-trip and any repeats within a consistent snapshot.
+  `refine` stats gained `roots` (distinct project roots used). 15-test battery.
+
 - **Resolution transparency — every edge now explains how it was resolved
   (L1/LSP roadmap, tier 1).** The graph already stored `resolver` (l0/l1) and
   `confidence` (possible/inferred/certain) per edge, but never surfaced them.

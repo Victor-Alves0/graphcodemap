@@ -47,8 +47,11 @@ def reason(label: str, confidence: str | None, *, resolved: bool = True) -> str:
         return ("não resolvido no repo: dependência externa, chamada dinâmica "
                 "ou definição ausente (L0 mantém a incerteza honesta)")
     if label.startswith("l1/"):
-        engine = _L1_ENGINE.get(label.split("/", 1)[1], "language server")
-        return f"{engine} resolveu exatamente 1 definição (LSP textDocument/definition)"
+        lang = label.split("/", 1)[1]
+        engine = _L1_ENGINE.get(lang, "language server")
+        # jedi é in-process (goto); os demais são LSP (textDocument/definition)
+        how = "goto in-process" if lang == "python" else "LSP textDocument/definition"
+        return f"{engine} resolveu exatamente 1 definição ({how})"
     if confidence == "certain":
         return "resolução semântica encontrou 1 definição"
     if confidence == "inferred":

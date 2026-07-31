@@ -25,6 +25,8 @@ class JdtlsResolver(LspResolver):
     languages = ("java",)
     language_id = "java"
     cmd_name = "java"
+    root_markers = ("pom.xml", "build.gradle", "build.gradle.kts",
+                    "settings.gradle", ".project")
     # jdtls importa o projeto de forma assíncrona (autobuild); pode demorar.
     ready_timeout = 120.0
     io_timeout = 30.0

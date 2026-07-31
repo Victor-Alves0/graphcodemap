@@ -79,9 +79,17 @@ def missing_resolvers(languages, is_available=None) -> list[dict]:
 
 
 def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
-    """Roda os resolvers disponíveis. `rels` restringe a arquivos específicos."""
+    """Roda os resolvers disponíveis. `rels` restringe a arquivos específicos.
+
+    Monorepo: os arquivos de cada linguagem são AGRUPADOS pela raiz de projeto
+    detectada (go.mod, Cargo.toml, pom.xml…) e um servidor é aberto POR raiz —
+    aberto na raiz certa, o LSP resolve; aberto na raiz do repo, não. Sem
+    marcadores (ou repo não-monorepo), há um único grupo = a raiz do repo, e o
+    comportamento é o de antes. `roots` conta as raízes distintas usadas."""
+    from .roots import group_by_root
+
     resolvers = available_resolvers()
-    stats = {"files": 0, "promoted": 0, "errors": 0,
+    stats = {"files": 0, "promoted": 0, "errors": 0, "roots": 0,
              "resolvers": sorted(lang for cls in resolvers
                                  for lang in cls.languages)}
     if not resolvers:
@@ -98,23 +106,28 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
             f"SELECT id, path FROM files WHERE {where}", args).fetchall()
         if not files:
             continue
-        resolver = cls(indexer.root)
-        try:
-            for f in files:
-                stats["files"] += 1
-                try:
-                    stats["promoted"] += resolver.refine_file(
-                        conn, indexer.root, f["path"], f["id"])
-                except Exception as e:
-                    stats["errors"] += 1
-                    log.debug("resolver %s falhou em %s: %s: %s",
-                              cls.__name__, f["path"], type(e).__name__, e,
-                              exc_info=True)
-                    continue
-        finally:
-            close = getattr(resolver, "close", None)
-            if close is not None:
-                close()
+        id_of = {f["path"]: f["id"] for f in files}
+        groups = group_by_root(id_of.keys(), indexer.root,
+                               getattr(cls, "root_markers", ()))
+        for proj_root, group_rels in groups.items():
+            stats["roots"] += 1
+            resolver = cls(indexer.root, project_root=proj_root)
+            try:
+                for rel in group_rels:
+                    stats["files"] += 1
+                    try:
+                        stats["promoted"] += resolver.refine_file(
+                            conn, indexer.root, rel, id_of[rel])
+                    except Exception as e:
+                        stats["errors"] += 1
+                        log.debug("resolver %s falhou em %s: %s: %s",
+                                  cls.__name__, rel, type(e).__name__, e,
+                                  exc_info=True)
+                        continue
+            finally:
+                close = getattr(resolver, "close", None)
+                if close is not None:
+                    close()
     if stats["promoted"]:
         mark_dirty(conn)
         mark_community_dirty(conn)

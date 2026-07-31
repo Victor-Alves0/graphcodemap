@@ -17,3 +17,4 @@ class LuaLsResolver(LspResolver):
     language_id = "lua"
     cmd_name = "lua-language-server"
     cmd_env = "CODEGRAPH_LUA_LS"
+    root_markers = (".luarc.json", ".luarc.jsonc")

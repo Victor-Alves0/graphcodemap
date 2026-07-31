@@ -17,5 +17,6 @@ class MetalsResolver(LspResolver):
     language_id = "scala"
     cmd_name = "metals"
     cmd_env = "CODEGRAPH_METALS"
+    root_markers = ("build.sbt", "build.sc", "pom.xml", "build.gradle")
     ready_timeout = 120.0       # import de build (Bloop) é lento
     init_options = {"isHttpEnabled": False}

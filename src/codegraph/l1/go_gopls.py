@@ -14,3 +14,4 @@ class GoplsResolver(LspResolver):
     language_id = "go"
     cmd_name = "gopls"
     cmd_env = "CODEGRAPH_GOPLS"
+    root_markers = ("go.mod", "go.work")

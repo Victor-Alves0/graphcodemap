@@ -49,6 +49,9 @@ class LspResolver:
     cmd_name: str = ""
     cmd_env: str | None = None
     cmd_args: tuple[str, ...] = ()
+    # arquivos que marcam a raiz de um subprojeto (monorepo). O servidor é aberto
+    # nessa raiz, não na do repo. Vazio = sempre a raiz do repo (ver roots.py).
+    root_markers: tuple[str, ...] = ()
     # opções passadas em `initialize` (jdtls/metals usam para configurar o
     # projeto); None = omitir. Neutro para os servidores simples.
     init_options: dict | None = None
@@ -78,8 +81,15 @@ class LspResolver:
         subclasses com launcher (jdtls: java -jar equinox…) sobrescrevem."""
         return [self._binary(), *self.cmd_args]
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, project_root: Path | None = None) -> None:
+        # `root` é a raiz do REPO — usada para abrir arquivos repo-relativos e
+        # relativizar as definições de volta (o índice usa caminhos repo-relativos).
+        # `project_root` é a raiz do SUBPROJETO anunciada ao servidor (rootUri);
+        # os URIs de arquivo são absolutos, então isto não afeta o casamento.
         self.root = Path(root).resolve()
+        self.project_root = (Path(project_root).resolve() if project_root
+                             else self.root)
+        self._defcache: dict[tuple[str, int, int], list] = {}
         self.proc = subprocess.Popen(
             self._popen_argv(), stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
@@ -193,9 +203,9 @@ class LspResolver:
         try:
             params = {
                 "processId": os.getpid(),
-                "rootUri": self.root.as_uri(),
-                "workspaceFolders": [{"uri": self.root.as_uri(),
-                                      "name": self.root.name}],
+                "rootUri": self.project_root.as_uri(),
+                "workspaceFolders": [{"uri": self.project_root.as_uri(),
+                                      "name": self.project_root.name}],
                 "capabilities": {"textDocument": {"definition": {}}},
             }
             if self.init_options is not None:
@@ -258,6 +268,13 @@ class LspResolver:
         self._ready = True
 
     def _definition(self, rel: str, line0: int, char0: int):
+        # cache por instância: o warmup consulta a 1ª aresta para esperar o
+        # servidor ficar pronto, e o laço principal a consultaria de novo — o
+        # memo elimina esse round-trip repetido (e quaisquer outros no mesmo run,
+        # que roda sobre um snapshot consistente do repo).
+        key = (rel, line0, char0)
+        if key in self._defcache:
+            return self._defcache[key]
         res = self._request("textDocument/definition", {
             "textDocument": {"uri": (self.root / rel).as_uri()},
             "position": {"line": line0, "character": char0}})
@@ -269,6 +286,7 @@ class LspResolver:
                    or loc.get("targetRange"))
             if uri and rng:
                 out.append((uri, rng["start"]["line"]))
+        self._defcache[key] = out
         return out
 
     def refine_file(self, conn: sqlite3.Connection, root: Path,

@@ -17,4 +17,5 @@ class CSharpLsResolver(LspResolver):
     language_id = "csharp"
     cmd_name = "csharp-ls"
     cmd_env = "CODEGRAPH_CSHARP_LS"
+    root_markers = ("*.sln", "*.csproj")
     ready_timeout = 90.0        # Roslyn carrega a solução de forma assíncrona

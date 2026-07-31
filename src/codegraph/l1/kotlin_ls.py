@@ -16,4 +16,6 @@ class KotlinLsResolver(LspResolver):
     language_id = "kotlin"
     cmd_name = "kotlin-language-server"
     cmd_env = "CODEGRAPH_KOTLIN_LS"
+    root_markers = ("settings.gradle", "settings.gradle.kts", "build.gradle",
+                    "build.gradle.kts", "pom.xml")
     ready_timeout = 60.0       # resolução do projeto (Gradle) pode ser lenta

@@ -17,4 +17,5 @@ class IntelephenseResolver(LspResolver):
     language_id = "php"
     cmd_name = "intelephense"
     cmd_env = "CODEGRAPH_INTELEPHENSE"
+    root_markers = ("composer.json",)
     cmd_args = ("--stdio",)

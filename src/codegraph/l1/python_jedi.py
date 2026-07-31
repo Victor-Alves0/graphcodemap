@@ -14,6 +14,8 @@ from pathlib import Path
 
 class JediResolver:
     languages = ("python",)
+    # raiz de projeto Python (jedi.Project infere sys.path a partir dela).
+    root_markers = ("pyproject.toml", "setup.py", "setup.cfg")
 
     @staticmethod
     def available() -> bool:
@@ -23,11 +25,13 @@ class JediResolver:
         except ImportError:
             return False
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, project_root: Path | None = None) -> None:
         import jedi
 
-        self.root = root
-        self.project = jedi.Project(str(root))
+        # root = raiz do repo (paths repo-relativos); project_root = subprojeto
+        # (a raiz que o jedi.Project usa p/ inferir sys.path). Ver l1/roots.py.
+        self.root = Path(root)
+        self.project = jedi.Project(str(project_root or root))
         # in-process: ~10x mais rápido e sem subprocess (funciona em sandbox)
         self.environment = jedi.api.environment.InterpreterEnvironment()
 

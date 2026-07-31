@@ -38,13 +38,19 @@ def _find_ts() -> str | None:
 
 class TsLsResolver:
     languages = ("javascript", "typescript", "tsx")
+    # o ts_service relativiza req/resp à raiz de spawn E varre a partir dela;
+    # mudá-la quebraria o casamento com os caminhos repo-relativos do índice.
+    # Por isso o TS é sempre aberto na raiz do repo (root_markers vazio); tornar
+    # a resolução tsconfig-aware por pacote é trabalho de profundidade (Tier 3).
+    root_markers: tuple[str, ...] = ()
 
     @staticmethod
     def available() -> bool:
         return _find_node() is not None and _find_ts() is not None
 
-    def __init__(self, root: Path) -> None:
-        self.root = root
+    def __init__(self, root: Path, project_root: Path | None = None) -> None:
+        self.root = root                       # sempre a raiz do repo (ver acima)
+        self._cache: dict[tuple[str, int, int], dict | None] = {}
         service = Path(__file__).with_name("ts_service.js")
         self.proc = subprocess.Popen(
             [_find_node(), str(service), _find_ts(), str(root)],
@@ -60,6 +66,9 @@ class TsLsResolver:
             self.proc.kill()
 
     def _query(self, rel: str, line: int, col: int) -> dict | None:
+        key = (rel, line, col)
+        if key in self._cache:                 # memo por run (snapshot consistente)
+            return self._cache[key]
         if self.proc.poll() is not None:
             return None
         self._seq += 1
@@ -68,9 +77,11 @@ class TsLsResolver:
             self.proc.stdin.write(json.dumps(req) + "\n")
             self.proc.stdin.flush()
             raw = self.proc.stdout.readline()
-            return json.loads(raw) if raw else None
+            resp = json.loads(raw) if raw else None
         except Exception:
-            return None
+            resp = None
+        self._cache[key] = resp
+        return resp
 
     def refine_file(self, conn: sqlite3.Connection, root: Path,
                     rel: str, file_id: int) -> int:

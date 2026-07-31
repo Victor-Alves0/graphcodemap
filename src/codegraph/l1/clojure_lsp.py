@@ -18,4 +18,5 @@ class ClojureLspResolver(LspResolver):
     language_id = "clojure"
     cmd_name = "clojure-lsp"
     cmd_env = "CODEGRAPH_CLOJURE_LSP"
+    root_markers = ("deps.edn", "project.clj", "shadow-cljs.edn", "bb.edn")
     ready_timeout = 60.0       # a análise inicial do clojure-lsp costuma ser lenta

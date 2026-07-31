@@ -17,4 +17,5 @@ class SourceKitLspResolver(LspResolver):
     language_id = "swift"
     cmd_name = "sourcekit-lsp"
     cmd_env = "CODEGRAPH_SOURCEKIT_LSP"
+    root_markers = ("Package.swift",)
     ready_timeout = 90.0

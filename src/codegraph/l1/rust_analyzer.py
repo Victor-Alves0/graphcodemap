@@ -16,3 +16,4 @@ class RustAnalyzerResolver(LspResolver):
     language_id = "rust"
     cmd_name = "rust-analyzer"
     cmd_env = "CODEGRAPH_RUST_ANALYZER"
+    root_markers = ("Cargo.toml",)

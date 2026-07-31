@@ -16,4 +16,5 @@ class SolargraphResolver(LspResolver):
     language_id = "ruby"
     cmd_name = "solargraph"
     cmd_env = "CODEGRAPH_SOLARGRAPH"
+    root_markers = ("Gemfile", ".solargraph.yml")
     cmd_args = ("stdio",)
