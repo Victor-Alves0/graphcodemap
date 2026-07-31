@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import render
+from . import agent, render
 from .indexer import Indexer
 from .query import AmbiguousSymbol, QueryEngine, SymbolNotFound
 
@@ -30,6 +30,17 @@ Como usar bem (e barato):
   provável (nome único), confira só se for crítico. [possible] = palpite, aí sim
   verifique. Não gaste tokens re-verificando o que já veio [certain].
 - Avisos ⚠ de completeness: análise estática, chamadas dinâmicas podem faltar.
+
+Formato da resposta: cada tool devolve um envelope estável — `text` (o resumo
+compacto, para você ler), `results` (as linhas estruturadas), e os sinais
+`confidence` (certain/inferred/possible/mixed), `fresh`, `truncated` e
+`completeness` (static_analysis, unresolved_edges, dynamic_dispatch_possible).
+
+Fluxo do agente (tools de alto nível): `change_impact(paths_ou_diff)` e
+`find_affected_modules(...)` para “o que essa mudança quebra/toca”;
+`find_related_tests(symbol)` para “o que já testa isto”;
+`explain_symbol(symbol)` para uma ficha rica sem reler o código;
+`suggest_files_to_read(task)` para começar uma tarefa.
 """
 
 
@@ -76,59 +87,140 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
     # usam conexões próprias e contam com o retry-on-locked do db.
     _engine_lock = threading.RLock()
 
-    def guard(fn):
+    def guard(fn) -> agent.Response:
         with _engine_lock:
             try:
                 return fn()
             except (AmbiguousSymbol, SymbolNotFound) as e:
-                return f"erro: {e}"
+                return agent.error(str(e))
 
     @mcp.tool()
-    def overview(scope: str | None = None, token_budget: int = 1200) -> str:
+    def overview(scope: str | None = None, token_budget: int = 1200) -> agent.Response:
         """Mapa ranqueado do repo (PageRank). Primeiro passo em repo novo."""
-        return guard(lambda: render.overview(
-            *engine.overview(scope=scope, token_budget=token_budget)))
+        def run():
+            entries, env = engine.overview(scope=scope, token_budget=token_budget)
+            return agent.build(render.overview(entries, env), env, results=entries)
+        return guard(run)
 
     @mcp.tool()
-    def find_symbol(query: str, kind: str | None = None, limit: int = 10) -> str:
+    def find_symbol(query: str, kind: str | None = None,
+                    limit: int = 10) -> agent.Response:
         """Localiza símbolos por nome/fqn (kind: function|method|class|…)."""
-        return guard(lambda: render.find(
-            query, *engine.find_symbol(query, kind=kind, limit=limit)))
+        def run():
+            rows, env = engine.find_symbol(query, kind=kind, limit=limit)
+            return agent.build(render.find(query, rows, env), env, results=rows)
+        return guard(run)
 
     @mcp.tool()
-    def symbol_info(symbol: str) -> str:
+    def symbol_info(symbol: str) -> agent.Response:
         """Ficha do símbolo: assinatura, doc, span, contagens."""
-        return guard(lambda: render.info(*engine.symbol_info(symbol)))
+        def run():
+            info, env = engine.symbol_info(symbol)
+            return agent.build(render.info(info, env), env, results=[info])
+        return guard(run)
 
     @mcp.tool()
-    def references(symbol: str, kind: str | None = None) -> str:
+    def references(symbol: str, kind: str | None = None) -> agent.Response:
         """Usos do símbolo (kind: calls|imports|inherits)."""
-        return guard(lambda: render.refs(*engine.references(symbol, kind=kind)))
+        def run():
+            sym, rows, env = engine.references(symbol, kind=kind)
+            return agent.build(render.refs(sym, rows, env), env, results=rows)
+        return guard(run)
 
     @mcp.tool()
-    def callers(symbol: str, depth: int = 1) -> str:
+    def callers(symbol: str, depth: int = 1) -> agent.Response:
         """Quem chama o símbolo. Use antes de mudar assinatura/comportamento."""
-        return guard(lambda: render.calls(*engine.callers(symbol, depth=depth),
-                                          "callers de", "in"))
+        def run():
+            sym, rows, env = engine.callers(symbol, depth=depth)
+            return agent.build(
+                render.calls(sym, rows, env, "callers de", "in"), env, results=rows)
+        return guard(run)
 
     @mcp.tool()
-    def callees(symbol: str, depth: int = 1) -> str:
+    def callees(symbol: str, depth: int = 1) -> agent.Response:
         """O que o símbolo chama."""
-        return guard(lambda: render.calls(*engine.callees(symbol, depth=depth),
-                                          "callees de", "out"))
+        def run():
+            sym, rows, env = engine.callees(symbol, depth=depth)
+            return agent.build(
+                render.calls(sym, rows, env, "callees de", "out"), env, results=rows)
+        return guard(run)
 
     @mcp.tool()
-    def impact(symbol: str, depth: int = 3) -> str:
+    def impact(symbol: str, depth: int = 3) -> agent.Response:
         """Dependentes transitivos: o que pode quebrar se o símbolo mudar."""
-        return guard(lambda: render.impact(*engine.impact(symbol, depth=depth)))
+        def run():
+            sym, rows, env = engine.impact(symbol, depth=depth)
+            return agent.build(render.impact(sym, rows, env), env, results=rows)
+        return guard(run)
 
     @mcp.tool()
-    def ego_graph(symbol: str) -> str:
+    def ego_graph(symbol: str) -> agent.Response:
         """Vizinhança imediata do símbolo no grafo (in/out/containment)."""
-        return guard(lambda: render.ego(*engine.ego_graph(symbol)))
+        def run():
+            data, env = engine.ego_graph(symbol)
+            return agent.build(render.ego(data, env), env,
+                               results=data["in"] + data["out"])
+        return guard(run)
+
+    # -- tools de alto nível (fluxo do agente) --------------------------------
 
     @mcp.tool()
-    def dataflow(symbol: str, depth: int = 2) -> str:
+    def change_impact(paths_or_diff: str, depth: int = 3) -> agent.Response:
+        """Impacto de uma mudança: dados CAMINHOS (vírgula/espaço) ou um DIFF
+        unificado, quais símbolos alterados têm dependentes e o fecho transitivo
+        deles — o que revisar/re-testar. Comece por aqui ao avaliar um patch."""
+        def run():
+            data, env = engine.change_impact(paths_or_diff, depth=depth)
+            return agent.build(render.change_impact(data, env), env,
+                               results=data["impacted"])
+        return guard(run)
+
+    @mcp.tool()
+    def find_affected_modules(paths_or_diff: str, depth: int = 3) -> agent.Response:
+        """`change_impact` agregado por ARQUIVO: quais módulos uma mudança toca e
+        com que profundidade — visão de alto nível do que abrir."""
+        def run():
+            data, env = engine.find_affected_modules(paths_or_diff, depth=depth)
+            return agent.build(render.affected_modules(data, env), env,
+                               results=data["modules"])
+        return guard(run)
+
+    @mcp.tool()
+    def find_related_tests(symbol: str, depth: int = 3) -> agent.Response:
+        """Testes que exercitam um símbolo: callers transitivos em arquivos de
+        teste (test_*, *_test, *Test, *Spec, tests/…). O que já cobre isto."""
+        def run():
+            data, env = engine.find_related_tests(symbol, depth=depth)
+            return agent.build(render.related_tests(data, env), env,
+                               results=data["tests"])
+        return guard(run)
+
+    @mcp.tool()
+    def explain_symbol(symbol: str) -> agent.Response:
+        """Ficha rica de um símbolo (assinatura, doc, usos, vizinhança, domínio)
+        para decidir sem reler o código. Sem custo de LLM (use `describe` para
+        uma explicação de comportamento gerada por LLM)."""
+        def run():
+            data, env = engine.explain_symbol(symbol)
+            return agent.build(render.explain_symbol(data, env), env,
+                               results=data["callers"] + data["callees"])
+        return guard(run)
+
+    @mcp.tool()
+    def suggest_files_to_read(task: str, limit: int = 8) -> agent.Response:
+        """Arquivos mais relevantes para uma TAREFA em linguagem natural
+        (casa termos → símbolos → ranqueia arquivos por importância no grafo).
+        Ponto de partida ao começar uma tarefa num repo desconhecido."""
+        def run():
+            data, env = engine.suggest_files_to_read(task, limit=limit)
+            return agent.build(render.suggest_files(data, env), env,
+                               results=data["files"])
+        return guard(run)
+
+    # -- segurança / arquitetura ----------------------------------------------
+
+    @mcp.tool()
+    def dataflow(symbol: str, depth: int = 2) -> agent.Response:
         """Fluxo de dados de uma função: para onde vão os dados de cada
         parâmetro (quais chamadas recebem, se alcançam o retorno), seguindo o
         call graph até `depth` saltos. Use para segurança (input não-confiável
@@ -136,10 +228,15 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
         may-taint intra-procedural (over-aproxima) — trate os fluxos como
         candidatos a verificar. 17 linguagens (py, js/ts, java, c#, c/c++, go,
         rust, ruby, php, kotlin, swift, scala, lua)."""
-        return guard(lambda: render.dataflow(*engine.data_flow(symbol, depth=depth)))
+        def run():
+            data, env = engine.data_flow(symbol, depth=depth)
+            return agent.build(render.dataflow(data, env), env,
+                               results=data.get("params", []))
+        return guard(run)
 
     @mcp.tool()
-    def taint(scope: str | None = None, entry: str | None = None, depth: int = 4) -> str:
+    def taint(scope: str | None = None, entry: str | None = None,
+              depth: int = 4) -> agent.Response:
         """Análise de taint (segurança): rastreia input não-confiável (sources)
         até operações perigosas (sinks: eval/exec/execute/system/...), com
         sanitizers cortando o fluxo, interprocedural pelo call graph. Sem args =
@@ -147,12 +244,15 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
         não-confiáveis. Regras ajustáveis em .codegraph/taint.json. Achados são
         candidatos (may-taint, over-aproxima) — confirme lendo o código.
         17 linguagens (mesmas do dataflow)."""
-        return guard(lambda: render.taint(
-            *engine.taint(scope=scope, entry=entry, depth=depth)))
+        def run():
+            data, env = engine.taint(scope=scope, entry=entry, depth=depth)
+            return agent.build(render.taint(data, env), env,
+                               results=data.get("findings", []))
+        return guard(run)
 
     @mcp.tool()
     def reaches(symbol: str, sink: str = "http", via: str | None = None,
-                depth: int = 8) -> str:
+                depth: int = 8) -> agent.Response:
         """Reachability endpoint→sink numa resposta só: seguindo o call graph a
         partir de `symbol`, quais caminhos chegam a um sink perigoso, e um
         validador aparece no meio? `sink`: preset ('http', 'sql', 'exec',
@@ -161,20 +261,26 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
         funções entry→sink + veredito de validação — evita o agente montar a
         travessia salto a salto lendo código. Estático (arestas 'calls'):
         chamadas dinâmicas podem faltar; confiança = mínima do caminho."""
-        return guard(lambda: render.reaches(
-            *engine.reaches(symbol, sink=sink, via=via, depth=depth)))
+        def run():
+            sym, data, env = engine.reaches(symbol, sink=sink, via=via, depth=depth)
+            return agent.build(render.reaches(sym, data, env), env,
+                               results=data.get("paths", []))
+        return guard(run)
 
     @mcp.tool()
-    def communities(limit: int = 20, min_size: int = 3) -> str:
+    def communities(limit: int = 20, min_size: int = 3) -> agent.Response:
         """Domínios/subsistemas do repo (clustering do grafo) com seus hubs e
         arquivos. Mapa de alto nível que não está escrito em arquivo nenhum —
         bom depois de `overview` para entender a arquitetura. Rotule um domínio
         com describe('domain:N')."""
-        return guard(lambda: render.communities(
-            *engine.communities(limit=limit, min_size=min_size)))
+        def run():
+            items, meta, env = engine.communities(limit=limit, min_size=min_size)
+            return agent.build(render.communities(items, meta, env), env,
+                               results=items)
+        return guard(run)
 
     @mcp.tool()
-    def describe(target: str, refresh: bool = False) -> str:
+    def describe(target: str, refresh: bool = False) -> agent.Response:
         """Descrição LLM do COMPORTAMENTO de um símbolo (fqn), módulo
         (caminho de arquivo) ou domínio (`domain:N` de communities). Cacheada e
         invalidada por hash do código; respostas STALE vêm marcadas.
@@ -183,26 +289,35 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
 
         def run():
             try:
-                return render.describe(*engine.describe(target, refresh=refresh))
+                data, env = engine.describe(target, refresh=refresh)
+                return agent.build(render.describe(data, env), env)
             except L3Unavailable as e:
-                return f"erro: {e}"
+                return agent.error(str(e))
 
         return guard(run)
 
     @mcp.tool()
-    def index_status() -> str:
+    def index_status() -> agent.Response:
         """Estatísticas do índice: arquivos, símbolos, arestas resolvidas/
         pendentes, linguagens."""
-        return guard(lambda: render.stats(engine.stats()))
+        def run():
+            s = engine.stats()
+            from .query import Envelope
+            return agent.build(render.stats(s), Envelope(), results=[s])
+        return guard(run)
 
     @mcp.tool()
-    def doctor() -> str:
+    def doctor() -> agent.Response:
         """Diagnóstico de saúde do índice: parse (arquivos ok/falhos),
         distribuição de confiança das chamadas (certain/inferred/possible), %
         certain, resolvers L1 ativos, staleness (idade do último scan) e
         arquivos que falharam no parse. Use para decidir o quanto confiar nas
         respostas do grafo, ou para diagnosticar por que algo não aparece."""
-        return guard(lambda: render.doctor(engine.doctor()))
+        def run():
+            d = engine.doctor()
+            from .query import Envelope
+            return agent.build(render.doctor(d), Envelope(), results=[d])
+        return guard(run)
 
     return mcp
 

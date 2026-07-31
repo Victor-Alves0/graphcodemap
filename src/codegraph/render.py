@@ -137,6 +137,87 @@ def impact(sym, rows, env) -> str:
     return warnings(env) + "\n".join(lines)
 
 
+def change_impact(data, env) -> str:
+    lines = [f"impacto da mudança — {data['n_changed']} símbolo(s) alterado(s) em "
+             f"{len(data['changed_files'])} arquivo(s) → {data['n_impacted']} "
+             f"dependente(s):"]
+    if data["changed_symbols"]:
+        alt = ", ".join(f"{c['fqn']}" for c in data["changed_symbols"][:8])
+        lines.append(f"  alterados: {alt}"
+                     + (f" +{len(data['changed_symbols']) - 8}"
+                        if len(data["changed_symbols"]) > 8 else ""))
+    for r in data["impacted"][:_IMPACT_CAP]:
+        lines.append(f"  [d{r['depth']}] {r['path']}:{r['start_line']}  "
+                     f"{r['fqn']} {_tag(r)}")
+    if data["n_impacted"] > _IMPACT_CAP:
+        lines.append(f"  … +{data['n_impacted'] - _IMPACT_CAP}")
+    if not data["impacted"]:
+        lines.append("  nenhum dependente conhecido no repo.")
+    lines += _legend(data["impacted"][:_IMPACT_CAP])
+    return warnings(env) + "\n".join(lines)
+
+
+def affected_modules(data, env) -> str:
+    lines = [f"módulos afetados por {len(data['changed_files'])} arquivo(s) "
+             f"alterado(s) — {data['n_modules']}:"]
+    for m in data["modules"][:_IMPACT_CAP]:
+        lines.append(f"  [d{m['min_depth']}] {m['path']}  ({m['count']} símbolo(s))")
+        lines.append(f"      {', '.join(m['symbols'])}")
+    if not data["modules"]:
+        lines.append("  nenhum módulo dependente conhecido.")
+    return warnings(env) + "\n".join(lines)
+
+
+def related_tests(data, env) -> str:
+    s = data["symbol"]
+    lines = [f"testes que exercitam {s['fqn']} — {data['n']}:"]
+    for t in data["tests"]:
+        lines.append(f"  {t['path']}:{t['line']}  {t['test']} {_tag(t)}")
+    if not data["tests"]:
+        lines.append("  nenhum teste conhecido chega a este símbolo "
+                     "(pode haver cobertura dinâmica/indireta).")
+    lines += _legend(data["tests"])
+    return warnings(env) + "\n".join(lines)
+
+
+def explain_symbol(data, env) -> str:
+    s = data["symbol"]
+    c = data["counts"]
+    lines = [f"{s['fqn']}  [{s['kind']}]  {_loc(s)}"]
+    if s.get("signature"):
+        lines.append(f"  assinatura: {s['signature']}")
+    if s.get("doc"):
+        lines.append(f"  doc: {s['doc'].splitlines()[0][:120]}")
+    lines.append(f"  usos: {c['callers']} callers, {c['callees']} callees, "
+                 f"{c['references']} refs")
+    dom = data.get("domain")
+    if dom:
+        tag = f" «{dom['label']}»" if dom.get("label") else ""
+        lines.append(f"  domínio: dom {dom['id']}{tag}")
+    if data["callers"]:
+        lines.append("  chamado por: "
+                     + ", ".join(x["fqn"] for x in data["callers"]))
+    if data["callees"]:
+        lines.append("  chama: " + ", ".join(x["fqn"] for x in data["callees"]))
+    if data["children"]:
+        lines.append("  contém: "
+                     + ", ".join(f"{ch['name']}({ch['kind']})"
+                                 for ch in data["children"][:10]))
+    return warnings(env) + "\n".join(lines)
+
+
+def suggest_files(data, env) -> str:
+    lines = [f"arquivos sugeridos para: “{data['task']}” "
+             f"(termos: {', '.join(data['tokens']) or '—'}):"]
+    for f in data["files"]:
+        lines.append(f"  {f['path']}  (score {f['score']})")
+        if f["matches"]:
+            lines.append(f"      via: {', '.join(f['matches'])}")
+    if not data["files"]:
+        lines.append("  nada casou — refine os termos da tarefa.")
+    return warnings(env) + "\n".join(lines)
+
+
 def ego(data, env) -> str:
     s = data["symbol"]
     lines = [f"ego-graph de {s['fqn']}  [{s['kind']}]  {_loc(s)}"]

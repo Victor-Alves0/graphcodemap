@@ -100,6 +100,36 @@ def cmd_ego(args) -> int:
     return 0
 
 
+def cmd_change_impact(args) -> int:
+    data, env = _engine(args).change_impact(args.target, depth=args.depth)
+    print(render.change_impact(data, env))
+    return 0
+
+
+def cmd_affected_modules(args) -> int:
+    data, env = _engine(args).find_affected_modules(args.target, depth=args.depth)
+    print(render.affected_modules(data, env))
+    return 0
+
+
+def cmd_related_tests(args) -> int:
+    data, env = _engine(args).find_related_tests(args.symbol, depth=args.depth)
+    print(render.related_tests(data, env))
+    return 0 if data["tests"] else 1
+
+
+def cmd_explain(args) -> int:
+    data, env = _engine(args).explain_symbol(args.symbol)
+    print(render.explain_symbol(data, env))
+    return 0
+
+
+def cmd_suggest(args) -> int:
+    data, env = _engine(args).suggest_files_to_read(args.task, limit=args.limit)
+    print(render.suggest_files(data, env))
+    return 0 if data["files"] else 1
+
+
 def cmd_overview(args) -> int:
     entries, env = _engine(args).overview(scope=args.scope, token_budget=args.budget)
     print(render.overview(entries, env))
@@ -321,6 +351,34 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("ego", help="vizinhança imediata do símbolo no grafo")
     sp.add_argument("symbol")
     sp.set_defaults(fn=cmd_ego)
+
+    sp = sub.add_parser("change-impact",
+                        help="impacto de uma mudança (caminhos ou diff)")
+    sp.add_argument("target", help="caminhos (vírgula/espaço) ou um diff unificado")
+    sp.add_argument("--depth", type=int, default=3)
+    sp.set_defaults(fn=cmd_change_impact)
+
+    sp = sub.add_parser("affected-modules",
+                        help="módulos afetados por uma mudança (caminhos ou diff)")
+    sp.add_argument("target")
+    sp.add_argument("--depth", type=int, default=3)
+    sp.set_defaults(fn=cmd_affected_modules)
+
+    sp = sub.add_parser("related-tests",
+                        help="testes que exercitam um símbolo")
+    sp.add_argument("symbol")
+    sp.add_argument("--depth", type=int, default=3)
+    sp.set_defaults(fn=cmd_related_tests)
+
+    sp = sub.add_parser("explain", help="ficha rica de um símbolo (sem LLM)")
+    sp.add_argument("symbol")
+    sp.set_defaults(fn=cmd_explain)
+
+    sp = sub.add_parser("suggest",
+                        help="arquivos a ler para uma tarefa em linguagem natural")
+    sp.add_argument("task")
+    sp.add_argument("--limit", type=int, default=8)
+    sp.set_defaults(fn=cmd_suggest)
 
     sp = sub.add_parser("overview", help="mapa ranqueado do repo")
     sp.add_argument("--scope", default=None, help="restringe a um diretório")

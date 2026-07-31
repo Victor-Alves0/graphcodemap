@@ -8,6 +8,7 @@ a consulta; arquivo sumiu → sai do índice; tudo anotado no envelope.
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -32,6 +33,44 @@ _CONF_ORD = {"certain": 2, "inferred": 1, "possible": 0}
 
 # presets de sink para reaches(): input não-confiável alcançando operação sensível.
 # Casados contra o NOME do alvo da chamada (dst_name), case-insensitive.
+# padrões de arquivo/símbolo de TESTE (find_related_tests). Diretórios comuns +
+# convenções de nome por linguagem (test_*, *_test, *Test, *Spec, *.test., …).
+_TEST_DIRS = {"test", "tests", "spec", "specs", "__tests__", "testing"}
+_TEST_STEM = re.compile(r"(^test$|^test[_A-Z]|_test$|_spec$|Test$|Tests$|Spec$|Specs$|IT$)")
+
+
+def _is_test_path(p: str) -> bool:
+    p = p.replace("\\", "/")
+    segs = p.split("/")
+    if any(s.lower() in _TEST_DIRS for s in segs[:-1]):
+        return True
+    base = segs[-1]
+    low = base.lower()
+    if ".test." in low or ".spec." in low:
+        return True
+    stem = base.rsplit(".", 1)[0]
+    return bool(_TEST_STEM.search(stem))
+
+
+def _paths_from_target(target: str) -> list[str]:
+    """Extrai caminhos repo-relativos de um diff unificado OU de uma lista
+    (separada por vírgula/espaço/linha). Diff: pega os `+++ b/…` e `diff --git`;
+    ignora /dev/null (arquivo deletado)."""
+    t = target.strip()
+    paths: set[str] = set()
+    if "diff --git" in t or "+++ " in t or "--- " in t:
+        for m in re.finditer(r"^\+\+\+ [ab]/(.+?)(?:\t.*)?$", t, re.M):
+            paths.add(m.group(1).strip())
+        for m in re.finditer(r"^diff --git a/(\S+) b/(\S+)", t, re.M):
+            paths.add(m.group(2))
+        paths.discard("/dev/null")
+    else:
+        for part in re.split(r"[,\s]+", t):
+            if part and part not in ("/dev/null",):
+                paths.add(part.replace("\\", "/").lstrip("./"))
+    return sorted(p for p in paths if p)
+
+
 SINK_PRESETS = {
     "http": r"(clj-http|okhttp|httpclient|webclient|urlopen|requests?[._]|"
             r"\bfetch\b|axios|http[-_./](get|post|put|delete|patch|request)|"
@@ -47,7 +86,18 @@ SINK_PRESETS = {
 
 @dataclass
 class Envelope:
+    """Sinais estruturados de uma resposta, ao lado dos avisos em texto.
+
+    Os mesmos fatos que os avisos ⚠ carregam, mas em campos estáveis de máquina
+    (para a camada agent/MCP): frescor, truncamento e completude (análise
+    estática, arestas não resolvidas, dispatch dinâmico possível)."""
+
     warnings: list[str] = field(default_factory=list)
+    fresh: bool = True                 # índice batia com o disco (sem drift)
+    truncated: bool = False            # resultado cortado num limite
+    dynamic_dispatch: bool = False     # chamadas dinâmicas podem faltar
+    unresolved_edges: int = 0          # arestas relevantes ainda não resolvidas
+    static_analysis: bool = True       # a resposta é de análise estática
 
     def warn(self, msg: str) -> None:
         if msg not in self.warnings:
@@ -110,6 +160,7 @@ class QueryEngine:
                 changed = True
         if changed:
             self.ix.resolve_edges()
+            env.fresh = False           # havia drift (corrigido agora)
         return changed
 
     def _repair_all(self, env: Envelope) -> bool:
@@ -289,6 +340,8 @@ class QueryEngine:
                     else self._repair_all(env))
         if repaired:
             rows = self._find_rows(query, kind, limit)
+        if len(rows) >= limit:
+            env.truncated = True
         self._warn_partial({r["path"] for r in rows}, env)
         return rows, env
 
@@ -357,6 +410,8 @@ class QueryEngine:
                 return sym, [], env
             rows = q()
         self._completeness(sym, rows, env)
+        if len(rows) >= limit:
+            env.truncated = True
         self._warn_partial({r["site_path"] for r in rows}, env)
         return sym, [explain.annotate(dict(r)) for r in rows], env
 
@@ -639,6 +694,7 @@ class QueryEngine:
             cost = len(f["path"]) + sum(
                 len(s["signature"] or s["name"]) + 12 for s in entry["symbols"])
             if used + cost > char_budget and result:
+                env.truncated = True
                 env.warn("truncated: budget de tokens atingido — use scope para "
                          "detalhar um diretório.")
                 break
@@ -967,6 +1023,150 @@ class QueryEngine:
             data["usage"] = usage
         return data, env
 
+    # -- tools de alto nível (orientadas a agentes) ---------------------------
+
+    def _symbols_in_paths(self, paths: list[str]) -> list[dict]:
+        """Símbolos de TOPO declarados nos arquivos dados (o que 'mudou')."""
+        out: list[dict] = []
+        for rel in paths:
+            frow = self.conn.execute(
+                "SELECT id FROM files WHERE path=?", (rel,)).fetchone()
+            if frow is None:
+                continue
+            for s in self.conn.execute(
+                    "SELECT fqn, kind, start_line FROM symbols WHERE file_id=? "
+                    "AND parent_id IS NULL AND kind<>'file' ORDER BY start_line",
+                    (frow["id"],)):
+                out.append({"fqn": s["fqn"], "kind": s["kind"], "path": rel,
+                            "start_line": s["start_line"]})
+        return out
+
+    def change_impact(self, target: str, depth: int = 3):
+        """Impacto de um conjunto de mudanças: dados PATHS ou um DIFF, quais
+        símbolos declarados neles têm dependentes, e o fecho transitivo desses
+        dependentes (o que revisar/re-testar). Orientado ao fluxo real do agente
+        (trabalha a partir de um diff), não de um fqn."""
+        env = Envelope()
+        paths = _paths_from_target(target)
+        self._repair(set(paths), env)
+        changed = self._symbols_in_paths(paths)
+        impacted: dict[str, dict] = {}
+        for c in changed:
+            try:
+                _s, rows, _e = self.impact(c["fqn"], depth=depth)
+            except (SymbolNotFound, AmbiguousSymbol):
+                continue
+            for r in rows:
+                cur = impacted.get(r["fqn"])
+                if cur is None or r["depth"] < cur["depth"]:
+                    impacted[r["fqn"]] = r
+        result = sorted(impacted.values(),
+                        key=lambda r: (r["depth"], -(r.get("rank") or 0)))
+        env.dynamic_dispatch = True
+        env.unresolved_edges = sum(1 for r in result
+                                   if r.get("confidence") == "possible")
+        data = {"changed_files": paths, "changed_symbols": changed,
+                "impacted": result, "n_changed": len(changed),
+                "n_impacted": len(result)}
+        return data, env
+
+    def find_affected_modules(self, target: str, depth: int = 3):
+        """`change_impact` agregado por ARQUIVO: quais módulos são tocados por uma
+        mudança e com que profundidade — visão de alto nível para o agente decidir
+        o que abrir."""
+        data, env = self.change_impact(target, depth=depth)
+        by_file: dict[str, list] = {}
+        for r in data["impacted"]:
+            by_file.setdefault(r["path"], []).append(r)
+        modules = []
+        for path, rs in by_file.items():
+            top = sorted(rs, key=lambda x: (x["depth"], -(x.get("rank") or 0)))
+            modules.append({"path": path, "count": len(rs),
+                            "min_depth": min(x["depth"] for x in rs),
+                            "symbols": [x["fqn"] for x in top[:6]]})
+        modules.sort(key=lambda m: (m["min_depth"], -m["count"]))
+        return {"changed_files": data["changed_files"], "modules": modules,
+                "n_modules": len(modules)}, env
+
+    def find_related_tests(self, selector: str, depth: int = 3):
+        """Testes que exercitam um símbolo: callers transitivos que moram em
+        arquivos de teste (test_*, *_test, *Test, *Spec, tests/…). Heurística
+        sobre o call graph — o que já cobre este símbolo hoje."""
+        env = Envelope()
+        sym, rows, cenv = self.callers(selector, depth=depth)
+        env.fresh = cenv.fresh
+        env.dynamic_dispatch = True
+        tests, seen = [], set()
+        for r in rows:
+            p = r.get("site_path")
+            if not p or not _is_test_path(p):
+                continue
+            key = (r.get("other_fqn"), p, r.get("line"))
+            if key in seen:
+                continue
+            seen.add(key)
+            tests.append({"test": r.get("other_fqn") or "<módulo>", "path": p,
+                          "line": r.get("line"), "depth": r.get("depth"),
+                          "confidence": r.get("confidence"),
+                          "resolver": r.get("resolver")})
+        tests.sort(key=lambda t: (t["depth"] or 0, t["path"]))
+        env.unresolved_edges = sum(1 for t in tests
+                                   if t.get("confidence") == "possible")
+        return {"symbol": sym, "tests": tests, "n": len(tests)}, env
+
+    def explain_symbol(self, selector: str):
+        """Ficha rica de um símbolo para o agente decidir sem reler o código:
+        assinatura/doc/span/contagens (symbol_info) + vizinhança imediata (top
+        callers/callees com confiança) + domínio. Sem custo de LLM."""
+        env = Envelope()
+        info, ienv = self.symbol_info(selector)
+        env.fresh = ienv.fresh
+        env.dynamic_dispatch = True
+        sym = info["symbol"]
+
+        def _top(rows, n=5):
+            out, seen = [], set()
+            for r in rows:
+                v = r.get("other_fqn")
+                if v and v not in seen:
+                    seen.add(v)
+                    out.append({"fqn": v, "confidence": r.get("confidence"),
+                                "resolver": r.get("resolver")})
+                if len(out) >= n:
+                    break
+            return out
+
+        _s1, callers, _ = self.callers(sym["fqn"], depth=1)
+        _s2, callees, _ = self.callees(sym["fqn"], depth=1)
+        data = {"symbol": sym, "children": info["children"],
+                "counts": info["counts"], "domain": info["domain"],
+                "callers": _top(callers), "callees": _top(callees)}
+        return data, env
+
+    def suggest_files_to_read(self, task: str, limit: int = 8):
+        """Arquivos mais relevantes para uma TAREFA em linguagem natural: extrai
+        termos, casa símbolos (find_symbol) e ranqueia os arquivos por importância
+        no grafo (PageRank) + nº de casamentos. Ponto de partida para o agente."""
+        env = Envelope()
+        tokens = [t for t in re.split(r"[^A-Za-z0-9_]+", task) if len(t) >= 3]
+        tokens = list(dict.fromkeys(tokens))[:8]
+        score: dict[str, float] = {}
+        why: dict[str, list] = {}
+        for tok in tokens:
+            rows, renv = self.find_symbol(tok, limit=8)
+            env.fresh = env.fresh and renv.fresh
+            for r in rows:
+                p = r["path"]
+                score[p] = score.get(p, 0.0) + (r["rank"] or 0.0) + 1.0
+                why.setdefault(p, []).append(r["fqn"])
+        files = [{"path": p, "score": round(sc, 4),
+                  "matches": list(dict.fromkeys(why[p]))[:5]}
+                 for p, sc in score.items()]
+        files.sort(key=lambda f: -f["score"])
+        if len(files) > limit:
+            env.truncated = True
+        return {"task": task, "tokens": tokens, "files": files[:limit]}, env
+
     # -- envelope de completeness (docs/DESIGN.md §3.1) -----------------------
 
     def _completeness(self, sym: dict, rows: list, env: Envelope) -> None:
@@ -976,6 +1176,9 @@ class QueryEngine:
             "SELECT COUNT(*) c FROM edges WHERE dst IS NULL AND kind='calls' "
             "AND (dst_name=? OR dst_name LIKE ? ESCAPE '\\')",
             (name, f"%.{like_escape(name)}")).fetchone()["c"]
+        # espelho estruturado dos avisos (camada agent/MCP)
+        env.dynamic_dispatch = True
+        env.unresolved_edges = n_possible + n_dangling
         parts = ["completeness: estático — chamadas dinâmicas podem faltar"]
         if n_possible:
             parts.append(f"{n_possible} 'possible' (verificar)")

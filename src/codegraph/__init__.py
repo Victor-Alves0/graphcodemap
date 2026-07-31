@@ -63,6 +63,21 @@ class CodeGraph:
     def ego_graph(self, selector: str):
         return self.query.ego_graph(selector)
 
+    def change_impact(self, target: str, depth: int = 3):
+        return self.query.change_impact(target, depth=depth)
+
+    def find_affected_modules(self, target: str, depth: int = 3):
+        return self.query.find_affected_modules(target, depth=depth)
+
+    def find_related_tests(self, selector: str, depth: int = 3):
+        return self.query.find_related_tests(selector, depth=depth)
+
+    def explain_symbol(self, selector: str):
+        return self.query.explain_symbol(selector)
+
+    def suggest_files_to_read(self, task: str, limit: int = 8):
+        return self.query.suggest_files_to_read(task, limit=limit)
+
     def overview(self, scope: str | None = None, token_budget: int = 2000):
         return self.query.overview(scope=scope, token_budget=token_budget)
 

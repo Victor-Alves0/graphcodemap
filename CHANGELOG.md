@@ -8,6 +8,28 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Agent-oriented MCP: stable response envelope + high-level tools
+  (Priority 5).** Every MCP tool now returns a stable structured envelope
+  (FastMCP structured output) alongside the compact text: `{text, results,
+  confidence, fresh, completeness{static_analysis, unresolved_edges,
+  dynamic_dispatch_possible}, truncated, warnings}`. The signals are honest —
+  `confidence` is aggregated from the actual edges in the result
+  (certain/inferred/possible → "mixed"), and `fresh`/`truncated`/`completeness`
+  come from the `Envelope`, which now records them at the same point it emits the
+  ⚠ warnings (a new `agent` module builds the `Response`). The CLI text stays
+  exactly as compact as before. Five high-level tools built on the existing graph
+  primitives, matching how an agent actually works:
+  `change_impact(paths_or_diff)` (parses a unified diff or path list → changed
+  symbols → transitive dependents to review/re-test), `find_affected_modules(...)`
+  (the same, aggregated by file), `find_related_tests(symbol)` (transitive callers
+  living in test files — `test_*`, `*_test`, `*Test`, `*Spec`, `tests/`),
+  `explain_symbol(symbol)` (a rich card — signature, doc, counts, immediate
+  callers/callees, domain — with no LLM cost), and `suggest_files_to_read(task)`
+  (natural-language task → matched symbols → files ranked by graph importance).
+  All five are also engine/facade methods and CLI subcommands. 41-test battery
+  (envelope aggregation, structured fields, each tool, diff/test-path helpers,
+  MCP round-trip including the error path).
+
 - **Cross-language invariant + system-integration test batteries (+176 tests).**
   A new `test_all_languages.py` runs every one of the 18 dedicated languages
   through a shared contract — symbols always have a non-empty name/fqn anchored on

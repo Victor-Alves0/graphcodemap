@@ -79,7 +79,11 @@ def test_mcp_server_tools(repo):
     assert names == {"overview", "find_symbol", "symbol_info", "references",
                      "callers", "callees", "impact", "ego_graph", "dataflow",
                      "taint", "reaches", "communities", "describe",
-                     "index_status", "doctor"}
+                     "index_status", "doctor",
+                     # tools de alto nível (Prioridade 5)
+                     "change_impact", "find_affected_modules",
+                     "find_related_tests", "explain_symbol",
+                     "suggest_files_to_read"}
 
 
 def test_mcp_tool_call_roundtrip(repo):
