@@ -8,6 +8,17 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Swift robustness pass — twelfth of the per-language hardening.** A 43-test
+  battery exposed the recurring trio, all fixed: **stored, computed and static
+  properties** (`var name: String`, `let id: Int`, `var area: Int { … }`) and
+  **enum cases** (`case north`, `case success(Int)`) were not symbols — now
+  navigable, scoped to their type; **visibility was never set** — now read from
+  the `modifiers` node across Swift's five levels (`open`/`public`/`internal`/
+  `fileprivate`/`private`, default `internal`). Extension members already scoped
+  correctly to the reopened type without a duplicate symbol, and inheritance/
+  protocol-conformance already emitted simple names — both verified by the
+  battery.
+
 - **Lua/Luau robustness pass — eleventh of the per-language hardening.** Lua is
   minimal and dynamic — no classes, no visibility keywords — so the extractor
   only knew functions and calls; a 32-test battery mapped the missing surface,
