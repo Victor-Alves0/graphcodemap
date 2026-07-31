@@ -84,8 +84,16 @@ class CodeGraph:
     def communities(self, limit: int = 20, min_size: int = 3):
         return self.query.communities(limit=limit, min_size=min_size)
 
-    def visualize(self, level: str = "file", scope: str | None = None, top: int = 250):
-        return self.query.visualize(level=level, scope=scope, top=top)
+    def visualize(self, mode: str | None = None, *, level: str | None = None,
+                  scope: str | None = None, top: int = 250,
+                  symbol: str | None = None, depth: int = 3,
+                  min_confidence: str | None = None, language: str | None = None,
+                  changed: str | None = None, git: bool = False,
+                  git_ref: str | None = None, staged: bool = False):
+        return self.query.visualize(
+            mode, level=level, scope=scope, top=top, symbol=symbol, depth=depth,
+            min_confidence=min_confidence, language=language, changed=changed,
+            git=git, git_ref=git_ref, staged=staged)
 
     def data_flow(self, selector: str, depth: int = 2):
         return self.query.data_flow(selector, depth=depth)

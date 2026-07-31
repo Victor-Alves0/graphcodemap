@@ -6,6 +6,29 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ## [Unreleased]
 
+### Added
+
+- **Visualization as an investigation tool — seeded modes + filters
+  (Priority 6).** `visualize` was a single force-directed hairball of the whole
+  repo (pretty, illegible). It now renders focused subgraphs seeded by a query,
+  so a view is never the whole repo: `neighborhood` (a symbol's immediate graph),
+  `callers`/`callees` (incoming/outgoing calls to a depth), `impact` (reverse
+  reachability — what depends on a symbol or on the changed files), `domains`
+  (a graph between communities), plus the legacy `file`/`symbol` maps (aliased
+  `modules`/`symbols`). Three orthogonal filters apply across modes:
+  `min_confidence` (drop edges below certain/inferred/possible),
+  `language` (restrict nodes), and **Git-changed files** (`--git` worktree,
+  `--git-ref <ref>`, `--staged`, or explicit `--changed paths/diff`) which
+  highlights changed nodes and can seed the impact/neighborhood modes. The
+  self-contained HTML gained investigative UX: directional arrows, edges styled
+  by confidence (solid/dashed/dotted), a red ring on changed nodes and a white
+  ring on the seed, and in-page toggles to show/hide edges by confidence and
+  nodes by language without re-exporting. New `viz.git_changed_files` shells out
+  to git and degrades gracefully. All wired through the engine, the `CodeGraph`
+  facade, and the `visualize` CLI (`--mode/--symbol/--depth/--min-confidence/
+  --language/--changed/--git/--git-ref/--staged`); `level=` stays backward-
+  compatible. 26-test battery.
+
 ### Fixed
 
 - **Read-repair now discovers NEW files, not just drift in known ones.** The

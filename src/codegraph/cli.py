@@ -167,7 +167,11 @@ def cmd_visualize(args) -> int:
 
     from .viz import render_html
 
-    data, env = _engine(args).visualize(level=args.level, scope=args.scope, top=args.top)
+    data, env = _engine(args).visualize(
+        args.mode, level=args.level, scope=args.scope, top=args.top,
+        symbol=args.symbol, depth=args.depth, min_confidence=args.min_confidence,
+        language=args.language, changed=args.changed, git=args.git,
+        git_ref=args.git_ref, staged=args.staged)
     if env.warnings:
         print(render.warnings(env).rstrip(), file=sys.stderr)
     default = ".codegraph/graph.json" if args.json else ".codegraph/graph.html"
@@ -413,9 +417,30 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--depth", type=int, default=8, help="máx. de saltos")
     sp.set_defaults(fn=cmd_reaches)
 
-    sp = sub.add_parser("visualize", help="exporta o grafo como HTML interativo (ou JSON)")
-    sp.add_argument("--level", choices=("file", "symbol"), default="file",
-                    help="nós = arquivos (default) ou símbolos")
+    sp = sub.add_parser("visualize",
+                        help="exporta um subgrafo de investigação (HTML/JSON)")
+    sp.add_argument("--mode", default=None,
+                    choices=("file", "symbol", "modules", "symbols",
+                             "neighborhood", "callers", "callees", "impact",
+                             "domains"),
+                    help="modo do subgrafo (default: file)")
+    sp.add_argument("--level", choices=("file", "symbol"), default=None,
+                    help="legado: alias de --mode file/symbol")
+    sp.add_argument("--symbol", default=None,
+                    help="semente dos modos neighborhood/callers/callees/impact")
+    sp.add_argument("--depth", type=int, default=3, help="saltos nos modos semeados")
+    sp.add_argument("--min-confidence", dest="min_confidence", default=None,
+                    choices=("certain", "inferred", "possible"),
+                    help="filtra arestas por confiança mínima")
+    sp.add_argument("--language", default=None, help="filtra nós por linguagem")
+    sp.add_argument("--changed", default=None,
+                    help="caminhos/diff a destacar (ou semear o impacto)")
+    sp.add_argument("--git", action="store_true",
+                    help="destaca os arquivos alterados no worktree git")
+    sp.add_argument("--git-ref", dest="git_ref", default=None,
+                    help="destaca arquivos alterados vs. este ref git (ex.: main)")
+    sp.add_argument("--staged", action="store_true",
+                    help="usa só os arquivos staged do git")
     sp.add_argument("--scope", default=None, help="restringe a um diretório")
     sp.add_argument("--top", type=int, default=250, help="máx. de nós (mais conectados)")
     sp.add_argument("--json", action="store_true", help="exporta dados JSON em vez de HTML")

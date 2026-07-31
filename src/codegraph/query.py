@@ -971,20 +971,60 @@ class QueryEngine:
         return {"mode": "entry" if entry else "scan",
                 "findings": findings, "scanned": scanned}, env
 
-    def visualize(self, level: str = "file", scope: str | None = None,
-                  top: int = 250) -> tuple[dict, Envelope]:
-        """Monta os dados do grafo para export visual (HTML/JSON).
+    def visualize(self, mode: str | None = None, *, level: str | None = None,
+                  scope: str | None = None, top: int = 250,
+                  symbol: str | None = None, depth: int = 3,
+                  min_confidence: str | None = None, language: str | None = None,
+                  changed: str | None = None, git: bool = False,
+                  git_ref: str | None = None,
+                  staged: bool = False) -> tuple[dict, Envelope]:
+        """Monta os dados de um subgrafo de INVESTIGAÇÃO para export visual.
 
-        Fresco como qualquer consulta: repara o índice, garante ranks e
-        domínios antes de exportar.
+        `mode` (ou o legado `level`): `file`/`symbol` (mapa), `neighborhood`,
+        `callers`, `callees`, `impact` (semeados por `symbol` ou pelos arquivos
+        alterados), `domains` (grafo entre comunidades). Filtros: `min_confidence`
+        (certain/inferred/possible), `language`, e o conjunto de arquivos
+        alterados via `changed` (paths/diff) ou `git_ref`/`staged` (git diff).
+
+        Fresco como qualquer consulta: repara o índice, garante ranks/domínios.
         """
-        from .viz import build_graph_data
+        from .viz import build_graph_data, git_changed_files
 
         env = Envelope()
         self._repair_all(env)
         ensure_ranks(self.conn)
         ensure_communities(self.conn)
-        data = build_graph_data(self.conn, level=level, scope=scope, top=top)
+        mode = mode or level or "file"
+
+        seed_ids: list = []
+        seed_label = None
+        if symbol:
+            sym = self._resolve_fresh(symbol, env)
+            if self._repair({sym["path"]}, env):
+                sym = self._resolve_selector(sym["fqn"])
+            seed_ids = [sym["id"]]
+            seed_label = sym["fqn"]
+
+        changed_files: set | None = None
+        if changed:
+            changed_files = set(_paths_from_target(changed))
+        elif git or git_ref is not None or staged:
+            changed_files = git_changed_files(self.root, ref=git_ref, staged=staged)
+
+        # modos semeados sem símbolo explícito → semeia pelos arquivos alterados
+        if mode in ("neighborhood", "callers", "callees", "impact") \
+                and not seed_ids and changed_files:
+            ph = ",".join("?" * len(changed_files))
+            seed_ids = [r["id"] for r in self.conn.execute(
+                f"SELECT s.id FROM symbols s JOIN files f ON s.file_id=f.id "
+                f"WHERE f.path IN ({ph}) AND s.parent_id IS NULL "
+                f"AND s.kind<>'file'", list(changed_files)).fetchall()]
+            seed_label = f"{len(changed_files)} arquivo(s) alterado(s)"
+
+        data = build_graph_data(
+            self.conn, mode=mode, scope=scope, top=top, seed_ids=seed_ids,
+            seed_label=seed_label, depth=depth, min_confidence=min_confidence,
+            language=language, changed_files=changed_files)
         return data, env
 
     def describe(self, target: str, refresh: bool = False, llm=None):
