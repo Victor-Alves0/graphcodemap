@@ -8,6 +8,29 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Terraform / HCL — new dedicated extractor (16th dedicated language).**
+  `.tf`, `.tfvars` and `.hcl` are now first-class instead of falling outside the
+  graph. HCL is block-oriented, so the extractor models Terraform's real
+  dependency graph rather than just top-level keys: `resource "T" "N"`,
+  `data "T" "N"`, `variable`, `output`, `module`, `provider` and each `locals`
+  attribute become addressable symbols whose fqn embeds the Terraform address
+  (`…​.aws_instance.web`, `…​.var.region`, `…​.module.vpc`). Every scope
+  traversal inside a value — `var.x`, `local.x`, `module.x`, `data.T.N`, and
+  bare `type.name` resource references — becomes a `references` edge, resolved by
+  fqn suffix so a dependency links to its definition **across files of the same
+  directory** (a TF module is a directory; the `.tf` files share one namespace).
+  Module `source` becomes an `imports` edge (local paths resolve to the file
+  symbol; registry sources stay honestly dangling). `variable`/`output`
+  `description` is captured as the symbol doc. Terraform's implicit symbols
+  (`count`, `each`, `self`, `path`, `terraform`) and `for`-loop variables are
+  excluded so they don't create phantom references. A 50-test battery covers the
+  surface (blocks→symbols, address fqns, references, imports, cross-file
+  resolution, edge cases). The resolver's `references` branch gained a small
+  terraform-gated fall-through to fqn-suffix matching (the style/Tailwind path is
+  untouched). Terraform is dedicated **config** — like markup it has a navigable
+  structure but no data flow, so it sits in the new `languages.NO_DATAFLOW` set,
+  outside the dataflow parity.
+
 - **Clojure/ClojureScript robustness pass — final of the per-language
   hardening.** Clojure is a Lisp, so the recurring trio adapts to its forms; a
   31-test battery exposed the two Lisp-specific member gaps, fixed:

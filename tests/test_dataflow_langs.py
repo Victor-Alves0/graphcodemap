@@ -61,11 +61,12 @@ def test_dataflow_param_flows(cgml, fname):
 def test_all_dedicated_have_dataflow():
     """Paridade: toda linguagem de PROGRAMAÇÃO dedicada tem dataflow.
 
-    Marcação/estilo (HTML/CSS/SCSS) tem extractor dedicado mas não tem fluxo de
-    dados — não faz sentido, e por isso fica fora da paridade (languages.MARKUP).
+    Marcação/estilo (HTML/CSS/SCSS) e config declarativa (Terraform/HCL) têm
+    extractor dedicado mas não têm fluxo de dados — não faz sentido, e por isso
+    ficam fora da paridade (languages.NO_DATAFLOW).
     """
     from codegraph import dataflow as df
-    from codegraph.languages import DEDICATED, MARKUP
+    from codegraph.languages import DEDICATED, NO_DATAFLOW
 
-    missing = {lang for lang in DEDICATED - MARKUP if not df.supported(lang)}
+    missing = {lang for lang in DEDICATED - NO_DATAFLOW if not df.supported(lang)}
     assert not missing, f"linguagens dedicadas sem dataflow: {missing}"

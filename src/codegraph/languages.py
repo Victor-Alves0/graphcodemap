@@ -38,6 +38,7 @@ EXT_TO_LANG: dict[str, str] = {
     ".scala": "scala",
     ".clj": "clojure", ".cljs": "clojure", ".cljc": "clojure",
     ".edn": "clojure",
+    ".tf": "terraform", ".tfvars": "terraform", ".hcl": "terraform",
     ".html": "html", ".htm": "html",
     ".css": "css", ".scss": "scss",
     # --- nível genérico (heurística estrutural) ---
@@ -73,10 +74,19 @@ EXT_TO_LANG: dict[str, str] = {
 # programação dedicada tem dataflow" continuar significando o que diz.
 MARKUP = {"html", "css", "scss"}
 
+# Config declarativa dedicada (Terraform/HCL): extractor específico com grafo de
+# dependência real (recursos/vars/módulos e as referências entre eles), mas SEM
+# fluxo de dados — não há função/parâmetro/taint a rastrear. Fora da paridade de
+# dataflow pela mesma razão do MARKUP.
+CONFIG = {"terraform"}
+
+# linguagens com extractor dedicado (extract/__init__.py) que NÃO têm dataflow.
+NO_DATAFLOW = MARKUP | CONFIG
+
 # linguagens com extractor dedicado (extract/__init__.py)
 DEDICATED = {"python", "typescript", "tsx", "javascript", "rust", "go", "java",
              "kotlin", "csharp", "c", "cpp", "cuda", "php",
-             "ruby", "lua", "luau", "swift", "scala", "clojure"} | MARKUP
+             "ruby", "lua", "luau", "swift", "scala", "clojure"} | NO_DATAFLOW
 
 
 def language_for(path: str) -> str | None:

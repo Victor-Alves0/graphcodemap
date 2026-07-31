@@ -60,6 +60,10 @@ def extract(lang: str, source: bytes, module_fqn: str, tree) -> tuple[list[Sym],
         from .clojure import ClojureExtractor
 
         return ClojureExtractor(source, module_fqn).run(tree)
+    if lang == "terraform":
+        from .terraform import TerraformExtractor
+
+        return TerraformExtractor(source, module_fqn).run(tree)
     if lang == "html":
         from .web import HtmlExtractor
 

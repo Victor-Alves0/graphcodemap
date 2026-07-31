@@ -98,7 +98,7 @@ STYLE_DEF_KINDS = ("css_class", "html_id")
 
 # Versão da lógica de extração/resolução: mudou → força re-index completo,
 # mesmo com content-hashes iguais (o índice é derivado de código+extractor).
-INDEXER_VERSION = "31"
+INDEXER_VERSION = "32"
 
 DEFAULT_IGNORES = [
     ".git/", ".codegraph/", "__pycache__/", ".venv/", "venv/", "node_modules/",
@@ -893,6 +893,17 @@ class Indexer:
                 cands = _dedup_cap(
                     c for c in by_name.get(guess, ())
                     if c["kind"] in STYLE_DEF_KINDS)
+                if (not cands and "." in guess
+                        and lang_of.get(e["file_id"]) == "terraform"):
+                    # Terraform: dependência entre blocos (var.x, local.x,
+                    # module.x, data.t.n, <tipo>.<nome>) casa por SUFIXO de fqn,
+                    # como o ramo qualificado — o fqn do bloco embute o endereço
+                    # (…​.aws_instance.web). Gated na língua para não tocar o
+                    # caminho de estilo (Tailwind `mt-1.5` não deve cair aqui).
+                    seg, suffix = guess.rsplit(".", 1)[-1], "." + guess
+                    cands = _dedup_cap(
+                        c for c in by_name.get(seg, ())
+                        if c["fqn"] == guess or c["fqn"].endswith(suffix))
             elif "." in guess:
                 # guess qualificado (via import/escopo): match por fqn exato/sufixo
                 seg, suffix = guess.rsplit(".", 1)[-1], "." + guess
