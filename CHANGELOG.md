@@ -8,6 +8,17 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Kotlin robustness pass — ninth of the per-language hardening.** A 44-test
+  battery exposed the recurring trio, all fixed: **class properties** (`val
+  count: Int`, the `property_declaration` handler had a `not self.scope` guard
+  that dropped every in-class property) and **primary-constructor properties**
+  (`class Point(val x, val y)` — Kotlin's central idiom, where a `val`/`var`
+  parameter declares a property; parameters without the binding keyword are not)
+  and **enum entries** (`enum class Color { RED, GREEN }`) were not symbols — now
+  all navigable; **visibility was never set** — now read from the `modifiers`
+  (`public` default, plus `private`/`protected`/`internal`). Inheritance emits
+  the simple supertype name and resolves by name+kind.
+
 - **PHP robustness pass — eighth of the per-language hardening.** A 42-test
   battery exposed the full recurring trio plus a namespace bug, all fixed:
   **properties** (`private $count`, typed, multiple per line — the `$` is
