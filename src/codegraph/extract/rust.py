@@ -11,17 +11,32 @@ from __future__ import annotations
 from .base import BaseExtractor
 
 
+def _simple_trait(text: str) -> str:
+    """Nome simples de um trait: strip de genérico e de caminho.
+    `From<i32>` → `From`; `std::fmt::Display` → `Display`."""
+    return text.split("<", 1)[0].replace("::", ".").strip().rsplit(".", 1)[-1]
+
+
 class RustExtractor(BaseExtractor):
+    def _visibility(self, node) -> str:
+        """`pub` → public; `pub(crate)`/`pub(super)`/`pub(in …)` → crate
+        (restrito, mas não privado); sem modificador → private (default Rust)."""
+        v = next((c for c in node.children
+                  if c.type == "visibility_modifier"), None)
+        if v is None:
+            return "private"
+        return "public" if v.text.decode("utf-8", "replace") == "pub" else "crate"
+
     def visit(self, node) -> None:
         t = node.type
         if t in ("function_item", "function_signature_item"):
             self._function(node)
             return
         if t == "struct_item":
-            self._named(node, "struct")
+            self._struct(node)
             return
         if t == "enum_item":
-            self._named(node, "enum")
+            self._enum(node)
             return
         if t == "trait_item":
             self._trait(node)
@@ -65,7 +80,7 @@ class RustExtractor(BaseExtractor):
         body = node.child_by_field_name("body")
         kind = "method" if self.in_class() else "function"
         self.add_sym(node, kind, name, signature=self.sig_of(node, body),
-                     doc=self._doc(node))
+                     doc=self._doc(node), visibility=self._visibility(node))
         self.scope.append((name, "function"))
         if body is not None:
             for c in body.children:
@@ -78,7 +93,53 @@ class RustExtractor(BaseExtractor):
             return
         self.add_sym(node, kind, self.text(name_node),
                      signature=self.sig_of(node, node.child_by_field_name("body")),
-                     doc=self._doc(node))
+                     doc=self._doc(node), visibility=self._visibility(node))
+
+    def _struct(self, node) -> None:
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            return
+        name = self.text(name_node)
+        body = node.child_by_field_name("body")
+        self.add_sym(node, "struct", name, signature=self.sig_of(node, body),
+                     doc=self._doc(node), visibility=self._visibility(node))
+        # campos NOMEADOS viram símbolos (API do tipo). Tuple struct
+        # (`Wrapper(i32)`) e unit (`Marker;`) não têm nomes → nada a capturar.
+        flist = next((c for c in node.named_children
+                      if c.type == "field_declaration_list"), None)
+        if flist is None:
+            return
+        self.scope.append((name, "class"))
+        for f in flist.named_children:
+            if f.type != "field_declaration":
+                continue
+            fn = f.child_by_field_name("name")
+            if fn is not None:
+                self.add_sym(f, "variable", self.text(fn), signature=None,
+                             doc=self._doc(f), visibility=self._visibility(f))
+        self.scope.pop()
+
+    def _enum(self, node) -> None:
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            return
+        name = self.text(name_node)
+        body = node.child_by_field_name("body")
+        self.add_sym(node, "enum", name, signature=self.sig_of(node, body),
+                     doc=self._doc(node), visibility=self._visibility(node))
+        vlist = next((c for c in node.named_children
+                      if c.type == "enum_variant_list"), None)
+        if vlist is None:
+            return
+        self.scope.append((name, "class"))
+        for v in vlist.named_children:
+            if v.type != "enum_variant":
+                continue
+            vn = v.child_by_field_name("name")
+            if vn is not None:
+                self.add_sym(v, "constant", self.text(vn), signature=None,
+                             doc=self._doc(v), visibility="public")
+        self.scope.pop()
 
     def _trait(self, node) -> None:
         name_node = node.child_by_field_name("name")
@@ -87,7 +148,7 @@ class RustExtractor(BaseExtractor):
         name = self.text(name_node)
         self.add_sym(node, "interface", name,
                      signature=self.sig_of(node, node.child_by_field_name("body")),
-                     doc=self._doc(node))
+                     doc=self._doc(node), visibility=self._visibility(node))
         self.scope.append((name, "class"))
         body = node.child_by_field_name("body")
         if body is not None:
@@ -103,8 +164,11 @@ class RustExtractor(BaseExtractor):
         trait_node = node.child_by_field_name("trait")
         self.scope.append((type_name, "class"))
         if trait_node is not None:
-            trait_name = self.text(trait_node).split("<", 1)[0].replace("::", ".")
-            self.add_ref(node, "inherits", self._qualify(trait_name))
+            # NOME SIMPLES do trait, não o caminho qualificado: o fqn de símbolo é
+            # baseado em caminho de arquivo (`a.Draw`), então o `use crate::a::Draw`
+            # qualificado (`crate.a.Draw`) nunca casaria — o nome nu resolve por
+            # nome+kind, como as chamadas e a herança do Java.
+            self.add_ref(node, "inherits", _simple_trait(self.text(trait_node)))
         body = node.child_by_field_name("body")
         if body is not None:
             for c in body.children:
@@ -168,7 +232,16 @@ class RustExtractor(BaseExtractor):
             for c in n.named_children:
                 self._use_walk(c, prefix)
         elif t == "use_wildcard":
-            self.add_ref(n, "imports", join + "*")
+            # `use std::prelude::*` traz o caminho DENTRO do wildcard; já
+            # `use a::{b::*}` traz o caminho no prefixo herdado (join). Cobrir os
+            # dois: caminho interno se houver, senão o prefixo acumulado.
+            inner = next((c for c in n.named_children
+                          if c.type in ("scoped_identifier", "identifier")), None)
+            if inner is not None:
+                path = join + self.text(inner).replace("::", ".")
+            else:
+                path = join
+            self.add_ref(n, "imports", (path + ".*") if path else "*")
 
     def _macro_calls(self, token_tree) -> None:
         """Macros (println!, format!…) não são parseadas como expressões pelo

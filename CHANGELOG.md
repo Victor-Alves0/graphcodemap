@@ -8,6 +8,23 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Rust robustness pass — third of the per-language hardening.** A 56-test
+  battery over the full extractor surface exposed the same shape of gaps found
+  in Java, all fixed: **struct fields** (`struct Point { x, y }`) and **enum
+  variants** (`enum Color { Red, Green }`) were not symbols — now navigable
+  (fields as `variable` scoped to the struct, variants as `constant`);
+  **visibility was never set** — now read from `visibility_modifier` (`pub` →
+  `public`, `pub(crate)`/`pub(super)` → `crate`, else `private`); **wildcard
+  `use`** (`use std::prelude::*`) dropped its path because the path lives inside
+  the `use_wildcard` node, not the inherited prefix — now emits
+  `std.prelude.*`. Same inheritance over-qualification bug as Java, fixed the
+  same way: `impl Draw for P` qualified the trait through the `use`
+  (`crate.a.Draw`), which never matched the path-derived symbol fqn (`a.Draw`) —
+  now emits the simple trait name and resolves by name+kind. Deliberate
+  boundary locked: a macro invocation's own name (`do_thing!()`) is not a call
+  edge (stdlib macros like `println!`/`vec!` would be noise), but calls *inside*
+  macro arguments still are.
+
 - **Java robustness pass — second of the per-language hardening.** A 51-test
   battery over the full extractor surface exposed five real gaps, all fixed:
   **fields were not symbols** (only fed the type map) — now each field is a
