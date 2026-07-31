@@ -1,10 +1,60 @@
+<div align="center">
+
 # GraphCodeMap
 
-Code-to-graph engine for AI coding agents: symbols, call graph, references and impact analysis over any codebase — **local-first, staleness-aware, model-agnostic**.
+**A code-to-graph engine that AI agents can actually trust.**
 
-GraphCodeMap parses your repository with tree-sitter into a SQLite-backed graph and exposes it as focused tools (library, CLI, and soon MCP). It is designed around one invariant: **the code is the source of truth; the graph is a derived cache** — every fact carries the content-hash of the file it came from, and every query verifies freshness before answering (read-repair). Static-analysis limits are declared, never hidden: call edges carry a confidence level (`certain` / `inferred` / `possible`).
+Symbols, call graph, references, impact, dataflow and taint over any codebase —
+*local-first, staleness-aware, model-agnostic.*
 
-> Design rationale and research: [docs/RESEARCH.md](docs/RESEARCH.md) · [docs/DESIGN.md](docs/DESIGN.md)
+[![CI](https://github.com/Victor-Alves0/graphcodemap/actions/workflows/tests.yml/badge.svg)](https://github.com/Victor-Alves0/graphcodemap/actions/workflows/tests.yml)
+[![Python](https://img.shields.io/badge/python-3.10%20%E2%80%93%203.12-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-1284%20passing-brightgreen)](tests/)
+[![Status](https://img.shields.io/badge/status-alpha%20v0.1-orange)](#status)
+
+[Quick start](#quick-start) ·
+[Why it exists](#why-it-exists) ·
+[Documentation](docs/README.md) ·
+[When to use it](#when-to-use-it-and-when-not-to) ·
+[Benchmarks](evals/RESULTS.md)
+
+</div>
+
+---
+
+## The problem
+
+An AI coding agent asked *"what breaks if I change this function?"* has two bad
+options: read dozens of files (slow, expensive, easy to miss a caller) or trust
+an index that was built at some point in the past and may already be wrong. In a
+live editing session — the moment the answer matters most — most code indexes are
+**stale**, and a stale graph answers *confidently and incorrectly*. That single
+failure mode is the number-one risk in this space.
+
+## The approach
+
+GraphCodeMap parses your repository with [tree-sitter](https://tree-sitter.github.io/)
+into a SQLite-backed graph and exposes it as focused tools — a **library**, a
+**CLI**, and an **MCP server** any agent can call. It is built around one
+invariant:
+
+> **The code is the source of truth; the graph is a derived cache.**
+
+Two consequences make it trustworthy where other indexes are not:
+
+- **Every fact is fresh at answer time.** Each row carries the content-hash of
+  the file it came from, and every query verifies those hashes against disk
+  *before* answering — re-indexing on the spot if the file drifted
+  (**read-repair**). You cannot get a stale answer without an explicit warning.
+- **Every fact declares its confidence.** Call edges are labeled `certain`,
+  `inferred`, or `possible`. Static-analysis limits are stated, never hidden.
+  Transitive queries propagate the *minimum* confidence along the path.
+
+This is **epistemic honesty** as an engineering principle — and it is the whole
+point. An agent that can trust a `certain` answer stops re-verifying by reading
+files, which is where the graph turns into both a correctness win and a token
+win.
 
 ## Quick start
 
@@ -12,227 +62,133 @@ GraphCodeMap parses your repository with tree-sitter into a SQLite-backed graph 
 pip install graphcodemap
 
 codegraph index .                 # build .codegraph/graph.db
-codegraph index --scope drivers/gpu   # partial: index only a subtree (big monorepos)
 codegraph overview                # ranked map of the repo (PageRank)
 codegraph find validate_token     # locate symbols
-codegraph callers auth.TokenService.validate
-codegraph impact auth.TokenService.validate   # what breaks if I change this
-codegraph dataflow handle_request             # where each parameter's data flows
-codegraph taint --entry handle_request        # untrusted input -> dangerous sink (security)
-codegraph ego auth.TokenService               # immediate graph neighborhood
-codegraph communities                         # domains/subsystems (graph clustering)
-codegraph describe domain:0                   # L3: name a domain (LLM, cached)
-codegraph visualize                           # interactive HTML map (.codegraph/graph.html)
-codegraph watch                               # keep the index hot (file watcher)
-codegraph refine                              # L1: promote edges to [certain] (jedi)
-codegraph describe auth.TokenService.validate # L3: LLM behavior summary (cached)
-codegraph describe src/auth.py                # L3: module-level summary
-codegraph describe --top 20                   # pre-warm summaries for hub symbols
-codegraph stats
-codegraph doctor                              # index health: parse, confidence, L1, staleness
-codegraph vacuum                              # rebuild + reclaim space (keeps L3 cache)
+codegraph impact auth.TokenService.validate   # what breaks if I change this?
+codegraph callers auth.TokenService.validate  # who calls it (with confidence)
+codegraph taint --entry handle_request         # untrusted input → dangerous sink
+codegraph visualize --mode impact --symbol validate_token   # investigate as HTML
 ```
 
-### Observability
-
-`doctor` gives a one-shot health check: parse status (and the paths of any files
-that failed to parse), the call-edge confidence split (`certain`/`inferred`/
-`possible`) with `%certain`, which L1 resolvers are active, and how stale the
-index is. It flags actionable problems and exits non-zero when files failed to
-parse (handy in CI). `doctor --why` re-parses the failed files and prints the
-reason. Also available as an MCP tool. When the DB looks bloated or stale,
-`vacuum` rebuilds it and reclaims space while keeping the L3 cache.
-
-Logging is off by default (a library shouldn't spam your output). Turn it on to
-see *why* a file failed to index, resolver activity, or L3 token cost:
-
-```bash
-CODEGRAPH_LOG=warning codegraph index .   # warnings (e.g. which file failed and why)
-CODEGRAPH_DEBUG=1 codegraph refine        # full debug (LSP activity, token accounting)
-```
-
-L3 (`describe`) reports token usage per generation, so the cost is visible.
-
-The `graphcodemap` and `codegraph` commands are the same CLI (the short name
-is kept as an alias). Install `graphcodemap[l1]` to enable semantic refinement: a pluggable resolver
-layer (Python via jedi today) that runs after L0 and promotes call edges to
-`certain` when exactly one in-repo definition is found — including instance
-method calls that name-based resolution can only mark `possible`.
-
-Freshness is layered: a file watcher keeps the index hot during a session,
-a boot scan catches anything that changed while it was off, and — the final
-guarantee — every query verifies content-hashes of the files involved and
-re-indexes them before answering (read-repair).
-
-## MCP server (any agent: Claude Code, Cursor, Codex…)
+Point any MCP-capable agent at your repo:
 
 ```bash
 pip install "graphcodemap[mcp]"
-graphcodemap-mcp --root /path/to/repo   # stdio server; indexes/refreshes on boot
+graphcodemap-mcp --root .         # stdio server; indexes/refreshes on boot
 ```
 
-Claude Code — add to `.mcp.json` at the repo root:
-
-```json
-{
-  "mcpServers": {
+```jsonc
+// .mcp.json at the repo root (Claude Code, Cursor, Codex…)
+{ "mcpServers": {
     "codegraph": { "command": "graphcodemap-mcp", "args": ["--root", "."] }
-  }
-}
+} }
 ```
 
-Tools exposed: `overview`, `find_symbol`, `symbol_info`, `references`,
-`callers`, `callees`, `impact`, `ego_graph`, `dataflow`, `taint`, `communities`,
-`describe`, `index_status`. Every answer carries the freshness/completeness envelope —
-edges are labeled `certain`/`inferred`/`possible`, and static-analysis limits
-are declared, never hidden.
-
-As a library (the importable package is `codegraph`, like `pillow`→`PIL`):
+Or embed it as a library — the importable package is `codegraph` (like `pillow`→`PIL`):
 
 ```python
 from codegraph import CodeGraph
 
 cg = CodeGraph(".")
 cg.index()
-for s in cg.find_symbol("validate"):
-    print(s.fqn, s.kind, f"{s.path}:{s.start_line}")
+rows, env = cg.find_symbol("validate")
 ```
 
-### Embedding it (host API)
+New here? Start with **[Getting Started](docs/getting-started.md)**.
 
-Beyond the CLI, the library is built to be embedded by a service:
+## What you can ask
 
-```python
-# the index tells you what changed — close the edit loop without a git diff
-cg = CodeGraph(repo, llm=user_api_key)      # credential injected, never from env
-changes = cg.index(exclude=["vendor/", "*.min.css"])["changes"]
-for c in changes["signature_changed"]:
-    print(c["fqn"], c["before"], "->", c["after"])
-    cg.impact(c["fqn"])                     # who breaks if this ships?
+| Question | Tool |
+|---|---|
+| *Where does this repo begin?* | `overview` — ranked map by PageRank |
+| *Where is this symbol?* | `find`, `info` |
+| *Who calls this / what does it call?* | `callers`, `callees` |
+| *What breaks if I change this?* | `impact`, `change-impact`, `affected-modules` |
+| *Which tests cover this?* | `related-tests` |
+| *Where does untrusted input flow?* | `dataflow`, `taint`, `reaches` |
+| *What are the subsystems here?* | `communities` |
+| *What should I read for this task?* | `suggest`, `explain` |
+| *Show me the neighborhood* | `visualize` — seeded, interactive HTML |
 
-cg.describe("auth.TokenService", llm=other_users_key)   # per-call credential
-```
+Full reference: **[CLI](docs/cli.md)** · **[MCP tools](docs/mcp.md)** · **[Library API](docs/library.md)**.
 
-- **`index()["changes"]`** — `added` / `removed` / `signature_changed`
-  (with `before`/`after`), exact `counts`, `truncated` flag.
-- **`llm=`** on the constructor or per call: a callable `(system, user) -> str`
-  or an API key. Multi-tenant safe (no global env mutation) and the provider
-  exposes `.usage` so cost stays attributable.
-- **`exclude=`** — gitignore-style patterns stored *in the index*, so the policy
-  is the host's without writing files into the user's working copy.
-- **`doctor()`** returns `root_name`, never the absolute server path.
+## Highlights
+
+- **Read-repair freshness guarantee.** A watcher keeps the index hot, a boot scan
+  catches offline changes, and every query verifies content-hashes before
+  answering. Measured to **100k+ files**. → [Concepts](docs/concepts.md#freshness)
+- **Confidence-typed edges.** `certain` / `inferred` / `possible`, with `certain`
+  coming from real semantic resolution (L1). → [Concepts](docs/concepts.md#confidence)
+- **Impact & change analysis.** Transitive reverse-reachability, ranked by
+  PageRank × path-confidence; feed it a git diff to ask *"what does my branch
+  break?"* → [CLI](docs/cli.md#impact)
+- **Dataflow & taint (CPG-lite).** Source→sink reachability with sanitizers,
+  interprocedural and computed on demand. Covers all 18 dedicated languages.
+  → [Concepts](docs/concepts.md#dataflow--taint)
+- **Semantic L1 via LSP.** Promotes edges to `certain` through one generic LSP
+  client; every dedicated language has a resolver wired.
+  → [Languages & Resolvers](docs/languages.md)
+- **Agent-oriented MCP layer.** 20 tools returning a structured freshness/
+  completeness envelope, plus high-level tools (`change_impact`,
+  `find_related_tests`, `explain_symbol`…). → [MCP](docs/mcp.md)
+- **Investigative visualization.** Seeded subgraphs (neighborhood/callers/
+  callees/impact/domains) with confidence-styled edges and git-diff highlighting
+  — not a decorative hairball. → [CLI](docs/cli.md#visualize)
+
+## When to use it (and when not to)
+
+Trust is built by being honest about the boundaries:
+
+- ✅ **Use it for structural questions** — impact, multi-hop call chains,
+  dataflow/taint — and in large or unfamiliar codebases, where reading files by
+  hand is slow and error-prone.
+- ✅ **Use it when an agent must be *sure*** — a `certain` L1 edge is a semantic
+  fact, so the agent can answer and stop instead of re-reading.
+- ⚠️ **Reach for grep first when you just want to *find* a string.** For plain
+  text search grep is often enough and cheaper; the graph earns its cost on
+  structure, not substring matching.
+- ⚠️ **Treat dataflow/taint findings as candidates.** It is *may-taint* (it
+  over-approximates) and flow-insensitive — a lead to verify, not a verdict.
+
+Full, quantified limitations and benchmark methodology: **[FAQ & Limitations](docs/faq.md)**
+and **[evals/RESULTS.md](evals/RESULTS.md)**.
 
 ## Languages
 
-Three tiers:
+**23 dedicated extractors** (refined fqn / imports / calls / inheritance):
+Python, TypeScript/TSX, JavaScript, Rust, Go, Java, Kotlin, C#, C, C++/CUDA/Metal,
+PHP, Ruby, Lua/Luau, Swift, Scala, Clojure/ClojureScript, **Terraform/HCL**, and
+the web tier HTML + CSS/SCSS. A **generic tier** gives structural L0 to dozens
+more grammars (Zig, Elixir, Vue, Svelte, SQL, Bash, Dart…). Dataflow & taint
+cover all 18 dedicated *code* languages. → **[Languages & Resolvers](docs/languages.md)**
 
-- **Dedicated extractors** (refined fqn/imports/calls): Python, TypeScript/TSX, JavaScript, Rust, Go, Java, Kotlin, C#, C, C++/CUDA/Metal, PHP, Ruby, Lua/Luau, Swift, Scala, Clojure/ClojureScript.
-- **Web markup/style** (dedicated too): HTML and CSS/SCSS — CSS *defines* selectors (`css_class`/`css_id`, plus SCSS `@mixin`/`@function`); HTML contributes `id` anchors, treats `class="…"` as *usage* of those selectors, and records `<script src>`/`<link href>` as file dependencies. No dataflow (stylesheets have none). Usage is also emitted from **`className=`/`class=` in JSX/TSX**, which is where a React/Vue codebase actually consumes its classes — so `references` edges link markup *and* components to the stylesheet that defines them. This is the only cross-language edge at L0, and it makes two questions answerable: *who uses `.menu-item`?* and *which classes are dead?* Asset dependencies (`<script src>`, `<link href>`, `@import`, `@use`) resolve to the target **file**, which is itself a symbol (`kind='file'`) — external packages match nothing and stay unresolved, as they should.
-- **Generic tier** (structural heuristics over any tree-sitter grammar): Zig, PowerShell, Elixir, Objective-C, Julia, Vue, Svelte, Astro, Groovy/Gradle, Dart, Verilog/SystemVerilog, SQL, Fortran, Pascal/Delphi, Bash, Apex, Razor, XML project files.
+## Documentation
 
-Dataflow & taint analysis covers all 18 dedicated languages (Python, JS/TS,
-Java, C#, C/C++, Go, Rust, Ruby, PHP, Kotlin, Swift, Scala, Lua, Clojure).
-- **Docs/data**: Markdown (headings as sections), JSON/YAML/TOML (top-level keys).
-
-Binary/document formats (.pdf, .docx) and structureless formats (.sln, .dfm, BYOND) stay out of the structural graph by design.
-
-Semantic L1 resolvers (promote edges to `certain`): **every dedicated language now has a resolver wired.** Python via jedi; JS/TS via the TypeScript language service (needs `node` + `typescript@5`); and any LSP server via one generic client. *Validated live* (a cross-file call promoted to `certain`): Go (`gopls`), Rust (`rust-analyzer`), Lua (`lua-language-server`), Clojure (`clojure-lsp`), and **Java (`jdtls`)** — the last being the first *launcher-based* server (`java -jar <equinox-launcher> …`, not a bare `PATH` binary), proving the client generalizes beyond a single executable. *Wired and inert until the toolchain is present* (same protocol, not validated on this box): C/C++ (`clangd`), PHP (`intelephense`), Ruby (`solargraph`), Kotlin (`kotlin-language-server`), C# (`csharp-ls`), Scala (`metals`), Swift (`sourcekit-lsp`). An LSP-backed language activates automatically when its server is on `PATH` (or pointed at by `CODEGRAPH_<SERVER>`, e.g. `CODEGRAPH_JDTLS` for the JDT LS install dir); resolution quality depends on the server finding the project (`go.mod` / `Cargo.toml` / `compile_commands.json` / a build tool). The generic client waits for async servers to finish indexing before querying. Adding another language is a ~10-line config on `l1/lsp_base.py`.
-
-Why L1 matters: `certain` edges are semantic facts, not name guesses — so an agent can trust a `reaches`/`impact`/`callers` answer and stop, instead of re-verifying by reading files. In our reachability benchmark this made the graph arm both more correct and ~2.4× cheaper in tokens than a grep/read baseline (see [evals/RESULTS.md](evals/RESULTS.md#rodada-9)). Adding L1 to a language is what turns "graph is sometimes worth it" into "graph wins" there.
-
-## Dataflow & taint
-
-Beyond the call graph, GraphCodeMap answers *"if data enters here, where does it
-go?"* — the foundation for security and safe refactoring. `dataflow` traces each
-parameter to the calls and returns it reaches; `taint` follows untrusted input
-(sources) to dangerous operations (sinks), with sanitizers cutting the flow.
-Interprocedural via the call graph, computed on-demand (always fresh), and
-configurable via `.codegraph/taint.json`. It is a pragmatic, incremental
-[Code Property Graph](docs/RESEARCH.md#6-dataflow--taint--pesquisa-e-decis%C3%A3o-2026-07-18)
-— not a whole-program engine. Covers all 18 dedicated languages.
+| Guide | What's inside |
+|---|---|
+| **[Getting Started](docs/getting-started.md)** | Install, index, your first queries |
+| **[Core Concepts](docs/concepts.md)** | The graph model, confidence tiers, the freshness guarantee, layers L0–L3 |
+| **[CLI Reference](docs/cli.md)** | Every command, flag, and output format |
+| **[Agents & MCP](docs/mcp.md)** | The 20 MCP tools and the response envelope |
+| **[Library / Host API](docs/library.md)** | Embedding GraphCodeMap in a service |
+| **[Languages & Resolvers](docs/languages.md)** | Language tiers and L1/LSP resolution |
+| **[Architecture](docs/architecture.md)** | Pipeline, SQLite schema, incremental indexing |
+| **[FAQ & Limitations](docs/faq.md)** | Honest answers, benchmarks, scope |
+| [Design](docs/DESIGN.md) · [Research](docs/RESEARCH.md) | Original design contract and research notes |
 
 ## Status
 
-**Alpha (v0.1.0).** The core is feature-complete and covered by ~165 tests, but
-the project has not yet been battle-tested by real usage. Roadmap M0–M12 done
-(see [docs/DESIGN.md](docs/DESIGN.md#7-roadmap)): L0 indexing, read-repair +
-watcher, PageRank/impact/ego/overview, MCP server, L1 (Python/jedi, JS/TS/
-tsserver), L3 descriptions, community detection, visualization, dataflow/taint.
+**Alpha (v0.1.0).** The core is feature-complete and covered by **1284 tests**
+(including a contract-test suite that locks the graph's ten load-bearing
+invariants), across a CI matrix of Linux + Windows on Python 3.10–3.12. It has
+not yet been battle-tested by broad real-world usage — expect rough edges, and
+please [open an issue](https://github.com/Victor-Alves0/graphcodemap/issues).
 
-## Honest limitations & benchmarks
+## Contributing
 
-This project's design principle is **epistemic honesty** — so are its claims:
+Issues and pull requests are welcome — see **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+Adding a language resolver is often a ~10-line config.
 
-- **The graph complements grep; it does not replace it.** For simply *finding*
-  code, grep is often enough and cheaper. The graph earns its cost on
-  *structural* questions — impact ("what breaks if I change this"), multi-hop
-  call chains, dataflow/taint — and in large or unfamiliar codebases.
-- **Benchmarks are small-scale and directional, not proof of SOTA.** On a
-  15-task SWE-bench-Lite *localization* pilot, the graph arm found the file to
-  edit in 93% of cases vs 80% for a grep/read baseline — but +2 tasks at n=15 is
-  within noise, and it measures localization, not full issue resolution. On
-  large structural tasks (redis) the graph won on both quality and token cost.
-  Full methodology and caveats: [evals/RESULTS.md](evals/RESULTS.md).
-- **Reachability isn't a token win by itself — it's an accuracy win.** On a
-  3-task flask reachability set (entry→sink chain), the graph arm scored 100%
-  correct vs 67% baseline and 0.92 vs 0.58 chain recall, with fewer tool calls
-  (14.7 vs 17.3) — but roughly *token parity* (43.6k vs 41.2k avg; one task where
-  the graph over-explored dragged the average up). The lesson we keep re-learning:
-  the graph buys **correctness and completeness on structural questions**, not a
-  universal token discount. Where it also saves tokens is when `certain` L1 edges
-  let the agent trust `reaches` and stop.
-- **Dataflow/taint is *may-taint*** (over-approximates — findings are candidates
-  to verify) and flow-insensitive. It is now **field-sensitive** (access paths
-  with a prefix rule: a tainted object taints its fields, but tainting one field
-  does not taint its siblings) — validated for Python and JS/TS; the generic tier
-  applies it best-effort with a safe base-name fallback. Alias sensitivity is
-  still out of scope.
-- **L1 semantic resolution** promotes call edges to `certain` via one generic
-  LSP client, and **every dedicated language now has a resolver wired.**
-  *Validated* against a live server: Python (jedi), JS/TS (tsserver), Go (gopls),
-  Rust (`rust-analyzer`), Lua (`lua-language-server`), Clojure (`clojure-lsp`),
-  and Java (`jdtls`) — seven server families including the first *launcher-based*
-  one (JDT LS runs on the JVM via an Eclipse launcher, not a bare `PATH` binary).
-  *Wired and inert until the toolchain is present* (same protocol, not validated
-  on this box): C/C++ (`clangd`), PHP (`intelephense`), Ruby (`solargraph`),
-  Kotlin (`kotlin-language-server`), C# (`csharp-ls`), Scala (`metals`), Swift
-  (`sourcekit-lsp`). Each activates only when its server/toolchain exists;
-  languages without an active resolver keep honest `inferred`/`possible` edges.
-- Static analysis can miss dynamic/reflective calls — every answer says so.
-- **Concurrency:** one `CodeGraph`/`QueryEngine` instance is single-threaded —
-  share it only under external serialization (the MCP server does this with a
-  lock), or use one instance per thread. Writes retry on `database is locked`.
-  Call-graph cycles (mutual/self recursion) terminate safely. Both are covered by
-  regression tests and the CI matrix (Linux + Windows, Python 3.10–3.12).
-- **Scale:** measured to **100k+ files** with a reproducible harness
-  ([`evals/scalebench.py`](evals/scalebench.py), full numbers in
-  [evals/RESULTS.md](evals/RESULTS.md#escala--prova-em-100k-arquivos-2026-07-20)).
-  Well-structured (namespaced) code scales cleanly: 100k files index in ~8 min at
-  **324 MB peak, no OOM**, on the one-time-index + hot-watcher model. Two honest
-  ceilings surfaced: (1) the strong freshness guarantee is an O(files)
-  `os.scandir` sweep on every empty result — profiling found 72% of it was
-  `os.path.relpath` (millions of `normcase` calls on Windows) and then `pathspec`
-  matching; removed by building the relative path during descent and checking
-  files against a reduced ignore spec (dir-only gitignore patterns can't match a
-  file): **~5s → ~0.6s per missed query at 100k** (~7.7×), same files and same
-  guarantee (no throttle), comfortable to ~100k — and
-  in the production path (MCP server with the watcher on) the sweep is **skipped
-  entirely while a live watcher already guarantees freshness** (a 30s backstop
-  sweep covers dropped OS events; the every-miss sweep still runs without a
-  watcher and during its debounce, so the strong guarantee is intact);
-  (2) **dense C at scale needs active L1.** The full Linux kernel (72k C files)
-  did *not* complete on the dev box — C is ~30× denser on disk (55 KB/file) and
-  name-based resolution fans out pathologically without namespaces (`dev_err`
-  called 35k×, `ARRAY_SIZE` 31k×), so `certain` L1 resolution (clangd) becomes a
-  *feasibility* requirement there, not a nicety. For repos too big or dense to
-  index whole, **`index --scope <subtree>`** indexes only the part you care about
-  (persisted, additive, and the freshness sweep then walks only that subtree —
-  ~4ms for a 500-file scope of a 100k repo vs ~0.7s for the whole). Indexing now
-  parallelizes the *prepare* phase (read+parse+extract) across a small thread pool
-  while keeping the SQLite writer serial (`index --workers N`, auto for repos
-  ≥1000 files) — bit-for-bit identical to the serial graph, a reliable but modest
-  ~1.16× (the single-writer SQLite is the ceiling; parse is only ~7% of index
-  time, so this is not a linear speedup, and we say so).
+## License
 
-Configuration: set `OPENROUTER_API_KEY` (env or `.env`) to enable L3/eval;
-model via `CODEGRAPH_L3_MODEL`. Contributions and issue reports welcome.
+[MIT](LICENSE) © Victor Alves
