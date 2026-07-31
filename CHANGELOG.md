@@ -8,6 +8,21 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Contract tests for the graph's invariants (Priority 3).** The product's
+  value lives in what the graph *promises* an agent, not in which nodes a parser
+  emits — so the 10 core promises are now locked as first-class contract tests,
+  end-to-end over a real index (`tests/test_contract_invariants.py`, 19 tests):
+  reindexing a file N times never duplicates data; editing a function body
+  preserves its symbol id (identity is `path/fqn/kind/ordinal`, independent of
+  the body); removing a symbol turns edges dangling without silently losing
+  `dst_name`; reindexing the file reconnects the pending references; switching
+  Git branches (i.e. disk content) updates the index; a response marked `fresh`
+  never carries a stale content-hash; `possible` is never rendered as `certain`;
+  `impact` propagates the *minimum* confidence along each path; excluded and
+  git-ignored files stay out of the graph; and no response leaks the server's
+  absolute path. Several of these had scattered partial coverage; they are now
+  named, grouped, and verified as the contract they are.
+
 - **Visualization as an investigation tool — seeded modes + filters
   (Priority 6).** `visualize` was a single force-directed hairball of the whole
   repo (pretty, illegible). It now renders focused subgraphs seeded by a query,
