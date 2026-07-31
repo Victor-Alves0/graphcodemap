@@ -8,6 +8,20 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **C# robustness pass — sixth of the per-language hardening.** A 51-test
+  battery exposed the full recurring trio plus a namespace bug, all fixed:
+  **properties** (`public string Name { get; set; }`, the central C# idiom),
+  **fields** (`private int count`, `const`, multiple per declaration) and **enum
+  members** were not symbols — now all navigable, scoped to their type;
+  **visibility was never set** — now read from the `modifier` list
+  (`public`/`private`/`protected`/`internal`, member default `private`, type
+  default `internal`); and **file-scoped namespaces** (`namespace App;`) dropped
+  every following declaration because they are siblings, not children — the
+  namespace scope now applies to the rest of the file. Inheritance emits the
+  simple base-type name and resolves by name+kind (C# fqns include the
+  path-derived namespace, so the `using`-qualified name would not align — same
+  fix as Java/Rust/Go).
+
 - **Go robustness pass — fifth of the per-language hardening.** A 48-test
   battery hit the familiar trio: **named struct fields** (`type Point struct { X,
   Y int }`) were not symbols — only embedded (anonymous) fields were handled, as

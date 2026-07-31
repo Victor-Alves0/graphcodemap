@@ -4,14 +4,25 @@ from __future__ import annotations
 
 from .base import BaseExtractor
 
+_ACCESS = ("public", "private", "protected", "internal")
+
 
 class CSharpExtractor(BaseExtractor):
+    def _visibility(self, node, default: str = "private") -> str:
+        """Acessibilidade a partir dos `modifier`. Default: membro é private,
+        tipo top-level é internal (passado por quem chama)."""
+        mods = {self.text(c) for c in node.children if c.type == "modifier"}
+        for a in _ACCESS:
+            if a in mods:
+                return a
+        return default
+
     def visit(self, node) -> None:
         t = node.type
         if t == "using_directive":
             self._using(node)
             return
-        if t in ("namespace_declaration", "file_scoped_namespace_declaration"):
+        if t == "namespace_declaration":
             name_node = node.child_by_field_name("name")
             body = node.child_by_field_name("body")
             if name_node is not None:
@@ -21,6 +32,26 @@ class CSharpExtractor(BaseExtractor):
                 self.visit(c)
             if name_node is not None:
                 self.scope.pop()
+            return
+        if t == "file_scoped_namespace_declaration":
+            # sem corpo: o namespace vale para o RESTO do arquivo (as declarações
+            # são IRMÃS, não filhas). Empilha o escopo e não desempilha — o
+            # extractor é por arquivo, então vazar até o fim é o correto.
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                self.scope.append((self.text(name_node), "module"))
+            return
+        if t == "property_declaration":
+            self._property(node)
+            return
+        if t == "field_declaration":
+            self._field(node)
+            return
+        if t == "enum_member_declaration":
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                self.add_sym(node, "constant", self.text(name_node),
+                             signature=None, doc=None, visibility="public")
             return
         if t in ("class_declaration", "record_declaration"):
             self._type(node, "class")
@@ -61,17 +92,26 @@ class CSharpExtractor(BaseExtractor):
         name = self.text(name_node)
         body = node.child_by_field_name("body")
         self.add_sym(node, kind, name, signature=self.sig_of(node, body),
-                     doc=self._doc(node))
+                     doc=self._doc(node), visibility=self._visibility(node, "internal"))
         self.scope.append((name, "class"))
         base = next((c for c in node.named_children if c.type == "base_list"), None)
         if base is not None:
             for c in base.named_children:
                 if c.type in ("identifier", "qualified_name", "generic_name"):
-                    self.add_ref(base, "inherits",
-                                 self._qualify(self.text(c).split("<", 1)[0]))
-        if body is not None:
-            for c in body.children:
-                self.visit(c)
+                    # nome SIMPLES: C# tem namespace no fqn (baseado em caminho +
+                    # escopo), então o `using`-qualificado não alinharia; o nome
+                    # nu resolve por nome+kind, como Java/Rust/Go
+                    simple = self.text(c).split("<", 1)[0].rsplit(".", 1)[-1]
+                    self.add_ref(base, "inherits", simple)
+        # o corpo pode ser declaration_list (class/struct/iface) ou
+        # enum_member_declaration_list (enum) — visitar ambos
+        containers = [body] if body is not None else [
+            c for c in node.named_children
+            if c.type in ("declaration_list", "enum_member_declaration_list")]
+        for cont in containers:
+            if cont is not None:
+                for c in cont.children:
+                    self.visit(c)
         self.scope.pop()
 
     def _method(self, node) -> None:
@@ -80,13 +120,44 @@ class CSharpExtractor(BaseExtractor):
             return
         name = self.text(name_node)
         body = node.child_by_field_name("body")
-        self.add_sym(node, "method" if self.in_class() else "function", name,
-                     signature=self.sig_of(node, body), doc=self._doc(node))
+        in_class = self.in_class()
+        self.add_sym(node, "method" if in_class else "function", name,
+                     signature=self.sig_of(node, body), doc=self._doc(node),
+                     visibility=self._visibility(node) if in_class else None)
         self.scope.append((name, "function"))
         if body is not None:
             for c in body.children:
                 self.visit(c)
         self.scope.pop()
+
+    def _property(self, node) -> None:
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            return
+        self.add_sym(node, "variable", self.text(name_node),
+                     signature=None, doc=self._doc(node),
+                     visibility=self._visibility(node))
+        # o corpo (accessor com get/set custom, ou `=> expr`) pode conter chamadas
+        for c in node.children:
+            if c.type in ("accessor_list", "arrow_expression_clause"):
+                self.visit(c)
+
+    def _field(self, node) -> None:
+        mods = {self.text(c) for c in node.children if c.type == "modifier"}
+        kind = "constant" if "const" in mods else "variable"
+        vis = self._visibility(node)
+        vardecl = next((c for c in node.named_children
+                        if c.type == "variable_declaration"), None)
+        if vardecl is None:
+            return
+        for d in vardecl.named_children:
+            if d.type != "variable_declarator":
+                continue
+            n = d.child_by_field_name("name") or next(
+                (g for g in d.named_children if g.type == "identifier"), None)
+            if n is not None:
+                self.add_sym(d, kind, self.text(n), signature=None,
+                             doc=None, visibility=vis)
 
     def _doc(self, node) -> str | None:
         lines: list[str] = []
