@@ -8,6 +8,24 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **Clojure/ClojureScript robustness pass — final of the per-language
+  hardening.** Clojure is a Lisp, so the recurring trio adapts to its forms; a
+  31-test battery exposed the two Lisp-specific member gaps, fixed:
+  **defrecord/deftype fields** (the first `[x y]` vector) were not symbols — now
+  each field is navigable, scoped to the record, and the protocols a record
+  implements become `inherits` edges while its method impls become methods;
+  **defprotocol/definterface method signatures** were being mistaken for calls —
+  now each is a `method` symbol scoped to the protocol. Namespace-as-fqn (`ns`),
+  `:require` aliasing, `^:private`/`defn-` visibility, and call-head resolution
+  already worked and are now locked by the battery.
+
+  This completes the per-language hardening: all 15 dedicated extractors
+  (Python, Java, Rust, TypeScript/TSX/JavaScript, Go, C#, C/C++, PHP, Kotlin,
+  Ruby, Lua, Swift, Scala, Clojure) now have a large dedicated robustness battery
+  and were audited against the same checklist — members become symbols,
+  visibility is set, and inheritance resolves by simple name — adapted to each
+  language's idioms.
+
 - **Scala robustness pass — thirteenth of the per-language hardening.** A 38-test
   battery exposed the recurring trio, all fixed: **primary-constructor member
   parameters** — a `case class Point(x, y)` promotes every parameter to a public

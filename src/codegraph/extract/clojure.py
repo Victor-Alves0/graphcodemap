@@ -177,9 +177,67 @@ class ClojureExtractor(BaseExtractor):
         sig = f"({op} {name}{' ' + self.text(params) if params else ''})"
         self.add_sym(node, kind, name, signature=sig, visibility=vis)
         self.scope.append((name, "class" if kind in ("class", "interface") else "function"))
-        for c in node.named_children[2:]:
-            self.visit(c)
+        rest = kids[2:]
+        if op in ("defrecord", "deftype"):
+            self._record_body(rest)
+        elif op in ("defprotocol", "definterface"):
+            self._protocol_body(rest)
+        else:
+            for c in node.named_children[2:]:
+                self.visit(c)
         self.scope.pop()
+
+    def _record_body(self, rest) -> None:
+        """Corpo de defrecord/deftype: o 1º vec_lit são os CAMPOS (viram
+        símbolos); sym_lit seguinte = protocolo implementado (inherits); list_lit
+        = impl de método (vira method + corpo visitado para os calls)."""
+        saw_fields = False
+        for n in rest:
+            if n.type == "vec_lit" and not saw_fields:
+                saw_fields = True
+                for s in n.named_children:
+                    if s.type == "sym_lit":
+                        _, fname, _ = self._sym_parts(s)
+                        if fname:
+                            self.add_sym(s, "variable", fname, signature=None)
+            elif n.type == "sym_lit":
+                _, pname, _ = self._sym_parts(n)      # protocolo/interface
+                if pname:
+                    self.add_ref(n, "inherits", pname)
+            elif n.type == "list_lit":
+                self._method_form(n)
+            else:
+                self.visit(n)
+
+    def _protocol_body(self, rest) -> None:
+        """Cada list_lit é uma assinatura de método do protocolo → method."""
+        for n in rest:
+            if n.type == "list_lit":
+                head = next((c for c in n.named_children), None)
+                if head is not None and head.type == "sym_lit":
+                    _, mname, _ = self._sym_parts(head)
+                    if mname:
+                        self.add_sym(head, "method", mname,
+                                     signature=self.text(n).strip())
+                        continue
+            self.visit(n)
+
+    def _method_form(self, list_node) -> None:
+        """Impl de método dentro de defrecord/deftype: cabeça = nome; corpo é
+        visitado para capturar as chamadas internas."""
+        kids = [c for c in list_node.named_children]
+        head = kids[0] if kids else None
+        if head is not None and head.type == "sym_lit":
+            _, mname, _ = self._sym_parts(head)
+            if mname:
+                self.add_sym(head, "method", mname,
+                             signature=self.text(list_node)[:80].strip())
+                self.scope.append((mname, "function"))
+                for c in kids[1:]:
+                    self.visit(c)
+                self.scope.pop()
+                return
+        self.visit(list_node)
 
     def _defmethod(self, node, kids) -> None:
         _, multifn, _ = self._sym_parts(kids[1]) if len(kids) > 1 else (None, None, False)
