@@ -8,6 +8,22 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **TypeScript/TSX/JavaScript robustness pass — fourth of the per-language
+  hardening.** A 60-test battery hit the same recurring trio plus one extra, all
+  fixed: **class fields/properties** (`count = 0`, `name: string`, `static V`,
+  `#private`) were not symbols — now captured (`variable`/`constant`, or `method`
+  when the field is an arrow function, the common React handler idiom), scoped to
+  the class; **enum members** (`enum Color { Red, Green }`) are now symbols;
+  **member visibility was never set** — now read from the TS
+  `accessibility_modifier` (`public`/`private`/`protected`, `#` fields always
+  private, default `public`); and **`interface extends`** was silently dropped
+  because it uses an `extends_type_clause` node that `_named_container` ignored.
+  Inheritance resolution was already correct here (JS module fqns are
+  path-based, so the import alias and the symbol fqn align — unlike Java/Rust,
+  no simple-name fix needed). Boundaries locked: decorators (`@Component()`) are
+  not call edges, and an unclosed-paren syntax error the parser cannot recover
+  from still never throws.
+
 - **Rust robustness pass — third of the per-language hardening.** A 56-test
   battery over the full extractor surface exposed the same shape of gaps found
   in Java, all fixed: **struct fields** (`struct Point { x, y }`) and **enum

@@ -43,6 +43,9 @@ class TsJsExtractor(BaseExtractor):
         if t == "method_definition":
             self._function(node, kind="method" if self.in_class() else "function")
             return
+        if t == "public_field_definition" and self.in_class():
+            self._field(node)
+            return
         if t in ("lexical_declaration", "variable_declaration"):
             self._var_declaration(node)
             return
@@ -56,7 +59,7 @@ class TsJsExtractor(BaseExtractor):
             self._simple_named(node, "type_alias")
             return
         if t == "enum_declaration":
-            self._simple_named(node, "enum")
+            self._enum(node)
             return
         if t == "call_expression":
             self._call(node)
@@ -85,12 +88,69 @@ class TsJsExtractor(BaseExtractor):
             return
         name = self.text(name_node)
         body = node.child_by_field_name("body")
+        vis = self._member_visibility(node, name_node) if kind == "method" else None
         self.add_sym(node, kind, name, signature=self.sig_of(node, body),
-                     doc=self._doc_comment(node))
+                     doc=self._doc_comment(node), visibility=vis)
         self.scope.append((name, "function"))
         if body is not None:
             for c in body.children:
                 self.visit(c)
+        self.scope.pop()
+
+    @staticmethod
+    def _member_visibility(node, name_node) -> str:
+        """Acessibilidade de um membro de classe. `#campo` é sempre privado;
+        senão o `accessibility_modifier` explícito; default TS é public."""
+        if name_node.type == "private_property_identifier":   # #secret
+            return "private"
+        mod = next((c for c in node.children
+                    if c.type == "accessibility_modifier"), None)
+        return mod.text.decode("utf-8", "replace") if mod is not None else "public"
+
+    def _field(self, node) -> None:
+        """Propriedade de classe (`public_field_definition`). Campo-função
+        (`onClick = () => …`) é método; o resto é variable/constant."""
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            return
+        name = self.text(name_node)
+        value = node.child_by_field_name("value")
+        vis = self._member_visibility(node, name_node)
+        if value is not None and value.type in _FUNCTION_VALUES:
+            body = value.child_by_field_name("body")
+            self.add_sym(node, "method", name, signature=self.sig_of(node, body),
+                         doc=self._doc_comment(node), visibility=vis)
+            self.scope.append((name, "function"))
+            self.visit(value)
+            self.scope.pop()
+            return
+        raw = self.text(node)
+        kind = "constant" if (name.isupper() or "readonly " in raw) else "variable"
+        self.add_sym(node, kind, name, signature=None,
+                     doc=self._doc_comment(node), visibility=vis)
+        if value is not None:
+            self.visit(value)
+
+    def _enum(self, node) -> None:
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            return
+        name = self.text(name_node)
+        body = node.child_by_field_name("body")
+        self.add_sym(node, "enum", name, signature=self.sig_of(node, body),
+                     doc=self._doc_comment(node))
+        if body is None:
+            return
+        self.scope.append((name, "class"))
+        for c in body.named_children:
+            member = None
+            if c.type == "property_identifier":              # `Red`
+                member = c
+            elif c.type == "enum_assignment":                # `Red = 1`
+                member = c.child_by_field_name("name")
+            if member is not None:
+                self.add_sym(member, "constant", self.text(member),
+                             signature=None, doc=None, visibility="public")
         self.scope.pop()
 
     def _class(self, node) -> None:
@@ -116,7 +176,8 @@ class TsJsExtractor(BaseExtractor):
             if c.type in ("identifier", "member_expression", "nested_type_identifier",
                           "type_identifier", "generic_type"):
                 yield self.text(c).split("<", 1)[0]
-            elif c.type in ("extends_clause", "implements_clause", "class_heritage"):
+            elif c.type in ("extends_clause", "implements_clause", "class_heritage",
+                            "extends_type_clause"):
                 yield from self._heritage_names(c)
 
     def _named_container(self, node, kind: str) -> None:
@@ -127,6 +188,11 @@ class TsJsExtractor(BaseExtractor):
         body = node.child_by_field_name("body")
         self.add_sym(node, kind, name, signature=self.sig_of(node, body),
                      doc=self._doc_comment(node))
+        # interface C extends A, B — usa `extends_type_clause`, não `class_heritage`
+        for c in node.children:
+            if c.type == "extends_type_clause":
+                for h in self._heritage_names(c):
+                    self.add_ref(c, "inherits", self._qualify(h))
 
     def _simple_named(self, node, kind: str) -> None:
         name_node = node.child_by_field_name("name")
