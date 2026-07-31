@@ -46,11 +46,13 @@ class PythonExtractor(BaseExtractor):
             for c in node.children:
                 self.visit(c)
             return
-        if not self.scope:
-            # constante/variável de módulo. A gramática emite `assignment` CRU no
-            # topo (não embrulhado em expression_statement como se esperava), e
-            # `MAX: int = 3` também é `assignment` — os dois caem aqui. Ausência
-            # de teste dedicado escondia que TODO símbolo de módulo Python sumia.
+        if not self.scope or self.in_class():
+            # Atribuição que é DECLARAÇÃO de símbolo: nível de módulo (constante/
+            # variável) ou corpo de classe (atributo de classe — parte da API do
+            # tipo). Dentro de função o escopo é 'function' → NÃO captura (é local).
+            # A gramática emite `assignment` CRU (não embrulhado em
+            # expression_statement, como se supunha — o que escondia que TODO
+            # símbolo de módulo Python sumia); `MAX: int = 3` e `x, y = ...` idem.
             if t == "assignment":
                 self._record_assignment(node)
             elif t == "expression_statement":
@@ -111,15 +113,33 @@ class PythonExtractor(BaseExtractor):
 
     def _record_assignment(self, child) -> None:
         left = child.child_by_field_name("left")
-        if left is None or left.type != "identifier":
-            return                       # tupla/subscrito/atributo: não é símbolo
-        name = self.text(left)
-        kind = "constant" if name.isupper() else "variable"
-        self.add_sym(
-            child, kind, name,
-            signature=None, doc=None,
-            visibility="private" if name.startswith("_") else "public",
-        )
+        if left is None:
+            return
+        for ident in self._target_identifiers(left):
+            name = self.text(ident)
+            kind = "constant" if name.isupper() else "variable"
+            # nó = a atribuição inteira (não só o nome): assim o body_hash cobre
+            # o VALOR, e mudar `RETRIES = 3` → `RETRIES = 5` é detectado como
+            # mudança do símbolo (o ChangeSet do host reporta)
+            self.add_sym(
+                child, kind, name,
+                signature=None, doc=None,
+                visibility="private" if name.startswith("_") else "public",
+            )
+
+    @classmethod
+    def _target_identifiers(cls, left) -> list:
+        """Identificadores-alvo de uma atribuição. `a = …` → [a]; `x, y = …` e
+        `[a, b] = …` → cada nome (desempacotamento). Subscrito/atributo
+        (`d[k] = …`, `self.x = …`) não são declarações de símbolo → ignorados."""
+        if left.type == "identifier":
+            return [left]
+        if left.type in ("pattern_list", "tuple_pattern", "list_pattern"):
+            out: list = []
+            for c in left.named_children:
+                out.extend(cls._target_identifiers(c))   # aninhado: (a, (b, c))
+            return out
+        return []
 
     def _docstring(self, body) -> str | None:
         if body is None or not body.named_children:

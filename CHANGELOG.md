@@ -6,6 +6,20 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ## [Unreleased]
 
+### Added
+
+- **Python robustness pass — first of the per-language hardening.** A 62-test
+  battery covering the full extractor surface (symbols, fqn, containment,
+  visibility, docstrings, every import form, calls, inheritance, resolution &
+  confidence, and edge cases) now locks Python behaviour. Writing it exposed two
+  real gaps, both fixed: **class-level attributes** (`count = 0`, `LIMIT = 100`,
+  enum members, dataclass fields) were not symbols — now captured as
+  `variable`/`constant` scoped to the class; **tuple/list unpacking targets**
+  (`x, y = 1, 2`) were dropped — now each name is captured. Deliberate
+  boundaries are locked too: `self.x = …` (instance attribute) and `d[k] = …`
+  (subscript) are not symbols, and decorator calls (`@app.route(...)`) are not
+  edges (framework wiring would be a separate feature, not graph noise).
+
 ### Fixed
 
 - **Python module-level constants and variables were silently dropped.** The
