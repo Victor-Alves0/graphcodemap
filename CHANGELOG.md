@@ -8,6 +8,19 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **PHP robustness pass — eighth of the per-language hardening.** A 42-test
+  battery exposed the full recurring trio plus a namespace bug, all fixed:
+  **properties** (`private $count`, typed, multiple per line — the `$` is
+  stripped so `$this->count` and the symbol agree), **class constants** (the
+  `const` handler had a `not self.scope` guard that dropped every in-class
+  constant) and **enum cases** (`case Hearts;`) were not symbols — now all
+  navigable; **method/property visibility was never set** — now read from the
+  `visibility_modifier` (default `public`); and **file-scoped namespaces**
+  (`namespace App;`) never entered the fqn because there was no namespace
+  handler at all, so cross-namespace symbols collided — the namespace now scopes
+  the rest of the file (same shape as the C# fix). Inheritance and trait `use`
+  emit the simple name and resolve by name+kind.
+
 - **C/C++ robustness pass — seventh of the per-language hardening.** The most
   intricate grammar so far; a 47-test battery exposed the full trio plus two
   C++-specific bugs, all fixed: **data members** (`struct Point { int x, y; }`,
