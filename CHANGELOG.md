@@ -8,6 +8,20 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added
 
+- **C/C++ robustness pass — seventh of the per-language hardening.** The most
+  intricate grammar so far; a 47-test battery exposed the full trio plus two
+  C++-specific bugs, all fixed: **data members** (`struct Point { int x, y; }`,
+  class members, pointers) and **enum members** (including `enum class`) were not
+  symbols — now navigable, scoped to their type; **typedef** names
+  (`typedef void* Handle`) were dropped — now `type_alias`; **member visibility
+  was never set** — now tracked through the *sectional* `access_specifier`
+  labels (`public:`/`private:` apply until the next label; class defaults to
+  `private`, struct to `public`); **constructors declared in the class body**
+  (`C();`) were missed because they parse as a `declaration` node (no return
+  type), not `field_declaration` — now handled. Inheritance emits the simple
+  base name and resolves by name+kind, consistent with the other package-scoped
+  languages.
+
 - **C# robustness pass — sixth of the per-language hardening.** A 51-test
   battery exposed the full recurring trio plus a namespace bug, all fixed:
   **properties** (`public string Name { get; set; }`, the central C# idiom),

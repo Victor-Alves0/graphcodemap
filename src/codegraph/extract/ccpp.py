@@ -12,6 +12,15 @@ from .base import BaseExtractor
 
 
 class CCppExtractor(BaseExtractor):
+    def __init__(self, source: bytes, module_fqn: str) -> None:
+        super().__init__(source, module_fqn)
+        # acesso corrente por classe/struct (seccional: `public:`/`private:`
+        # valem até o próximo rótulo). Default: class=private, struct=public.
+        self._access: list[str] = []
+
+    def _cur_access(self) -> str | None:
+        return self._access[-1] if self._access else None
+
     def visit(self, node) -> None:
         t = node.type
         if t == "preproc_include":
@@ -35,27 +44,28 @@ class CCppExtractor(BaseExtractor):
         if t == "function_definition":
             self._function(node)
             return
-        if t == "field_declaration" and self.in_class():
-            # declaração de método no class body (definição pode estar fora)
+        if t in ("field_declaration", "declaration") and self.in_class():
+            # no corpo de classe: método (declarado, def pode estar fora),
+            # tipo aninhado, ou data member. `declaration` cobre construtor
+            # (`C();`), que não tem tipo de retorno.
             decl = self._find_function_declarator(node)
             if decl is not None:
                 self._declared_method(node, decl)
                 return
-            for c in node.children:
-                self.visit(c)
+            for c in node.named_children:
+                if c.type in ("struct_specifier", "class_specifier",
+                              "enum_specifier", "union_specifier"):
+                    self.visit(c)
+            self._data_members(node)
             return
         if t in ("class_specifier", "struct_specifier"):
             self._class(node, "class" if t == "class_specifier" else "struct")
             return
         if t == "enum_specifier":
-            name_node = node.child_by_field_name("name")
-            if name_node is not None and node.child_by_field_name("body") is not None:
-                self.add_sym(node, "enum", self.text(name_node),
-                             signature=f"enum {self.text(name_node)}", doc=None)
+            self._enum(node)
             return
         if t == "type_definition":
-            for c in node.named_children:
-                self.visit(c)
+            self._typedef(node)
             return
         if t == "namespace_definition":
             name_node = node.child_by_field_name("name")
@@ -121,7 +131,9 @@ class CCppExtractor(BaseExtractor):
                     self.scope.append((part, "class"))
                     pushed += 1
         kind = "method" if self.in_class() else "function"
-        self.add_sym(node, kind, name, signature=self.sig_of(node, body), doc=None)
+        vis = self._cur_access() if kind == "method" else None
+        self.add_sym(node, kind, name, signature=self.sig_of(node, body),
+                     doc=None, visibility=vis)
         self.scope.append((name, "function"))
         if body is not None:
             for c in body.children:
@@ -135,7 +147,61 @@ class CCppExtractor(BaseExtractor):
         if name:
             self.add_sym(node, "method", name,
                          signature=self.text(node).split("{", 1)[0].strip().rstrip(";"),
-                         doc=None)
+                         doc=None, visibility=self._cur_access())
+
+    def _data_members(self, node) -> None:
+        """field_identifiers de uma `field_declaration`/`declaration` que NÃO é
+        método: os data members. `int x, y;` → dois. Bitfields e ponteiros
+        (`int* p`) caem aqui porque o nome ainda é um field_identifier no fundo."""
+        ids: list = []
+        self._collect_field_ids(node, ids)
+        for n in ids:
+            self.add_sym(n, "variable", self.text(n), signature=None,
+                         doc=None, visibility=self._cur_access())
+
+    def _collect_field_ids(self, node, out: list) -> None:
+        for c in node.named_children:
+            if c.type == "field_identifier":
+                out.append(c)
+            elif c.type in ("struct_specifier", "class_specifier", "enum_specifier",
+                            "union_specifier", "function_declarator", "argument_list"):
+                continue                      # não desce em tipo/assinatura aninhados
+            else:
+                self._collect_field_ids(c, out)
+
+    def _enum(self, node) -> None:
+        name_node = node.child_by_field_name("name")
+        body = node.child_by_field_name("body")
+        if name_node is None or body is None:
+            return                            # uso do tipo / forward
+        name = self.text(name_node)
+        self.add_sym(node, "enum", name, signature=f"enum {name}", doc=None)
+        self.scope.append((name, "class"))
+        for e in body.named_children:
+            if e.type == "enumerator":
+                en = e.child_by_field_name("name")
+                if en is not None:
+                    self.add_sym(e, "constant", self.text(en), signature=None,
+                                 doc=None, visibility="public")
+        self.scope.pop()
+
+    def _typedef(self, node) -> None:
+        # o alias é o type_identifier no fundo do declarator (pode ter * / [])
+        decl = node.child_by_field_name("declarator")
+        tid = self._innermost_type_id(decl)
+        if tid is not None:
+            self.add_sym(node, "type_alias", self.text(tid),
+                         signature=self.text(node).strip().rstrip(";"), doc=None)
+        for c in node.named_children:         # o tipo pode ter struct aninhado
+            self.visit(c)
+
+    def _innermost_type_id(self, decl):
+        while decl is not None and decl.type in (
+                "pointer_declarator", "array_declarator", "function_declarator",
+                "parenthesized_declarator"):
+            decl = decl.child_by_field_name("declarator") or next(
+                iter(decl.named_children), None)
+        return decl if decl is not None and decl.type == "type_identifier" else None
 
     def _class(self, node, kind: str) -> None:
         name_node = node.child_by_field_name("name")
@@ -146,15 +212,23 @@ class CCppExtractor(BaseExtractor):
         self.add_sym(node, kind, name, signature=f"{node.type.split('_')[0]} {name}",
                      doc=None)
         self.scope.append((name, "class"))
+        # acesso seccional: class default private, struct default public
+        self._access.append("private" if kind == "class" else "public")
         base = next((c for c in node.named_children
                      if c.type == "base_class_clause"), None)
         if base is not None:
             for c in base.named_children:
                 if c.type in ("type_identifier", "qualified_identifier", "template_type"):
-                    self.add_ref(base, "inherits",
-                                 self.text(c).split("<", 1)[0].replace("::", "."))
+                    # nome SIMPLES (o fqn C++ inclui namespace por escopo, o
+                    # qualificado não alinharia): resolve por nome+kind
+                    simple = self.text(c).split("<", 1)[0].replace("::", ".").rsplit(".", 1)[-1]
+                    self.add_ref(base, "inherits", simple)
         for c in body.children:
-            self.visit(c)
+            if c.type == "access_specifier":
+                self._access[-1] = self.text(c).rstrip(":").strip()
+            else:
+                self.visit(c)
+        self._access.pop()
         self.scope.pop()
 
     # -- calls ----------------------------------------------------------------
