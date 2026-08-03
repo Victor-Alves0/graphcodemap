@@ -150,14 +150,18 @@ def cmd_dataflow(args) -> int:
 
 def cmd_taint(args) -> int:
     data, env = _engine(args).taint(scope=args.scope, entry=args.entry,
-                                    depth=args.depth)
+                                    depth=args.depth, max_findings=args.max_findings,
+                                    deadline_ms=args.deadline_ms, max_steps=args.max_steps)
     print(render.taint(data, env))
     return 0 if not data["findings"] else 1
 
 
 def cmd_reaches(args) -> int:
     sym, data, env = _engine(args).reaches(args.symbol, sink=args.sink,
-                                           via=args.via, depth=args.depth)
+                                           via=args.via, depth=args.depth,
+                                           max_paths=args.max_paths,
+                                           deadline_ms=args.deadline_ms,
+                                           max_steps=args.max_steps)
     print(render.reaches(sym, data, env))
     return 0
 
@@ -404,7 +408,13 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--scope", default=None, help="restringe a um diretório")
     sp.add_argument("--entry", default=None,
                     help="função-entrada: assume seus parâmetros como não-confiáveis")
-    sp.add_argument("--depth", type=int, default=4, help="saltos inter-procedurais")
+    sp.add_argument("--depth", type=int, default=None,
+                    help="saltos inter-procedurais (default por modo: scan raso, entry fundo)")
+    sp.add_argument("--max-findings", type=int, default=100, help="teto de achados")
+    sp.add_argument("--deadline-ms", type=int, default=None,
+                    help="teto de tempo (ms): devolve PARCIAL + truncated ao estourar")
+    sp.add_argument("--max-steps", type=int, default=None,
+                    help="teto DETERMINÍSTICO de passos: devolve PARCIAL + truncated")
     sp.set_defaults(fn=cmd_taint)
 
     sp = sub.add_parser("reaches", help="reachability entry→sink numa resposta só "
@@ -415,6 +425,11 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--via", default=None,
                     help="validador/sanitizer a checar no caminho (ex.: sanitize)")
     sp.add_argument("--depth", type=int, default=8, help="máx. de saltos")
+    sp.add_argument("--max-paths", type=int, default=20, help="teto de caminhos")
+    sp.add_argument("--deadline-ms", type=int, default=None,
+                    help="teto de tempo (ms): devolve PARCIAL + truncated ao estourar")
+    sp.add_argument("--max-steps", type=int, default=None,
+                    help="teto DETERMINÍSTICO de passos: devolve PARCIAL + truncated")
     sp.set_defaults(fn=cmd_reaches)
 
     sp = sub.add_parser("visualize",

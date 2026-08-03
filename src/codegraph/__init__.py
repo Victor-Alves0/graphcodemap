@@ -98,12 +98,20 @@ class CodeGraph:
     def data_flow(self, selector: str, depth: int = 2):
         return self.query.data_flow(selector, depth=depth)
 
-    def taint(self, scope: str | None = None, entry: str | None = None, depth: int = 4):
-        return self.query.taint(scope=scope, entry=entry, depth=depth)
+    def taint(self, scope: str | None = None, entry: str | None = None,
+              depth: int | None = None, max_findings: int = 100,
+              deadline_ms: int | None = None, max_steps: int | None = None,
+              should_cancel=None):
+        return self.query.taint(scope=scope, entry=entry, depth=depth,
+                                max_findings=max_findings, deadline_ms=deadline_ms,
+                                max_steps=max_steps, should_cancel=should_cancel)
 
     def reaches(self, selector: str, sink: str = "http", via: str | None = None,
-                depth: int = 8):
-        return self.query.reaches(selector, sink=sink, via=via, depth=depth)
+                depth: int = 8, max_paths: int = 20, deadline_ms: int | None = None,
+                max_steps: int | None = None, should_cancel=None):
+        return self.query.reaches(selector, sink=sink, via=via, depth=depth,
+                                  max_paths=max_paths, deadline_ms=deadline_ms,
+                                  max_steps=max_steps, should_cancel=should_cancel)
 
     def describe(self, target: str, refresh: bool = False, llm=None):
         return self.query.describe(target, refresh=refresh, llm=llm)

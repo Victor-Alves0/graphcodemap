@@ -199,6 +199,7 @@ feeds — interprocedurally along the call graph, computed on demand (always fre
 
 ```
 codegraph taint [--scope SCOPE] [--entry FUNC] [--depth N]
+                [--max-findings N] [--deadline-ms MS] [--max-steps N]
 ```
 
 Follows untrusted input (sources) to dangerous operations (sinks); sanitizers cut
@@ -207,16 +208,25 @@ function's parameters as untrusted (ideal for reviewing a request handler).
 Sources/sinks/sanitizers are configurable in `.codegraph/taint.json`. Findings are
 *may-taint* candidates to verify.
 
+Inter-procedural reachability is worst-case exponential (`O(sources × branch^depth)`),
+so **prefer `--entry` over scanning the whole base**. `--depth` defaults per mode
+(shallow for scan, deeper for `--entry`). `--deadline-ms` (wall-clock) and
+`--max-steps` (deterministic) return a **partial** result — the answer is marked
+`truncated` and reports `limit_hit` — instead of running too long. See
+[RESEARCH.md §6.3](RESEARCH.md) for the cost model and the truncation contract.
+
 ### `reaches`
 
 ```
 codegraph reaches <symbol> [--sink SINK] [--via VALIDATOR] [--depth N]
+                   [--max-paths N] [--deadline-ms MS] [--max-steps N]
 ```
 
 Answers *"does a path from this entry point reach a dangerous sink?"* in one shot:
 it returns the call chain plus a validation verdict. `--sink` is a preset
 (`http`/`sql`/`exec`/`file`) or a regex over the call name; `--via` names a
-sanitizer to check for along the path.
+sanitizer to check for along the path. Like `taint`, `--deadline-ms`/`--max-steps`
+return a `truncated` partial result, and `--max-paths` caps the enumeration.
 
 ---
 

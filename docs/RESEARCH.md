@@ -152,3 +152,42 @@ incremental/barato — e é diferencial forte: Joern não é incremental nem
 fresco; Semgrep OSS é só intra-procedural; Graphify não faz dataflow nenhum.
 
 Sources: [Joern CPG](https://cpg.joern.io/) · [Code property graph (Wikipedia)](https://en.wikipedia.org/wiki/Code_property_graph) · [IFDS Taint with Access Paths (arXiv 2103.16240)](https://arxiv.org/pdf/2103.16240) · [Semgrep taint mode](https://semgrep.dev/docs/writing-rules/data-flow/taint-mode/overview) · [Scaling IFDS to large C/C++ (ECOOP 2024)](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ECOOP.2024.36) · [LLMxCPG (arXiv 2507.16585)](https://arxiv.org/pdf/2507.16585)
+
+### 6.3 Modelo de custo e contrato de `truncated` (2026-07-31)
+
+Alcançabilidade inter-procedural é, no pior caso, **exponencial**. Sem tetos, a
+varredura de um repo grande roda "para sempre" — o incidente que motivou esta
+seção. O modelo de custo, honesto:
+
+- **Varredura (sem `entry`)**: `O(fontes × ramif^depth)`. Cada fonte inicia um
+  trace; sem memoização, subárvores compartilhadas são reexploradas por fonte —
+  esse produto é o multiplicador real da explosão, **não o `depth` sozinho**.
+- **`entry=<func>`**: uma raiz só → `O(ramif^depth)`. **Prefira sempre `entry` a
+  varrer a base inteira** quando você já sabe o handler de interesse.
+
+Cinco defesas, todas na lib (todo consumidor herda o comportamento seguro):
+
+1. **Memoização global.** Um conjunto `explored` de `(func_id, arg_index)` é
+   compartilhado entre todos os traces de uma chamada. Uma subárvore é expandida
+   **uma vez**, colapsando `O(fontes × subárvore)` → `O(nós únicos)`. Efeito
+   colateral honesto: um sink alcançável por várias fontes é reportado uma vez
+   (o conjunto de sinks vulneráveis, não todo par fonte×sink). O guarda por-
+   caminho (`visited`) continua prevenindo ciclos.
+2. **Deadline (`deadline_ms`).** Teto de tempo. Varia por máquina — bom para o
+   SLA de um host.
+3. **Budget de passos (`max_steps`).** Teto **determinístico** (reprodutível
+   entre máquinas), útil em teste/CI.
+4. **Cancelamento cooperativo (`should_cancel`).** Callback checado no mesmo
+   ponto quente; deixa o host abortar sem thread-zumbi (Python não mata thread).
+5. **Tetos de resultado.** `max_findings` (taint) e `max_paths` (reaches).
+
+**Contrato de `truncated`:** em QUALQUER corte — `deadline`, `steps`,
+`cancelled`, `findings`, `paths` — a resposta seta `env.truncated = True` e
+devolve `limit_hit` com o motivo, além da telemetria (`elapsed_ms`, `explored`,
+`steps`). O resultado parcial é sempre devolvido; nunca se roda infinito nem se
+corta em silêncio. Defaults de `depth` por modo (raso na varredura, fundo em
+`entry`) mantêm a versão sem-args barata por construção.
+
+Ver [../tests/test_taint_budget.py](../tests/test_taint_budget.py) (grafos
+patológicos: diamante que reconverge + ciclos) e [../docs/cli.md](cli.md) para
+os flags `--deadline-ms`/`--max-steps`.

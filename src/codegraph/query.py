@@ -30,6 +30,64 @@ LOW_INFO_KINDS = ("css_class", "css_id", "html_id", "file")
 FTS_OVERFETCH = 4
 IMPACT_KINDS = ("calls", "imports", "inherits", "references")
 _CONF_ORD = {"certain": 2, "inferred": 1, "possible": 0}
+_MISS = object()          # sentinela p/ cache LRU (distingue "None cacheado" de ausente)
+
+# defaults de profundidade por MODO de taint (embutidos na lib para que todo
+# consumidor herde o comportamento seguro): varredura do repo é O(fontes ×
+# ramif^depth) → raso; entry=<func> parte de uma raiz só → pode ir mais fundo.
+TAINT_DEPTH_SCAN = 3
+TAINT_DEPTH_ENTRY = 6
+
+
+class _Budget:
+    """Teto cooperativo para análises de fecho transitivo (taint/reaches).
+
+    Três limites, todos opcionais e checados no mesmo ponto quente:
+    - `deadline_ms`: teto de tempo (varia por máquina — bom p/ SLA do host).
+    - `max_steps`: teto DETERMINÍSTICO de passos (reprodutível entre máquinas).
+    - `should_cancel`: callback do host (ex.: usuário abortou) — evita a
+      thread-zumbi, já que Python não mata thread.
+
+    Quando um limite estoura, `limit_hit` guarda QUAL (`deadline`/`steps`/
+    `cancelled`); o chamador ainda pode registrar `findings`/`paths` (o corte
+    do resultado) via `note()`. `hit()` é o predicado de parada — checado a
+    cada passo; uma vez disparado, permanece disparado (parada limpa)."""
+
+    __slots__ = ("t0", "deadline_s", "max_steps", "should_cancel",
+                 "steps", "explored", "limit_hit")
+
+    def __init__(self, deadline_ms=None, max_steps=None, should_cancel=None):
+        self.t0 = time.monotonic()
+        self.deadline_s = (deadline_ms / 1000.0) if deadline_ms else None
+        self.max_steps = max_steps
+        self.should_cancel = should_cancel
+        self.steps = 0
+        self.explored = 0
+        self.limit_hit = None
+
+    def hit(self) -> str | None:
+        """True (o nome do limite) se deve parar AGORA. Sticky."""
+        if self.limit_hit:
+            return self.limit_hit
+        if self.should_cancel is not None and self.should_cancel():
+            self.limit_hit = "cancelled"
+        elif self.deadline_s is not None and (time.monotonic() - self.t0) >= self.deadline_s:
+            self.limit_hit = "deadline"
+        elif self.max_steps is not None and self.steps >= self.max_steps:
+            self.limit_hit = "steps"
+        return self.limit_hit
+
+    def tick(self) -> None:
+        self.steps += 1
+
+    def note(self, why: str) -> None:
+        """Registra um corte do RESULTADO (findings/paths) sem sobrescrever um
+        limite de recurso já disparado (recurso é mais informativo)."""
+        if self.limit_hit is None:
+            self.limit_hit = why
+
+    def elapsed_ms(self) -> int:
+        return int((time.monotonic() - self.t0) * 1000)
 
 # presets de sink para reaches(): input não-confiável alcançando operação sensível.
 # Casados contra o NOME do alvo da chamada (dst_name), case-insensitive.
@@ -129,6 +187,13 @@ class QueryEngine:
         self._watcher = None
         self._last_full_sweep = 0.0
         self._sweep_backstop = 30.0
+        # cache LRU de fatos de fluxo (dataflow/taint) ENTRE chamadas: num loop
+        # de agente (várias análises no mesmo repo) evita re-extrair os mesmos
+        # fatos. Chaveado por (file_id, content_hash, start_line) → invalida
+        # sozinho no re-index (content_hash muda; o cap despeja o morto).
+        from collections import OrderedDict
+        self._facts_cache: "OrderedDict" = OrderedDict()
+        self._facts_cache_cap = 4096
 
     def attach_watcher(self, watcher) -> None:
         """Liga um Watcher vivo a este engine (o MCP server faz isso). Só precisa
@@ -540,7 +605,8 @@ class QueryEngine:
         return sym, rows, env
 
     def reaches(self, selector: str, sink: str = "http", via: str | None = None,
-                depth: int = 8, max_paths: int = 20):
+                depth: int = 8, max_paths: int = 20, deadline_ms: int | None = None,
+                max_steps: int | None = None, should_cancel=None):
         """Reachability entry→sink numa resposta só: seguindo o call graph a
         partir de `selector`, quais caminhos chegam a uma chamada que casa com
         `sink` (preset em SINK_PRESETS ou regex livre), e um validador/sanitizer
@@ -549,6 +615,10 @@ class QueryEngine:
         Substitui o LLM montando o caminho salto a salto lendo código: o grafo
         entrega a cadeia + o veredito de validação já pronto. Interprocedural,
         sob demanda (sempre fresco). Confiança do caminho = mínima das arestas.
+
+        Mesma anti-explosão de `taint`: `deadline_ms`/`max_steps`/`should_cancel`
+        limitam a enumeração e devolvem PARCIAL; o cap `max_paths` e qualquer
+        limite marcam `env.truncated=True` e `limit_hit` no retorno.
         """
         import re as _re
 
@@ -556,9 +626,11 @@ class QueryEngine:
         sym = self._resolve_fresh(selector, env)
         sink_rx = _re.compile(SINK_PRESETS.get(sink, sink), _re.I)
         via_rx = _re.compile(_re.escape(via), _re.I) if via else None
+        budget = _Budget(deadline_ms, max_steps, should_cancel)
 
         def walk():
-            # BFS forward; parent[]/pconf[] p/ reconstruir cadeia e confiança
+            # BFS forward; parent[]/pconf[] p/ reconstruir cadeia e confiança.
+            # `seen` já dedupe nós globalmente (uma visita por nó no call graph).
             parent = {sym["id"]: None}
             pconf = {sym["id"]: "certain"}
             calls_via = set()          # ids de funções que chamam o validador
@@ -566,7 +638,7 @@ class QueryEngine:
             frontier = {sym["id"]}
             seen = {sym["id"]}
             for _d in range(depth):
-                if not frontier:
+                if not frontier or budget.hit():
                     break
                 ph = ",".join("?" * len(frontier))
                 rows = self.conn.execute(
@@ -578,6 +650,9 @@ class QueryEngine:
                     f"ORDER BY e.line", list(frontier)).fetchall()
                 nxt = set()
                 for r in rows:
+                    if budget.hit():
+                        break
+                    budget.tick()
                     src, tgt = r["src"], r["dst_name"] or ""
                     econf = min(pconf.get(src, "certain"), r["confidence"],
                                 key=lambda c: _CONF_ORD[c])
@@ -626,6 +701,8 @@ class QueryEngine:
                             "confidence": conf,
                             "via_present": any(i in calls_via for i in ids)})
             out.sort(key=lambda r: (len(r["chain"]), r["site_path"]))
+            if len(out) > max_paths:
+                budget.note("paths")           # havia mais caminhos que o teto
             return out[:max_paths]
 
         parent, pconf, calls_via, hits = walk()
@@ -636,12 +713,21 @@ class QueryEngine:
                 sym = self._resolve_selector(sym["fqn"])
             except SymbolNotFound:
                 env.warn(f"freshness: '{sym['fqn']}' não existe mais após re-indexação.")
-                return sym, {"sink": sink, "via": via, "paths": []}, env
+                return sym, {"sink": sink, "via": via, "paths": [],
+                             "elapsed_ms": budget.elapsed_ms(),
+                             "steps": budget.steps, "limit_hit": budget.limit_hit}, env
             parent, pconf, calls_via, hits = walk()
             paths = build(parent, pconf, calls_via, hits)
+        if budget.limit_hit:
+            env.truncated = True
+            env.warn(f"truncated: reachability parada em '{budget.limit_hit}' — "
+                     f"caminhos PARCIAIS. Reduza depth, ou aumente "
+                     f"deadline_ms/max_steps/max_paths.")
         env.warn("reachability: estática (arestas 'calls'); chamadas dinâmicas/"
                  "reflexivas podem faltar. Confiança = mínima do caminho.")
-        return sym, {"sink": sink, "via": via, "paths": paths}, env
+        return sym, {"sink": sink, "via": via, "paths": paths,
+                     "elapsed_ms": budget.elapsed_ms(), "steps": budget.steps,
+                     "limit_hit": budget.limit_hit}, env
 
     def ego_graph(self, selector: str):
         """Vizinhança imediata de um símbolo: todas as arestas tipadas, in e out."""
@@ -762,21 +848,34 @@ class QueryEngine:
         return cache[path]
 
     def _df_facts(self, sym_row, cache: dict):
-        """Extrai os fatos de fluxo de uma função. Retorna (FnFacts|None, lang)."""
+        """Extrai os fatos de fluxo de uma função. Retorna (FnFacts|None, lang).
+
+        Dois níveis: `cache` (por chamada) guarda a árvore parseada; o LRU da
+        engine (`self._facts_cache`) guarda os FATOS entre chamadas, chaveado por
+        conteúdo (invalida no re-index sem passo explícito)."""
         from . import dataflow as df
 
-        lang = self.conn.execute(
-            "SELECT language FROM files WHERE id=?",
-            (sym_row["file_id"],)).fetchone()["language"]
+        row = self.conn.execute(
+            "SELECT language, content_hash FROM files WHERE id=?",
+            (sym_row["file_id"],)).fetchone()
+        lang = row["language"]
         if not df.supported(lang):
             return None, lang
+        ck = (sym_row["file_id"], row["content_hash"], sym_row["start_line"])
+        fc = self._facts_cache
+        hit = fc.get(ck, _MISS)
+        if hit is not _MISS:
+            fc.move_to_end(ck)                 # LRU: renova o recém-usado
+            return hit, lang
         data, tree = self._df_parse(sym_row["path"], lang, cache)
         if tree is None:
-            return None, lang
+            return None, lang                  # erro de I/O: não cacheia (transitório)
         fn = df.find_function_node(tree.root_node, sym_row["start_line"], lang)
-        if fn is None:
-            return None, lang
-        return df.extract_facts(data, fn, lang), lang
+        facts = df.extract_facts(data, fn, lang) if fn is not None else None
+        fc[ck] = facts
+        if len(fc) > self._facts_cache_cap:
+            fc.popitem(last=False)             # despeja o mais antigo
+        return facts, lang
 
     def _df_resolve_call(self, src_id, line):
         rows = self.conn.execute(
@@ -854,22 +953,35 @@ class QueryEngine:
         return {"function": sym, "supported": True, "params": result_params}, env
 
     def taint(self, scope: str | None = None, entry: str | None = None,
-              depth: int = 4, max_findings: int = 100):
+              depth: int | None = None, max_findings: int = 100,
+              deadline_ms: int | None = None, max_steps: int | None = None,
+              should_cancel=None):
         """Análise de taint fonte→sink: input não-confiável alcançando operação
         perigosa. Sanitizers cortam o fluxo. Interprocedural via call graph.
 
         Dois modos: varredura do repo (fontes = chamadas a `sources`), ou
         `entry=func` (assume os parâmetros de `func` como não-confiáveis).
         Regras em .codegraph/taint.json. Ver docs/RESEARCH.md §6.
+
+        Anti-explosão (o custo é O(fontes × ramif^depth) — ver docs/RESEARCH.md):
+        - `depth=None` usa o default por modo (entry fundo, scan raso);
+        - `deadline_ms`/`max_steps` limitam tempo/passos e devolvem PARCIAL;
+        - `should_cancel()` é o hook cooperativo do host (abortar sem thread-zumbi);
+        - memoização GLOBAL `explored` colapsa subárvores compartilhadas entre
+          fontes. Qualquer corte marca `env.truncated=True` e devolve `limit_hit`.
         """
         from . import dataflow as df
         from .taint_rules import load_rules
 
+        if depth is None:
+            depth = TAINT_DEPTH_ENTRY if entry else TAINT_DEPTH_SCAN
         env = Envelope()
         rules = load_rules(self.root)
         cache: dict = {}
         findings: list = []
         order = {"certain": 2, "inferred": 1, "possible": 0}
+        budget = _Budget(deadline_ms, max_steps, should_cancel)
+        explored: set = set()          # memo GLOBAL (func_id, arg_index) entre traces
 
         def conf_min(a, b):
             if a is None:
@@ -879,11 +991,16 @@ class QueryEngine:
             return a if order[a] <= order[b] else b
 
         def trace(sym_row, tainted, origin, steps, d, visited, path_conf):
+            if budget.hit():
+                return
+            budget.tick()
             f, _ = self._df_facts(sym_row, cache)
             if f is None:
                 return
             flow = df.analyze_facts(f, tainted, rules.sanitizers)
             for af in flow.arg_flows:
+                if budget.hit():
+                    return
                 callee = self._df_resolve_call(sym_row["id"], af.line)
                 step = {
                     "func_fqn": sym_row["fqn"], "callee": af.callee,
@@ -894,21 +1011,27 @@ class QueryEngine:
                     "resolved": callee is not None,
                 }
                 cur_conf = conf_min(path_conf, step["confidence"]) if callee else path_conf
-                if af.callee in rules.sinks and len(findings) < max_findings:
-                    findings.append({
-                        "origin": origin,
-                        "sink": {"callee": af.callee, "callee_fqn": step["callee_fqn"],
-                                 "site_path": sym_row["path"], "line": af.line,
-                                 "arg_index": af.arg_index, "via": af.via,
-                                 "func_fqn": sym_row["fqn"]},
-                        "confidence": cur_conf or "possible",
-                        "steps": steps + [step],
-                    })
+                if af.callee in rules.sinks:
+                    if len(findings) < max_findings:
+                        findings.append({
+                            "origin": origin,
+                            "sink": {"callee": af.callee, "callee_fqn": step["callee_fqn"],
+                                     "site_path": sym_row["path"], "line": af.line,
+                                     "arg_index": af.arg_index, "via": af.via,
+                                     "func_fqn": sym_row["fqn"]},
+                            "confidence": cur_conf or "possible",
+                            "steps": steps + [step],
+                        })
+                    else:
+                        budget.note("findings")     # havia mais achados que o teto
                 if (callee and d < depth and af.arg_index >= 0
                         and df.supported(callee["language"])):
                     key = (callee["dst"], af.arg_index)
-                    if key not in visited:
+                    # per-path `visited` (ciclos) + `explored` GLOBAL (dedupe entre
+                    # fontes): uma subárvore (func,arg) é expandida uma vez só.
+                    if key not in visited and key not in explored:
                         visited.add(key)
+                        explored.add(key)
                         crow = self._crow(callee["dst"])
                         cf, _ = self._df_facts(crow, cache) if crow else (None, None)
                         if cf and af.arg_index < len(cf.params):
@@ -922,7 +1045,9 @@ class QueryEngine:
             f, lang = self._df_facts(sym, cache)
             if f is None:
                 env.warn(f"taint: '{entry}' em linguagem '{lang}' sem análise de fluxo.")
-                return {"mode": "entry", "findings": [], "scanned": 0}, env
+                return {"mode": "entry", "findings": [], "scanned": 0,
+                        "elapsed_ms": budget.elapsed_ms(), "explored": 0,
+                        "steps": budget.steps, "limit_hit": None}, env
             origin = {"kind": "param", "func_fqn": sym["fqn"], "path": sym["path"],
                       "line": sym["start_line"],
                       "what": "parâmetros (assumidos não-confiáveis)"}
@@ -942,6 +1067,8 @@ class QueryEngine:
             collected: list = []
             src_funcs: set[str] = set()
             for r in rows:
+                if budget.hit():
+                    break
                 f, _ = self._df_facts(dict(r), cache)
                 if f is None:
                     continue
@@ -953,6 +1080,8 @@ class QueryEngine:
             eff_sources = rules.sources | src_funcs
             scanned = 0
             for r, f in collected:
+                if budget.hit():
+                    break
                 scanned += 1
                 seeds = df.source_sites(f, eff_sources)
                 if not seeds:
@@ -962,14 +1091,21 @@ class QueryEngine:
                           "line": seeds[0][1], "what": seeds[0][2] + "()"}
                 trace(r, names, origin, [], 1, {(r["id"], -2)}, None)
                 if len(findings) >= max_findings:
-                    env.warn(f"taint: {max_findings} achados (limite) — refine com --scope.")
+                    budget.note("findings")
                     break
 
         findings.sort(key=lambda x: -order[x["confidence"]])
+        if budget.limit_hit:
+            env.truncated = True
+            env.warn(f"truncated: análise parada em '{budget.limit_hit}' — "
+                     f"resultado PARCIAL. Estreite com entry=<func>/scope, ou "
+                     f"aumente deadline_ms/max_steps/max_findings.")
         env.warn("taint: may-taint estático (over-aproxima) — achados são "
                  "candidatos a verificar; ajuste regras em .codegraph/taint.json.")
         return {"mode": "entry" if entry else "scan",
-                "findings": findings, "scanned": scanned}, env
+                "findings": findings, "scanned": scanned,
+                "elapsed_ms": budget.elapsed_ms(), "explored": len(explored),
+                "steps": budget.steps, "limit_hit": budget.limit_hit}, env
 
     def visualize(self, mode: str | None = None, *, level: str | None = None,
                   scope: str | None = None, top: int = 250,

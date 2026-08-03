@@ -236,23 +236,32 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
 
     @mcp.tool()
     def taint(scope: str | None = None, entry: str | None = None,
-              depth: int = 4) -> agent.Response:
+              depth: int | None = None, max_findings: int = 100,
+              deadline_ms: int | None = None, max_steps: int | None = None) -> agent.Response:
         """Análise de taint (segurança): rastreia input não-confiável (sources)
         até operações perigosas (sinks: eval/exec/execute/system/...), com
         sanitizers cortando o fluxo, interprocedural pelo call graph. Sem args =
         varre o repo; `entry=fqn` assume os parâmetros dessa função como
         não-confiáveis. Regras ajustáveis em .codegraph/taint.json. Achados são
         candidatos (may-taint, over-aproxima) — confirme lendo o código.
-        17 linguagens (mesmas do dataflow)."""
+        18 linguagens (mesmas do dataflow).
+
+        Custo ~ O(fontes × ramif^depth): PREFIRA `entry=<func>` a varrer a base
+        toda. `depth=None` usa o default por modo (scan raso/entry fundo);
+        `deadline_ms`/`max_steps` devolvem resultado PARCIAL (a resposta marca
+        `truncated` e traz `limit_hit`) em vez de rodar demais."""
         def run():
-            data, env = engine.taint(scope=scope, entry=entry, depth=depth)
+            data, env = engine.taint(scope=scope, entry=entry, depth=depth,
+                                     max_findings=max_findings, deadline_ms=deadline_ms,
+                                     max_steps=max_steps)
             return agent.build(render.taint(data, env), env,
                                results=data.get("findings", []))
         return guard(run)
 
     @mcp.tool()
     def reaches(symbol: str, sink: str = "http", via: str | None = None,
-                depth: int = 8) -> agent.Response:
+                depth: int = 8, max_paths: int = 20, deadline_ms: int | None = None,
+                max_steps: int | None = None) -> agent.Response:
         """Reachability endpoint→sink numa resposta só: seguindo o call graph a
         partir de `symbol`, quais caminhos chegam a um sink perigoso, e um
         validador aparece no meio? `sink`: preset ('http', 'sql', 'exec',
@@ -260,9 +269,14 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
         sanitizer a checar no caminho (ex.: 'sanitize'). Devolve a cadeia de
         funções entry→sink + veredito de validação — evita o agente montar a
         travessia salto a salto lendo código. Estático (arestas 'calls'):
-        chamadas dinâmicas podem faltar; confiança = mínima do caminho."""
+        chamadas dinâmicas podem faltar; confiança = mínima do caminho.
+
+        `deadline_ms`/`max_steps` limitam a enumeração e devolvem PARCIAL
+        (resposta marca `truncated` + `limit_hit`); `max_paths` corta o total."""
         def run():
-            sym, data, env = engine.reaches(symbol, sink=sink, via=via, depth=depth)
+            sym, data, env = engine.reaches(symbol, sink=sink, via=via, depth=depth,
+                                            max_paths=max_paths, deadline_ms=deadline_ms,
+                                            max_steps=max_steps)
             return agent.build(render.reaches(sym, data, env), env,
                                results=data.get("paths", []))
         return guard(run)

@@ -292,6 +292,9 @@ def reaches(sym, data, env) -> str:
     head = (f"reachability de {sym['fqn']} → sink '{data['sink']}'"
             + (f" (validador: {via})" if via else "") + ":")
     lines = [head]
+    if data.get("limit_hit"):
+        lines.append(f"  [parcial: parou em '{data['limit_hit']}' — "
+                     f"{data.get('elapsed_ms', 0)}ms]")
     if not data["paths"]:
         lines.append(f"  nenhum caminho alcança um sink '{data['sink']}' "
                      f"(profundidade/arestas 'calls').")
@@ -315,6 +318,9 @@ def taint(data, env) -> str:
     head = (f"taint ({mode}) — {len(fs)} caminho(s) fonte→sink; "
             f"{data['scanned']} função(ões) analisada(s):")
     lines = [head]
+    if data.get("limit_hit"):
+        lines.append(f"  [parcial: parou em '{data['limit_hit']}' — "
+                     f"{data.get('explored', 0)} nós, {data.get('elapsed_ms', 0)}ms]")
     if not fs:
         lines.append("  nenhum fluxo não-confiável→sink encontrado "
                      "(com as regras atuais).")

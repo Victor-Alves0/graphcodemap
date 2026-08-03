@@ -6,6 +6,30 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ## [Unreleased]
 
+### Added / Changed
+
+- **Anti-explosão de `taint`/`reaches` (fecho transitivo com teto).**
+  Reachability inter-procedural é, no pior caso, exponencial
+  (`O(fontes × ramif^depth)`); sem teto, a varredura de um repo grande podia
+  rodar "para sempre". Agora:
+  - **Memoização global** (`explored` de `(func_id, arg_index)`) colapsa
+    subárvores compartilhadas entre fontes: `O(fontes × subárvore)` →
+    `O(nós únicos)`. O guarda por-caminho (`visited`) segue prevenindo ciclos.
+  - **Deadline** (`deadline_ms`), **budget determinístico** (`max_steps`) e
+    **cancelamento cooperativo** (`should_cancel`) param a análise e devolvem
+    resultado **PARCIAL** em vez de girar sem fim.
+  - **Contrato de `truncated`:** todo corte (`deadline`/`steps`/`cancelled`/
+    `findings`/`paths`) seta `env.truncated=True` e devolve `limit_hit` +
+    telemetria (`elapsed_ms`, `explored`, `steps`) — nunca corta em silêncio.
+  - **Defaults de `depth` por modo** embutidos na lib (varredura rasa, `entry`
+    fundo), então todo consumidor herda o comportamento seguro.
+  - **Cache LRU de fatos de fluxo** entre chamadas na engine (chaveado por
+    content-hash; invalida sozinho no re-index) — ganho em uso agêntico repetido.
+  - Novos flags de CLI `--deadline-ms`/`--max-steps`/`--max-findings`
+    (taint) e `--max-paths` (reaches); params equivalentes no MCP e na facade.
+  - Modelo de custo e contrato documentados em `docs/RESEARCH.md` §6.3; nova
+    bateria `tests/test_taint_budget.py` (grafos patológicos: diamante + ciclos).
+
 ## [0.1.0] — 2026-07-31
 
 First public release. Everything below is the initial feature set at cut time.
