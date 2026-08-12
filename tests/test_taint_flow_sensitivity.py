@@ -3,12 +3,11 @@
 Trava as DUAS direções ao mesmo tempo, que é o que torna a promessa
 "sem caminho, sem achado" falseável:
 
-  A. FALSOS POSITIVOS que a insensibilidade a fluxo produz hoje. O motor atual
-     mantém um conjunto `tainted` monotônico SEM kill-set: uma vez que `x` entra,
-     nunca sai — então reatribuir `x` com valor limpo/sanitizado não corta o
-     fluxo, e a ordem das instruções é ignorada. Marcados `xfail(strict=True)`:
-     quando o CFG + reaching-definitions (gen/kill) entrar, eles passam a
-     PASSAR e o strict avisa que é hora de remover o marcador.
+  A. FALSOS POSITIVOS que a insensibilidade a fluxo produzia. O motor antigo
+     mantinha um conjunto `tainted` monotônico SEM kill-set: uma vez que `x`
+     entrava, nunca saía — reatribuir com valor limpo/sanitizado não cortava o
+     fluxo e a ordem era ignorada. RESOLVIDO pelo motor flow-sensitive
+     (`flowsens.py`): CFG estruturada + `out = gen ∪ (in − kill)`.
 
   B. VERDADEIROS POSITIVOS que NÃO podem se perder ao ganhar precisão. Um
      kill-set implementado com a mão pesada mata recall — e recall perdido em
@@ -23,8 +22,6 @@ Ver docs/RESEARCH.md §7."""
 from __future__ import annotations
 
 import textwrap
-
-import pytest
 
 from codegraph import CodeGraph
 
@@ -43,7 +40,6 @@ def _findings(tmp_path, src: str, *, entry: str | None = None):
 # A. Falsos positivos da insensibilidade a fluxo (alvo do P1)
 # ============================================================================
 
-@pytest.mark.xfail(strict=True, reason="P1: falta kill-set (flow-insensitive)")
 def test_reassignment_by_sanitizer_kills_taint(tmp_path):
     # x = input(); x = escape(x); system(x)  → o sink recebe o dado LIMPO.
     # É o caso canônico citado na crítica de engenharia.
@@ -57,7 +53,6 @@ def test_reassignment_by_sanitizer_kills_taint(tmp_path):
     assert hits == []
 
 
-@pytest.mark.xfail(strict=True, reason="P1: falta kill-set (flow-insensitive)")
 def test_reassignment_by_literal_kills_taint(tmp_path):
     # redefinir com constante limpa mata a sujeira anterior
     hits = _findings(tmp_path, """
@@ -70,7 +65,6 @@ def test_reassignment_by_literal_kills_taint(tmp_path):
     assert hits == []
 
 
-@pytest.mark.xfail(strict=True, reason="P1: falta CFG (ordem ignorada)")
 def test_sink_before_taint_is_not_a_finding(tmp_path):
     # o sink executa ANTES da variável ficar suja → não há fluxo
     hits = _findings(tmp_path, """
@@ -83,7 +77,6 @@ def test_sink_before_taint_is_not_a_finding(tmp_path):
     assert hits == []
 
 
-@pytest.mark.xfail(strict=True, reason="P1: falta kill-set field-aware")
 def test_reassigning_object_kills_field_taint(tmp_path):
     # reatribuir o objeto mata a sujeira dos CAMPOS dele (regra do Joern:
     # `x = Box()` mata `x.value`, `x.length()`, …)

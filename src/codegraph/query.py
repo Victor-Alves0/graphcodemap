@@ -914,10 +914,10 @@ class QueryEngine:
             return {"function": sym, "supported": False, "params": []}, env
 
         def trace(sym_row, tainted, d, visited):
-            f, _ = self._df_facts(sym_row, cache)
+            f, flang = self._df_facts(sym_row, cache)
             if f is None:
                 return []
-            flow = df.analyze_facts(f, tainted)
+            flow = df.analyze(f, tainted, lang=flang)
             sinks = []
             for af in flow.arg_flows:
                 callee = self._df_resolve_call(sym_row["id"], af.line)
@@ -944,7 +944,7 @@ class QueryEngine:
 
         result_params = []
         for i, p in enumerate(facts.params):
-            flow = df.analyze_facts(facts, {p})
+            flow = df.analyze(facts, {p}, lang=lang)
             sinks = trace(sym, {p}, 1, {(sym["id"], i)})
             result_params.append({
                 "name": p, "reaches_return": flow.reaches_return, "sinks": sinks})
@@ -982,6 +982,10 @@ class QueryEngine:
         order = {"certain": 2, "inferred": 1, "possible": 0}
         budget = _Budget(deadline_ms, max_steps, should_cancel)
         explored: set = set()          # memo GLOBAL (func_id, arg_index) entre traces
+        # fontes EFETIVAS p/ o motor flow-sensitive: ele precisa saber que
+        # `x = fonte()` GERA sujeira no ponto do programa (senão mataria a
+        # própria semente). Na varredura passa a incluir os wrappers.
+        eff_src: set = set(rules.sources)
 
         def conf_min(a, b):
             if a is None:
@@ -994,10 +998,11 @@ class QueryEngine:
             if budget.hit():
                 return
             budget.tick()
-            f, _ = self._df_facts(sym_row, cache)
+            f, flang = self._df_facts(sym_row, cache)
             if f is None:
                 return
-            flow = df.analyze_facts(f, tainted, rules.sanitizers)
+            flow = df.analyze(f, tainted, rules.sanitizers, lang=flang,
+                              sources=eff_src)
             for af in flow.arg_flows:
                 if budget.hit():
                     return
@@ -1069,15 +1074,17 @@ class QueryEngine:
             for r in rows:
                 if budget.hit():
                     break
-                f, _ = self._df_facts(dict(r), cache)
+                f, flang = self._df_facts(dict(r), cache)
                 if f is None:
                     continue
                 collected.append((dict(r), f))
                 direct = any(rt.top_call in rules.sources for rt in f.returns)
                 seed = df.source_vars(f, rules.sources)
-                if direct or (seed and df.analyze_facts(f, seed).reaches_return):
+                if direct or (seed and df.analyze(
+                        f, seed, lang=flang, sources=eff_src).reaches_return):
                     src_funcs.add(r["name"])
             eff_sources = rules.sources | src_funcs
+            eff_src |= src_funcs               # o motor flow-sensitive também vê
             scanned = 0
             for r, f in collected:
                 if budget.hit():

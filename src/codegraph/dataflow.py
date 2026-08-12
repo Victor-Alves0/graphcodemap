@@ -114,6 +114,42 @@ _BODY_TYPES = {"block", "function_body", "statement_block", "compound_statement"
                "do_block", "statements", "body_statement", "statement_list"}
 
 
+# Linguagens cujo taint é FLOW-SENSITIVE (flowsens.py: CFG estruturada + kill na
+# redefinição). Rollout por etapas e DECLARADO — o mapa `codegraph capabilities`
+# mostra quem tem e quem não tem. As demais usam o motor flow-insensitive, que
+# over-aproxima (mais falso positivo, nunca menos recall).
+FLOW_SENSITIVE: frozenset[str] = frozenset({
+    "python", "javascript", "typescript", "tsx",
+})
+
+
+def analyze(facts, tainted, sanitizers=frozenset(), lang: str | None = None,
+            sources=frozenset()):
+    """Ponto único de entrada do motor de taint.
+
+    Usa o motor FLOW-SENSITIVE quando a linguagem suporta e os fatos têm CFG;
+    senão cai no fixpoint flow-insensitive (over-aproxima). Concentrar o
+    despacho aqui mantém o fallback com uma regra só, e deixa o rollout por
+    linguagem visível em `FLOW_SENSITIVE`."""
+    if lang in FLOW_SENSITIVE:
+        from .flowsens import analyze_flow
+
+        flow = analyze_flow(facts, tainted, sanitizers, sources)
+        if flow is not None:
+            return flow
+    return analyze_facts(facts, tainted, sanitizers)
+
+
+def _build_regions(body_node, family: str):
+    """CFG estruturada para o motor flow-sensitive. Import tardio: flowsens
+    importa deste módulo (Flow/ArgFlow/_is_tainted)."""
+    if body_node is None:
+        return None
+    from .flowsens import build_regions
+
+    return build_regions(body_node, family)
+
+
 def _func_types(lang: str) -> set[str]:
     fam = _FAMILY.get(lang)
     if fam == "py":
@@ -146,6 +182,9 @@ def supported_langs() -> list[str]:
 
 # -- estruturas normalizadas --------------------------------------------------
 
+# `span` = (start_byte, end_byte) do nó que originou o fato. É o que permite ao
+# motor FLOW-SENSITIVE (flowsens.py) situar cada fato na CFG estruturada e
+# ordená-los. Opcional: extractor que não popula → cai no motor antigo.
 @dataclass
 class Assign:
     targets: set[str]
@@ -153,6 +192,7 @@ class Assign:
     is_aug: bool
     rhs_call: str | None  # nome do callee se o RHS é uma única chamada
     line: int = 0
+    span: tuple[int, int] | None = None
 
 
 @dataclass
@@ -160,12 +200,14 @@ class CallSite:
     callee: str
     line: int
     args: list[tuple[int, set[str]]]  # (arg_index 0-based; -1=kwarg, ids)
+    span: tuple[int, int] | None = None
 
 
 @dataclass
 class ReturnExpr:
     ids: set[str]
     top_call: str | None
+    span: tuple[int, int] | None = None
 
 
 @dataclass
@@ -174,6 +216,9 @@ class FnFacts:
     assigns: list[Assign] = field(default_factory=list)
     calls: list[CallSite] = field(default_factory=list)
     returns: list[ReturnExpr] = field(default_factory=list)
+    # CFG estruturada (flowsens.Seq) quando a linguagem suporta flow-sensitivity;
+    # montada na extração para não reter nós tree-sitter no cache de fatos.
+    regions: object | None = None
 
 
 @dataclass
@@ -380,7 +425,8 @@ def _facts_py(source, fn) -> FnFacts:
                     if right.type == "call" else None)
         facts.assigns.append(Assign(_target_paths(source, left, _PY_MEMBER), rids,
                                     a.type == "augmented_assignment", rhs_call,
-                                    a.start_point[0] + 1))
+                                    a.start_point[0] + 1,
+                                    (a.start_byte, a.end_byte)))
 
     calls: list = []
     _walk(body, {"call"}, stop, calls)
@@ -389,7 +435,8 @@ def _facts_py(source, fn) -> FnFacts:
         if args is None:
             continue
         callee = _callee_name(source, call.child_by_field_name("function"), "py")
-        cs = CallSite(callee, call.start_point[0] + 1, [])
+        cs = CallSite(callee, call.start_point[0] + 1, [],
+                      (call.start_byte, call.end_byte))
         pos = 0
         for arg in args.named_children:
             if arg.type == "keyword_argument":
@@ -411,7 +458,8 @@ def _facts_py(source, fn) -> FnFacts:
         child = r.named_children[0] if r.named_children else None
         top_call = (_callee_name(source, child.child_by_field_name("function"), "py")
                     if child is not None and child.type == "call" else None)
-        facts.returns.append(ReturnExpr(ids, top_call))
+        facts.returns.append(ReturnExpr(ids, top_call, (r.start_byte, r.end_byte)))
+    facts.regions = _build_regions(body, "py")
     return facts
 
 
@@ -461,7 +509,8 @@ def _facts_js(source, fn) -> FnFacts:
         rids: set = set()
         _paths(source, value, rids, _JS_MEMBER)
         facts.assigns.append(Assign(targets, rids, False,
-                                    rhs_call_name(value), d.start_point[0] + 1))
+                                    rhs_call_name(value), d.start_point[0] + 1,
+                                    (d.start_byte, d.end_byte)))
 
     reassigns: list = []
     _walk(body, {"assignment_expression", "augmented_assignment_expression"},
@@ -478,7 +527,8 @@ def _facts_js(source, fn) -> FnFacts:
         _paths(source, right, rids, _JS_MEMBER)
         facts.assigns.append(Assign(targets, rids,
                                     a.type == "augmented_assignment_expression",
-                                    rhs_call_name(right), a.start_point[0] + 1))
+                                    rhs_call_name(right), a.start_point[0] + 1,
+                                    (a.start_byte, a.end_byte)))
 
     calls: list = []
     _walk(body, {"call_expression"}, stop, calls)
@@ -487,7 +537,8 @@ def _facts_js(source, fn) -> FnFacts:
         if args is None:
             continue
         callee = _callee_name(source, call.child_by_field_name("function"), "js")
-        cs = CallSite(callee, call.start_point[0] + 1, [])
+        cs = CallSite(callee, call.start_point[0] + 1, [],
+                      (call.start_byte, call.end_byte))
         pos = 0
         for arg in args.named_children:
             if arg.type == "comment":
@@ -506,7 +557,8 @@ def _facts_js(source, fn) -> FnFacts:
         child = r.named_children[0] if r.named_children else None
         top_call = (_callee_name(source, child.child_by_field_name("function"), "js")
                     if child is not None and child.type == "call_expression" else None)
-        facts.returns.append(ReturnExpr(ids, top_call))
+        facts.returns.append(ReturnExpr(ids, top_call, (r.start_byte, r.end_byte)))
+    facts.regions = _build_regions(body, "js")
     return facts
 
 
