@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 #   id      : node types-folha que são referência de variável
 #   params  : ("field",nome) | ("children",{types}) | ("search",{container_types})
 #   assigns : passos ("lr",{t},lf,rf) | ("decl",{t},nf,vf) | ("decl_last",{t},nf|None)
+#             | ("poslr",{t}) p/ gramáticas que NÃO nomeiam os campos do assign
+#               (Kotlin): alvo = 1º filho nomeado, valor = último
 #             | ("lr",{t},lf,rf) com left/right em expression_list (tratado igual)
 #             | ("bytype",{t},left_ctype,right_ctype)
 #   calls   : node types de chamada
@@ -92,12 +94,16 @@ GEN: dict[str, dict] = {
               "calls": {"call_expression"}, "returns": set(), "tail": True},
     "kotlin": {"func": {"function_declaration"}, "id": {"simple_identifier"},
                "params": ("search", {"function_value_parameters"}),
-               "assigns": [("decl_last", {"property_declaration"}, None)],
+               # `assignment` = REATRIBUIÇÃO (x = ...). Sem ela o motor não vê a
+               # redefinição e não há o que matar — lacuna que o P1b expôs.
+               "assigns": [("decl_last", {"property_declaration"}, None),
+                           ("poslr", {"assignment"})],
                "calls": {"call_expression"}, "returns": {"jump_expression"},
                "tail": True},
     "swift": {"func": {"function_declaration", "init_declaration"},
               "id": {"simple_identifier"}, "params": ("children", {"parameter"}),
-              "assigns": [("decl", {"property_declaration"}, "name", "value")],
+              "assigns": [("decl", {"property_declaration"}, "name", "value"),
+                          ("lr", {"assignment"}, "target", "result")],
               "calls": {"call_expression"},
               "returns": {"control_transfer_statement"}, "tail": True},
 }
@@ -120,6 +126,8 @@ _BODY_TYPES = {"block", "function_body", "statement_block", "compound_statement"
 # over-aproxima (mais falso positivo, nunca menos recall).
 FLOW_SENSITIVE: frozenset[str] = frozenset({
     "python", "javascript", "typescript", "tsx",
+    "java", "go", "c", "cpp", "cuda", "csharp", "php", "ruby", "rust",
+    "kotlin", "swift", "scala", "lua", "luau",
 })
 
 
@@ -816,6 +824,12 @@ def _facts_generic(source, fn, lang) -> FnFacts:
             kids = [c for c in n.named_children if c is not nm
                     and c.type not in ("binding_pattern_kind", "modifiers", "=")]
             rhs_node = kids[-1] if kids else None
+        elif kind == "poslr":
+            # gramática sem field names (Kotlin): posicional
+            kids = [c for c in n.named_children if c.type != "comment"]
+            if len(kids) >= 2:
+                targets |= _gen_target_paths(source, kids[0], idset)
+                rhs_node = kids[-1]
         elif kind == "bytype":
             lc = next((c for c in n.named_children if c.type == step[2]), None)
             rc = next((c for c in n.named_children if c.type == step[3]), None)
@@ -827,7 +841,8 @@ def _facts_generic(source, fn, lang) -> FnFacts:
         _gen_paths(source, rhs_node, idset, rids)
         facts.assigns.append(Assign(targets, rids, False,
                                     _rhs_call(source, rhs_node, calls_t, idset),
-                                    n.start_point[0] + 1))
+                                    n.start_point[0] + 1,
+                                    (n.start_byte, n.end_byte)))
 
     # chamadas
     calls: list = []
@@ -835,7 +850,8 @@ def _facts_generic(source, fn, lang) -> FnFacts:
     for call in calls:
         args = _args_of(call)
         callee = _callee_of(source, call, idset)
-        cs = CallSite(callee, call.start_point[0] + 1, [])
+        cs = CallSite(callee, call.start_point[0] + 1, [],
+                      (call.start_byte, call.end_byte))
         if args is not None:
             pos = 0
             for arg in args.named_children:
@@ -857,7 +873,7 @@ def _facts_generic(source, fn, lang) -> FnFacts:
         child = r.named_children[0] if r.named_children else None
         top = (_rhs_call(source, child, calls_t, idset)
                if child is not None else None)
-        facts.returns.append(ReturnExpr(ids, top))
+        facts.returns.append(ReturnExpr(ids, top, (r.start_byte, r.end_byte)))
     # expressão-cauda (Rust/Scala/Ruby/Kotlin/Swift): última expr do corpo
     if cfg.get("tail"):
         last = None
@@ -873,8 +889,13 @@ def _facts_generic(source, fn, lang) -> FnFacts:
             ids = set()
             _gen_paths(source, last, idset, ids)
             if ids:
+                # span OBRIGATÓRIO: sem ele o motor flow-sensitive nunca situa
+                # este fato numa região e o retorno implícito some (regressão
+                # pega pela suíte em Rust/Ruby/Scala, as linguagens com cauda).
                 facts.returns.append(
-                    ReturnExpr(ids, _rhs_call(source, last, calls_t, idset)))
+                    ReturnExpr(ids, _rhs_call(source, last, calls_t, idset),
+                               (last.start_byte, last.end_byte)))
+    facts.regions = _build_regions(body, lang)
     return facts
 
 

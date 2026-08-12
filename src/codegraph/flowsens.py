@@ -44,7 +44,6 @@ _CTRL = {
         "loop": {"for_statement", "while_statement"},
         "body": {"block", "else_clause", "elif_clause", "except_clause",
                  "finally_clause", "case_clause", "match_block"},
-        "else": {"else_clause", "finally_clause"},
     },
     "js": {
         "branch": {"if_statement", "try_statement", "switch_statement"},
@@ -52,9 +51,84 @@ _CTRL = {
                  "for_in_statement", "for_of_statement"},
         "body": {"statement_block", "else_clause", "switch_body", "switch_case",
                  "switch_default", "catch_clause", "finally_clause"},
-        "else": {"else_clause", "switch_default", "finally_clause"},
+    },
+    # --- família GEN: uma entrada por linguagem (node types verificados
+    # parseando código real de cada gramática, não por suposição) ---
+    "java": {
+        "branch": {"if_statement", "try_statement", "try_with_resources_statement",
+                   "switch_expression", "switch_statement"},
+        "loop": {"for_statement", "enhanced_for_statement", "while_statement",
+                 "do_statement"},
+        "body": {"block", "switch_block", "switch_block_statement_group",
+                 "catch_clause", "finally_clause"},
+    },
+    "go": {
+        "branch": {"if_statement", "expression_switch_statement",
+                   "type_switch_statement", "select_statement"},
+        "loop": {"for_statement"},
+        "body": {"block", "statement_list", "expression_case", "default_case",
+                 "type_case", "communication_case"},
+    },
+    "c": {
+        "branch": {"if_statement", "switch_statement", "try_statement"},
+        "loop": {"for_statement", "while_statement", "do_statement",
+                 "for_range_loop"},
+        "body": {"compound_statement", "else_clause", "case_statement",
+                 "catch_clause"},
+    },
+    "csharp": {
+        "branch": {"if_statement", "try_statement", "switch_statement"},
+        "loop": {"for_statement", "foreach_statement", "while_statement",
+                 "do_statement"},
+        "body": {"block", "catch_clause", "finally_clause", "switch_body",
+                 "switch_section"},
+    },
+    "php": {
+        "branch": {"if_statement", "try_statement", "switch_statement",
+                   "match_expression"},
+        "loop": {"for_statement", "foreach_statement", "while_statement",
+                 "do_statement"},
+        "body": {"compound_statement", "else_clause", "else_if_clause",
+                 "catch_clause", "finally_clause", "switch_block",
+                 "case_statement", "default_statement"},
+    },
+    "ruby": {
+        "branch": {"if", "unless", "case", "begin"},
+        "loop": {"while", "until", "for", "do_block"},
+        "body": {"then", "else", "body_statement", "do_block", "block",
+                 "ensure", "rescue", "when"},
+    },
+    "rust": {
+        "branch": {"if_expression", "match_expression"},
+        "loop": {"for_expression", "while_expression", "loop_expression"},
+        "body": {"block", "else_clause", "match_block", "match_arm"},
+    },
+    "kotlin": {
+        "branch": {"if_expression", "try_expression", "when_expression"},
+        "loop": {"for_statement", "while_statement", "do_while_statement"},
+        "body": {"control_structure_body", "catch_block", "finally_block",
+                 "when_entry"},
+    },
+    "swift": {
+        "branch": {"if_statement", "guard_statement", "switch_statement",
+                   "do_statement"},
+        "loop": {"for_statement", "while_statement", "repeat_while_statement"},
+        "body": {"statements", "else", "switch_entry", "catch_block"},
+    },
+    "scala": {
+        "branch": {"if_expression", "match_expression", "try_expression"},
+        "loop": {"for_expression", "while_expression"},
+        "body": {"block", "indented_block", "case_block", "case_clause",
+                 "finally_clause", "catch_clause"},
+    },
+    "lua": {
+        "branch": {"if_statement"},
+        "loop": {"for_statement", "while_statement", "repeat_statement"},
+        "body": {"block", "else_statement", "elseif_statement"},
     },
 }
+_CTRL["cpp"] = _CTRL["cuda"] = _CTRL["c"]
+_CTRL["luau"] = _CTRL["lua"]
 
 
 # --- regiões -----------------------------------------------------------------
@@ -86,29 +160,46 @@ def _ctrl(family: str):
     return _CTRL.get(family)
 
 
-def build_regions(body_node, family: str) -> Seq:
-    """CFG estruturada a partir da AST do corpo da função."""
-    cfg = _ctrl(family)
+def build_regions(body_node, key: str) -> Seq:
+    """CFG estruturada a partir da AST do corpo da função.
+
+    `key` é "py"/"js" ou o nome da linguagem (família GEN).
+
+    Duas decisões que valem por 15 gramáticas:
+
+    1. `has_else` = "tem 2+ corpos", NÃO um node type `else_clause`. Em Java/C#
+       o else é só outro `block`; em C é `else_clause`; em Python é `else_clause`.
+       Contar corpos funciona em todas, procurar por tipo não.
+
+    2. Se a gramática não expõe corpo nenhum (Swift põe os statements direto no
+       `if_statement`), o nó inteiro vira UM braço com `has_else=False`. Assim o
+       ambiente de entrada entra na união e nenhum kill de dentro do bloco
+       escapa para fora — conservador, preservando RECALL, que é o lado seguro:
+       um kill indevido apagaria um achado real."""
+    cfg = _ctrl(key)
     seq = Seq()
     if body_node is None or cfg is None:
         return seq
     for child in body_node.named_children:
         t = child.type
         if t in cfg["branch"] or t in cfg["loop"]:
+            bodies = [s for s in child.named_children if s.type in cfg["body"]]
+            if not bodies:
+                # gramática sem nó de corpo: trata o nó todo como braço único
+                arm = Seq([Span(child.start_byte, child.end_byte)])
+                seq.items.append(Loop(arm) if t in cfg["loop"]
+                                 else Branch([arm], has_else=False))
+                continue
             # a condição (filhos que NÃO são corpo) executa incondicionalmente
             for sub in child.named_children:
                 if sub.type not in cfg["body"]:
                     seq.items.append(Span(sub.start_byte, sub.end_byte))
-            bodies = [s for s in child.named_children if s.type in cfg["body"]]
             if t in cfg["loop"]:
-                inner = Seq()
-                for b in bodies:
-                    inner.items.append(build_regions(b, family))
+                inner = Seq([build_regions(b, key) for b in bodies])
                 seq.items.append(Loop(inner))
             else:
-                arms = [build_regions(b, family) for b in bodies]
-                has_else = any(s.type in cfg["else"] for s in child.named_children)
-                seq.items.append(Branch(arms, has_else))
+                arms = [build_regions(b, key) for b in bodies]
+                seq.items.append(Branch(arms, has_else=len(bodies) >= 2))
         else:
             seq.items.append(Span(child.start_byte, child.end_byte))
     return seq
