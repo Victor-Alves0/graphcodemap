@@ -997,13 +997,19 @@ class QueryEngine:
                 return a
             return a if order[a] <= order[b] else b
 
-        def trace(sym_row, tainted, origin, steps, d, visited, path_conf):
+        def trace(sym_row, tainted, origin, steps, d, visited, path_conf,
+                  path_flow="flow-sensitive"):
             if budget.hit():
                 return
             budget.tick()
             f, flang = self._df_facts(sym_row, cache)
             if f is None:
                 return
+            # EIXO 2: evidência do FLUXO, independente da resolução da chamada.
+            # Degrada pelo elo mais fraco, como a confiança: basta uma função do
+            # caminho ter rodado no motor que over-aproxima.
+            if not df.uses_flow_sensitive(f, flang):
+                path_flow = "over-approximated"
             flow = df.analyze(f, tainted, rules.sanitizers, lang=flang,
                               sources=eff_src)
             for af in flow.arg_flows:
@@ -1028,6 +1034,7 @@ class QueryEngine:
                                      "arg_index": af.arg_index, "via": af.via,
                                      "func_fqn": sym_row["fqn"]},
                             "confidence": cur_conf or "possible",
+                            "flow_evidence": path_flow,
                             "steps": steps + [step],
                         })
                     else:
@@ -1044,7 +1051,8 @@ class QueryEngine:
                         cf, _ = self._df_facts(crow, cache) if crow else (None, None)
                         if cf and af.arg_index < len(cf.params):
                             trace(crow, {cf.params[af.arg_index]}, origin,
-                                  steps + [step], d + 1, visited, cur_conf)
+                                  steps + [step], d + 1, visited, cur_conf,
+                                  path_flow)
 
         if entry:
             sym = self._resolve_fresh(entry, env)

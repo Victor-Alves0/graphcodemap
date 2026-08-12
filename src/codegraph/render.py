@@ -331,12 +331,23 @@ def taint(data, env) -> str:
                else f"{o['what']} de {o['func_fqn']} ({o['path']}:{o['line']})")
         sink_fqn = s["callee_fqn"] or s["callee"]
         arg = f"arg#{s['arg_index']}" if s["arg_index"] >= 0 else "kwarg"
-        lines.append(f"  [{i}] [{fi['confidence']}] {src}")
+        # DOIS eixos: resolução da CHAMADA · evidência do FLUXO. Juntá-los num
+        # rótulo só esconderia que um caminho inteiro 'certain' pode ter fluxo
+        # over-aproximado — e vice-versa.
+        ev = fi.get("flow_evidence")
+        selo = f"[{fi['confidence']}" + (f" · fluxo {ev}]" if ev else "]")
+        lines.append(f"  [{i}] {selo} {src}")
         lines.append(f"      → SINK {sink_fqn} ({arg}, via {s['via']})  "
                      f"{s['site_path']}:{s['line']}")
         if len(fi["steps"]) > 1:
             hops = " → ".join(st["callee"] for st in fi["steps"])
             lines.append(f"      caminho: {hops}")
+    if any(f.get("flow_evidence") == "over-approximated" for f in fs):
+        lines += ["", "como ler os dois eixos:",
+                  "  confidence — a CHAMADA foi resolvida semanticamente?",
+                  "  fluxo      — flow-sensitive: ordem e redefinição foram "
+                  "consideradas; over-approximated: algum trecho do caminho "
+                  "ignora ordem, então o fluxo pode não ser real."]
     return warnings(env) + "\n".join(lines)
 
 

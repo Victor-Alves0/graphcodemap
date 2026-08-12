@@ -131,6 +131,16 @@ FLOW_SENSITIVE: frozenset[str] = frozenset({
 })
 
 
+def uses_flow_sensitive(facts, lang: str | None) -> bool:
+    """O motor FLOW-SENSITIVE roda mesmo para estes fatos?
+
+    Não basta a linguagem estar em `FLOW_SENSITIVE`: se a extração não montou a
+    CFG (`facts.regions`), `analyze` cai no motor que over-aproxima. Quem
+    reporta a evidência ao usuário precisa saber o que REALMENTE rodou — senão
+    o rótulo vira decoração."""
+    return bool(lang in FLOW_SENSITIVE and getattr(facts, "regions", None) is not None)
+
+
 def analyze(facts, tainted, sanitizers=frozenset(), lang: str | None = None,
             sources=frozenset()):
     """Ponto único de entrada do motor de taint.
