@@ -24,8 +24,12 @@ from pathlib import Path
 _SOURCES = {
     # Python
     "input", "raw_input", "getenv", "get_json", "recv", "recvfrom",
-    # comuns a web frameworks (nomes de método frequentes)
-    "getparameter",
+    # comuns a web frameworks (nomes de método frequentes). ATENÇÃO: o
+    # casamento é case-sensitive e usa o nome COMO ESCRITO no código — havia
+    # aqui "getparameter" em minúsculas, que nunca casou com o `getParameter`
+    # real do servlet: regra morta por anos.
+    "getParameter", "getParameterValues", "getHeader", "getQueryString",
+    "getInputStream", "getReader", "getRequestURI", "getRequestURL",
     # JS/Node
     "prompt",
 }
@@ -63,8 +67,34 @@ def default_rules() -> TaintRules:
     return TaintRules(frozenset(_SOURCES), frozenset(_SINKS), frozenset(_SANITIZERS))
 
 
-def load_rules(root: Path) -> TaintRules:
+def catalog_for(languages) -> TaintRules:
+    """Regras default + o catálogo por FRAMEWORK das linguagens presentes.
+
+    O catálogo (`taint_catalog.py`, semeado das regras MIT do OpenTaint) é o que
+    separa "funciona em código de exemplo" de "funciona no repo do cliente":
+    sem ele, `exec.Command` do Go ou `FileOutputStream` do Java não são sinks
+    conhecidos e a vulnerabilidade passa batido.
+
+    Aplicado só às linguagens que o repo REALMENTE tem — carregar os 124 sinks
+    de Java num repo Go só aumentaria a chance de colisão de nome à toa."""
     src, snk, san = set(_SOURCES), set(_SINKS), set(_SANITIZERS)
+    try:
+        from .taint_catalog import CATALOG
+    except ImportError:                       # catálogo é opcional
+        return TaintRules(frozenset(src), frozenset(snk), frozenset(san))
+    for lang in languages or ():
+        b = CATALOG.get(lang)
+        if not b:
+            continue
+        src |= set(b.get("sources", ()))
+        snk |= set(b.get("sinks", ()))
+        san |= set(b.get("sanitizers", ()))
+    return TaintRules(frozenset(src), frozenset(snk), frozenset(san))
+
+
+def load_rules(root: Path, languages=None) -> TaintRules:
+    base = catalog_for(languages)
+    src, snk, san = set(base.sources), set(base.sinks), set(base.sanitizers)
     cfg = root / ".codegraph" / "taint.json"
     if cfg.is_file():
         try:

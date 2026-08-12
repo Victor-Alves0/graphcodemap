@@ -976,7 +976,10 @@ class QueryEngine:
         if depth is None:
             depth = TAINT_DEPTH_ENTRY if entry else TAINT_DEPTH_SCAN
         env = Envelope()
-        rules = load_rules(self.root)
+        # linguagens presentes no índice → catálogo de framework só delas
+        langs = {r["language"] for r in self.conn.execute(
+            "SELECT DISTINCT language FROM files WHERE language IS NOT NULL")}
+        rules = load_rules(self.root, langs)
         cache: dict = {}
         findings: list = []
         order = {"certain": 2, "inferred": 1, "possible": 0}
