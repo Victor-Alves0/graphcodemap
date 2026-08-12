@@ -445,3 +445,47 @@ def stats(s) -> str:
             f"{100 * s['edges_dangling'] / total:.0f}%)\n"
             f"parse parcial/falho: {s['parse_partial']}  "
             f"linguagens: {s['by_language']}")
+
+
+def capabilities(rows, summ, gaps_list) -> str:
+    """Mapa 'o que está pronto / o que falta' por linguagem.
+
+    Colunas são as camadas independentes; `·` = não se aplica (marcação/config
+    não têm fluxo de dados). A seção final é a lista de trabalho."""
+    def mark(v):
+        return "sim" if v else "NÃO"
+
+    lines = [
+        f"capacidades por linguagem — {summ['languages']} linguagens, "
+        f"{summ['dedicated']} com extractor dedicado",
+        f"  dataflow/taint: {summ['dataflow']}/{summ['dataflow_applicable']} aplicáveis   "
+        f"flow-sensitive: {summ['flow_sensitive']}   "
+        f"L1 wired: {summ['l1_wired']} ({summ['l1_validated']} validados ao vivo)",
+        "",
+        f"  {'linguagem':<12} {'extractor':<10} {'dataflow':<9} {'taint':<7} "
+        f"{'flow-sens':<10} {'L1':<22}",
+        f"  {'-'*12} {'-'*10} {'-'*9} {'-'*7} {'-'*10} {'-'*22}",
+    ]
+    for r in rows:
+        na = not r["dataflow_applicable"]
+        dfl = "·" if na else mark(r["dataflow"])
+        tnt = "·" if na else mark(r["taint"])
+        flw = "·" if na else mark(r["flow"])
+        if not r.get("l1_applicable", True):
+            l1 = "·"
+        elif not r["l1_wired"]:
+            l1 = "NÃO"
+        else:
+            state = "validado" if r["l1_validated"] else "wired"
+            l1 = f"{state} ({r['l1_server']})"
+        lines.append(f"  {r['language']:<12} {r['extract']:<10} {dfl:<9} {tnt:<7} "
+                     f"{flw:<10} {l1:<22}")
+
+    lines += ["", "  legenda: · = não se aplica (marcação/config não têm fluxo de dados)"]
+    if gaps_list:
+        lines += ["", f"  lacunas ({len(gaps_list)} linguagens):"]
+        for g in gaps_list:
+            lines.append(f"    {g['language']:<12} falta: {', '.join(g['missing'])}")
+    else:
+        lines.append("  sem lacunas.")
+    return "\n".join(lines)

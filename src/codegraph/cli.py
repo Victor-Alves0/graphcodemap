@@ -255,6 +255,15 @@ def cmd_vacuum(args) -> int:
     return 0
 
 
+def cmd_capabilities(args) -> int:
+    """Mapa 'pronto/falta' por linguagem. Não toca no índice — é sobre o MOTOR,
+    não sobre um repo (por isso não abre engine)."""
+    from . import capabilities as caps
+
+    print(render.capabilities(caps.matrix(), caps.summary(), caps.gaps()))
+    return 0
+
+
 def cmd_doctor(args) -> int:
     engine = _engine(args)
     d = engine.doctor()
@@ -485,6 +494,10 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--why", action="store_true",
                     help="re-parseia os arquivos 'failed' e mostra o motivo")
     sp.set_defaults(fn=cmd_doctor)
+
+    sp = sub.add_parser("capabilities",
+                        help="mapa por linguagem: o que está pronto e o que falta")
+    sp.set_defaults(fn=cmd_capabilities)
 
     sp = sub.add_parser("vacuum", help="reconstrói o índice e recupera espaço "
                         "(re-index --force + VACUUM; preserva descrições L3)")
