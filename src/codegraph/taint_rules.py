@@ -240,13 +240,18 @@ def catalog_for(languages) -> TaintRules:
     except ImportError:                       # catálogo é opcional
         return TaintRules(frozenset(src), frozenset(snk), frozenset(san),
                           frozenset(bare))
+    try:
+        from .taint_catalog_codeql import CATALOG_CODEQL
+    except ImportError:                       # também opcional
+        CATALOG_CODEQL = {}
     for lang in languages or ():
-        b = CATALOG.get(lang)
-        if not b:
-            continue
-        src |= set(b.get("sources", ()))
-        snk |= set(b.get("sinks", ()))
-        san |= set(b.get("sanitizers", ()))
+        for cat in (CATALOG, CATALOG_CODEQL):
+            b = cat.get(lang)
+            if not b:
+                continue
+            src |= set(b.get("sources", ()))
+            snk |= set(b.get("sinks", ()))
+            san |= set(b.get("sanitizers", ()))
     for lang in languages or ():
         src |= _curated(lang, "sources")
         snk |= _curated(lang, "sinks")

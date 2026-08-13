@@ -197,3 +197,8 @@ Adding a language resolver is often a ~10-line config.
 ## License
 
 [MIT](LICENSE) © Victor Alves
+
+Parts of the taint rule catalog are derived from MIT-licensed data published by
+other projects (GitHub CodeQL's `*.model.yml` models and OpenTaint's `rules/`).
+See [NOTICE](NOTICE.md) for the required copyright notices and for exactly what
+was — and was not — used.

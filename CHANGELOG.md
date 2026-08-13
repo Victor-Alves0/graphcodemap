@@ -22,6 +22,20 @@ OpenTaint, Graphify) lida no código-fonte, e medido contra gabarito real.
   *chamada*; o novo `flow_evidence` mede a evidência do *fluxo*
   (flow-sensitive vs over-approximated). Um caminho todo `certain` pode ter
   fluxo over-aproximado — juntar os dois num rótulo escondia isso.
+- **Modelos MIT do CodeQL importados: recall de 31% → 60% no OWASP Benchmark**
+  (precisão 64% → 61%, score +0.12 → **+0.16**, F1 0.42 → 0.61). Os arquivos
+  `*.model.yml` ("Models as Data") de `github/codeql` são **MIT** e são tabelas
+  puras de "método × categoria" — anos de modelagem que não dependem do motor
+  proprietário deles. `scripts/import_codeql_models.py` colhe 1.073 nomes
+  (Java 147/436, Go 125/180, **C# 12/128 — não havia nada de C#**, JS 2/13).
+  Curadoria decisiva: lista de INCLUSÃO de categorias, porque a maior delas é
+  `log-injection` (851 linhas só em Java) e importá-la enterraria injeção de
+  comando embaixo de ruído. **LDAP saiu de −0.12 — a única categoria pior que
+  aleatório — para +0.09**, sem uma linha de motor: era lacuna de catálogo.
+  Não foi usada nenhuma parte do CodeQL CLI/motor, que é proprietário; e as
+  *queries* não são portáveis mesmo sendo MIT — são 20 linhas de cola sobre
+  250 mil linhas de biblioteca QL escritas contra um IR que exige compilar o
+  projeto para existir.
 - **Casamento qualificado passou a funcionar fora do Java.** `_receiver_last`
   caía no campo `function` quando a gramática não tem campo de receptor — e em
   Python e JS esse campo guarda o callee INTEIRO, então a função devolvia o

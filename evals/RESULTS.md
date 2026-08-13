@@ -737,3 +737,88 @@ vê dado do usuário chegando em `execute` e não distingue parâmetro ligado de
 concatenação. Resolver isso exige olhar como a string da consulta foi
 CONSTRUÍDA — é o próximo item natural de precisão, e está dimensionado, não
 escondido.
+
+---
+
+# Rodada 10 — modelos MIT do CodeQL: recall de 31% → 60% (2026-08-13)
+
+## O que dá para clonar do CodeQL, e o que não dá
+
+Conferido, não presumido:
+
+| o que | licença | usável? |
+|---|---|---|
+| `github/codeql` — queries e bibliotecas QL | **MIT** (Copyright 2006-2025 GitHub, Inc.) | sim, com atribuição |
+| CodeQL CLI / motor / extractors | "GitHub CodeQL Terms and Conditions" | não é OSI; não usado aqui |
+
+Mesmo com a licença permitindo, **portar as queries não é uma opção**. A query
+de SQL injection do Java tem ~20 linhas e só declara três conjuntos
+(`isSource`, `isSink`, `isBarrier`); a substância mora embaixo:
+
+| | arquivos | linhas |
+|---|---|---|
+| bibliotecas QL (só Java, Python, JS) | 1.251 | **250.342** |
+| dataflow do Java, isolado | 45 | 11.065 |
+| **graphcodemap inteiro, 19 linguagens** | 64 | **13.853** |
+
+E essas 250 mil linhas não são autônomas: são Datalog avaliado pelo motor
+proprietário, escrito contra o IR que os extractors produzem — e o banco do
+CodeQL exige **compilar o projeto**, o oposto da premissa deste aqui (sem
+build, incremental, sempre fresco).
+
+## O que é portável: os dados
+
+Os arquivos `*.model.yml` ("Models as Data") são tabelas puras — "este método,
+deste tipo, neste argumento, é sink desta categoria". Anos de modelagem em
+formato que não depende do motor deles. `scripts/import_codeql_models.py`
+extrai nome de API e categoria; joga fora tipo, assinatura e índice de
+argumento, que o nosso motor ainda não usa.
+
+Duas decisões de curadoria carregam o resultado:
+
+- **Lista de INCLUSÃO de categorias.** A maior categoria deles é
+  `log-injection` (851 linhas só em Java, 359 em Go) — severidade baixa,
+  frequência altíssima. Importá-la enterraria injeção de comando embaixo de
+  ruído. `credentials-*` e `encryption-*` são mau uso de API, que este motor
+  não faz. Fontes só de categoria `remote`.
+- **`summaryModel` e `neutralModel` ficaram de fora.** Os dois são por
+  ASSINATURA: `PreparedStatement.executeQuery()` é neutro e
+  `Statement.executeQuery(sql)` é sink — mesmo nome. Sem tipo no casamento,
+  usar o neutro para subtrair apagaria sinks reais.
+
+Colheita: **1.073 nomes** — Java 147 fontes/436 sinks, Go 125/180, C# 12/128
+(não tínhamos **nada** de C#), JS 2/13.
+
+## Resultado — OWASP Benchmark v1.2
+
+| | antes | depois |
+|---|---|---|
+| precisão | 64% | 61% |
+| **recall** | **31%** | **60%** |
+| F1 | 0.42 | **0.61** |
+| **score (TPR−FPR)** | **+0.12** | **+0.16** |
+
+Recall quase **dobrou** por 3 pontos de precisão. Por categoria:
+
+| categoria | score antes | score depois |
+|---|---|---|
+| cmdi | +0.08 | +0.16 |
+| **ldapi** | **−0.12** | **+0.09** |
+| pathtraver | +0.12 | +0.13 |
+| sqli | +0.10 | +0.14 |
+| trustbound | +0.08 | +0.12 |
+| xpathi | +0.42 | +0.50 |
+| xss | +0.18 | +0.20 |
+
+LDAP era a **única categoria pior que aleatório** e estava na lista de
+pendências desde a rodada 8. Saiu de −0.12 para +0.09 sem uma linha de motor:
+era lacuna de catálogo, e o catálogo veio pronto.
+
+## Sem efeito colateral nos apps reais
+
+Node e Python não mudaram (dvna 6, NodeGoat 4, nodejs-goof 2, pygoat 10,
+dvpwa 5): o CodeQL não usa MaD para Python e quase não usa para JS, então a
+importação não os toca. Gin (Go) passou a dar 10 achados — `FormFile()` →
+`SaveUploadedFile`/`MkdirAll`/`Chmod`, que é o padrão real de path traversal
+em upload; 6 estão marcados como fixture de teste. Dois são fracos
+(`Fprintf`, `Redirect` com fonte duvidosa) e estão contados na precisão.
