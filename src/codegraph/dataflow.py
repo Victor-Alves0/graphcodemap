@@ -267,14 +267,46 @@ def analyze(facts, tainted, sanitizers=frozenset(), lang: str | None = None,
     return analyze_facts(facts, tainted, sanitizers)
 
 
-def _build_regions(body_node, family: str):
+def _build_regions(body_node, family: str, source=None, assigns=None):
     """CFG estruturada para o motor flow-sensitive. Import tardio: flowsens
     importa deste módulo (Flow/ArgFlow/_is_tainted)."""
     if body_node is None:
         return None
     from .flowsens import build_regions
 
-    return build_regions(body_node, family)
+    return build_regions(body_node, family, source, _const_env(assigns or ()))
+
+
+def _const_text(source: bytes, node) -> str | None:
+    """Texto do RHS quando ele é um literal simples; senão None."""
+    if node is None:
+        return None
+    from .flowsens import is_literal
+
+    t = _text(source, node).strip()
+    return t if is_literal(t) else None
+
+
+def _const_env(assigns) -> dict:
+    """{nome: literal} das variáveis locais que valem uma constante.
+
+    Regra deliberadamente estreita: o nome tem que ser atribuído UMA ÚNICA vez
+    em toda a função, e essa atribuição tem que ser um literal. Qualquer
+    segunda atribuição — mesmo de outro literal — elimina o nome, porque a
+    ordem entre ela e o uso não é considerada aqui. Um valor errado neste mapa
+    apagaria um achado real em silêncio; um valor faltando só desliga o
+    folding, que é o lado seguro do erro."""
+    vistos: dict = {}
+    for a in assigns:
+        for alvo in a.targets:
+            if len(alvo) != 1:                # só nome nu, não `x.campo`
+                continue
+            nome = alvo[0]
+            if nome in vistos:
+                vistos[nome] = None           # reatribuído: não é constante
+            else:
+                vistos[nome] = a.rhs_const
+    return {n: v for n, v in vistos.items() if v is not None}
 
 
 def _func_types(lang: str) -> set[str]:
@@ -323,6 +355,10 @@ class Assign:
     # RECEPTOR.MÉTODO do RHS (ex.: "POST.get" em `x = request.POST.get("q")`).
     # É o que permite reconhecer fonte de framework sem marcar o genérico `get`.
     rhs_qualified: str | None = None
+    # Texto do RHS quando ele é um LITERAL simples (`86`, `"a"`, `'A'`, `true`).
+    # É a matéria-prima do folding de condição: sem saber que `num` vale 86 não
+    # dá para decidir `(7*42) - num > 200`.
+    rhs_const: str | None = None
 
 
 @dataclass
@@ -661,7 +697,8 @@ def _facts_py(source, fn) -> FnFacts:
         facts.assigns.append(Assign(_target_paths(source, left, _PY_MEMBER), rids,
                                     a.type == "augmented_assignment", rhs_call,
                                     a.start_point[0] + 1,
-                                    (a.start_byte, a.end_byte), rhs_q))
+                                    (a.start_byte, a.end_byte), rhs_q,
+                                    _const_text(source, right)))
 
     calls: list = []
     _walk(body, {"call"}, stop, calls)
@@ -703,7 +740,7 @@ def _facts_py(source, fn) -> FnFacts:
         top_call = (_callee_name(source, child.child_by_field_name("function"), "py")
                     if child is not None and child.type == "call" else None)
         facts.returns.append(ReturnExpr(ids, top_call, (r.start_byte, r.end_byte)))
-    facts.regions = _build_regions(body, "py")
+    facts.regions = _build_regions(body, "py", source, facts.assigns)
     return facts
 
 
@@ -756,7 +793,8 @@ def _facts_js(source, fn) -> FnFacts:
                                     rhs_call_name(value), d.start_point[0] + 1,
                                     (d.start_byte, d.end_byte),
                                     _rhs_qualified(source, value,
-                                                   {"call_expression"})))
+                                                   {"call_expression"}),
+                                    _const_text(source, value)))
 
     reassigns: list = []
     _walk(body, {"assignment_expression", "augmented_assignment_expression"},
@@ -776,7 +814,8 @@ def _facts_js(source, fn) -> FnFacts:
                                     rhs_call_name(right), a.start_point[0] + 1,
                                     (a.start_byte, a.end_byte),
                                     _rhs_qualified(source, right,
-                                                   {"call_expression"})))
+                                                   {"call_expression"}),
+                                    _const_text(source, right)))
 
     calls: list = []
     _walk(body, {"call_expression"}, stop, calls)
@@ -815,7 +854,7 @@ def _facts_js(source, fn) -> FnFacts:
         top_call = (_callee_name(source, child.child_by_field_name("function"), "js")
                     if child is not None and child.type == "call_expression" else None)
         facts.returns.append(ReturnExpr(ids, top_call, (r.start_byte, r.end_byte)))
-    facts.regions = _build_regions(body, "js")
+    facts.regions = _build_regions(body, "js", source, facts.assigns)
     return facts
 
 
@@ -1092,7 +1131,8 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                                     _rhs_call(source, rhs_node, calls_t, idset),
                                     n.start_point[0] + 1,
                                     (n.start_byte, n.end_byte),
-                                    _rhs_qualified(source, rhs_node, calls_t)))
+                                    _rhs_qualified(source, rhs_node, calls_t),
+                                    _const_text(source, rhs_node)))
 
     # chamadas
     calls: list = []
@@ -1153,7 +1193,7 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                 facts.returns.append(
                     ReturnExpr(ids, _rhs_call(source, last, calls_t, idset),
                                (last.start_byte, last.end_byte)))
-    facts.regions = _build_regions(body, lang)
+    facts.regions = _build_regions(body, lang, source, facts.assigns)
     return facts
 
 

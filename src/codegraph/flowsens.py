@@ -30,6 +30,8 @@ estudo) `Taint_lval_env` — ambiente por-lvalue com add/clean.
 
 from __future__ import annotations
 
+import ast
+import re
 from dataclasses import dataclass, field
 
 from .dataflow import (ArgFlow, Flow, _is_tainted,
@@ -145,6 +147,10 @@ class Span:
 class Branch:
     arms: list                 # list[Seq]
     has_else: bool             # sem else existe o caminho que PULA o bloco
+    # Índice do ÚNICO braço que executa, quando a condição é decidível em tempo
+    # de compilação; -1 quando nenhum executa; None quando não dá para decidir
+    # (o caso normal). Ver `fold_condition`.
+    taken: int | None = None
 
 
 @dataclass
@@ -161,7 +167,133 @@ def _ctrl(family: str):
     return _CTRL.get(family)
 
 
-def build_regions(body_node, key: str) -> Seq:
+# --- condição decidível em tempo de compilação -------------------------------
+#
+# Medido no OWASP Benchmark: 51% de TODOS os falsos positivos são ramo cuja
+# condição não depende de nada externo:
+#
+#     int num = 86;
+#     if ((7 * 42) - num > 200) bar = "constante"; else bar = param;
+#
+# `(7*42)-86 = 208 > 200` é sempre verdadeiro, então `bar` NUNCA recebe o dado
+# sujo. Unir os dois braços é o comportamento correto de uma may-analysis — e
+# é também o que produz o achado errado.
+#
+# Um fold ERRADO apaga vulnerabilidade real em silêncio, que é o pior defeito
+# possível aqui. Por isso o avaliador é por LISTA DE PERMISSÃO e devolve None a
+# qualquer sinal de dúvida: nome não resolvido, operador fora da lista, chamada,
+# acesso a campo, índice. Divisão fica de fora de propósito — `/` é inteira em
+# Java e real em Python, e um avaliador que erra a semântica é pior que um que
+# se recusa a decidir.
+
+_LITERAL = re.compile(r"""^(?:-?\d+|'[^'\\]'|"[^"\\]*"|true|false|True|False)$""")
+
+_BIN = {ast.Add: lambda a, b: a + b, ast.Sub: lambda a, b: a - b,
+        ast.Mult: lambda a, b: a * b, ast.Mod: lambda a, b: a % b}
+_CMP = {ast.Lt: lambda a, b: a < b, ast.Gt: lambda a, b: a > b,
+        ast.LtE: lambda a, b: a <= b, ast.GtE: lambda a, b: a >= b,
+        ast.Eq: lambda a, b: a == b, ast.NotEq: lambda a, b: a != b}
+
+
+def is_literal(text: str) -> bool:
+    """O texto é um literal simples? (inteiro, char, string, booleano)
+
+    Comparação textual de propósito: serve às 19 gramáticas sem uma tabela de
+    node types por linguagem, e o custo de errar é só deixar de folding."""
+    return bool(_LITERAL.match(text.strip()))
+
+
+def _py_literal(text: str):
+    t = text.strip()
+    if t in ("true", "True"):
+        return True
+    if t in ("false", "False"):
+        return False
+    try:
+        return ast.literal_eval(t)
+    except (ValueError, SyntaxError):
+        return None
+
+
+def _eval(node, consts):
+    """Valor de um nó da AST Python, ou None se não for decidível."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, (int, bool, str)) else None
+    if isinstance(node, ast.Name):
+        return _py_literal(consts[node.id]) if node.id in consts else None
+    if isinstance(node, ast.UnaryOp):
+        v = _eval(node.operand, consts)
+        if v is None or isinstance(v, str):
+            return None
+        if isinstance(node.op, ast.USub):
+            return -v
+        if isinstance(node.op, ast.UAdd):
+            return +v
+        if isinstance(node.op, ast.Not):
+            return not v
+        return None
+    if isinstance(node, ast.BinOp):
+        fn = _BIN.get(type(node.op))
+        a, b = _eval(node.left, consts), _eval(node.right, consts)
+        if fn is None or a is None or b is None:
+            return None
+        if isinstance(a, str) or isinstance(b, str):
+            return None
+        try:
+            return fn(a, b)
+        except (ZeroDivisionError, TypeError, OverflowError):
+            return None
+    if isinstance(node, ast.Compare):
+        if len(node.ops) != 1 or len(node.comparators) != 1:
+            return None
+        fn = _CMP.get(type(node.ops[0]))
+        a, b = _eval(node.left, consts), _eval(node.comparators[0], consts)
+        if fn is None or a is None or b is None:
+            return None
+        try:
+            return fn(a, b)
+        except TypeError:
+            return None
+    if isinstance(node, ast.BoolOp):
+        vals = [_eval(v, consts) for v in node.values]
+        if any(v is None for v in vals):
+            return None
+        return (all(vals) if isinstance(node.op, ast.And) else any(vals))
+    return None
+
+
+def fold_condition(text: str, consts: dict) -> bool | None:
+    """A condição é decidível com o que sabemos? True/False, ou None.
+
+    O texto é lido com o parser do PRÓPRIO Python. A aritmética e as comparações
+    de Java, C, C#, JS, Go e PHP são sintaticamente iguais às de Python nessa
+    fatia; `&&`/`||` são traduzidos. O que Python não parseia — cast, chamada,
+    `instanceof` — vira erro de sintaxe e devolve None, que é o resultado certo.
+    """
+    if not text or len(text) > 200:
+        return None
+    t = text.strip()
+    while t.startswith("(") and t.endswith(")"):
+        t = t[1:-1].strip()                 # `if (cond)` do C/Java
+    t = t.replace("&&", " and ").replace("||", " or ")
+    if any(bad in t for bad in ("=", "!", "~", "&", "|", "^", "/", "<<", ">>")):
+        # `=` sozinho seria atribuição; `!`/`~` e os bit-a-bit não estão
+        # modelados. `==`/`!=`/`<=`/`>=` reentram pela troca abaixo.
+        t2 = t.replace("==", "\0EQ\0").replace("!=", "\0NE\0") \
+              .replace("<=", "\0LE\0").replace(">=", "\0GE\0")
+        if any(bad in t2 for bad in ("=", "!", "~", "&", "|", "^", "/",
+                                     "<<", ">>")):
+            return None
+    try:
+        tree = ast.parse(t, mode="eval")
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        return None
+    v = _eval(tree.body, consts)
+    return None if v is None or isinstance(v, str) else bool(v)
+
+
+def build_regions(body_node, key: str, source: bytes | None = None,
+                  consts: dict | None = None) -> Seq:
     """CFG estruturada a partir da AST do corpo da função.
 
     `key` é "py"/"js" ou o nome da linguagem (família GEN).
@@ -185,25 +317,69 @@ def build_regions(body_node, key: str) -> Seq:
         t = child.type
         if t in cfg["branch"] or t in cfg["loop"]:
             bodies = [s for s in child.named_children if s.type in cfg["body"]]
+            if "if" in t:
+                # `if (c) a = 1; else a = 2;` — SEM chaves os ramos não são nós
+                # de corpo, e a varredura por tipo devolvia lista vazia: o `if`
+                # inteiro virava um braço só. Os campos `consequence`/
+                # `alternative` existem nas duas formas, então usá-los cobre a
+                # com chaves (dá o mesmo resultado) e a sem (que estava errada).
+                campos = [child.child_by_field_name(f)
+                          for f in ("consequence", "alternative")]
+                campos = [c for c in campos if c is not None]
+                if campos:
+                    bodies = campos
             if not bodies:
                 # gramática sem nó de corpo: trata o nó todo como braço único
                 arm = Seq([Span(child.start_byte, child.end_byte)])
                 seq.items.append(Loop(arm) if t in cfg["loop"]
                                  else Branch([arm], has_else=False))
                 continue
-            # a condição (filhos que NÃO são corpo) executa incondicionalmente
+            # a condição (filhos que NÃO são corpo) executa incondicionalmente.
+            # Comparar por POSIÇÃO, não por node type: com `if` sem chaves o
+            # ramo é um `expression_statement`, que não está em `cfg["body"]` —
+            # comparando por tipo ele entrava aqui E como braço, e um fato
+            # avaliado duas vezes, uma delas fora do ramo, é fato avaliado no
+            # ambiente errado.
+            corpos = {(b.start_byte, b.end_byte) for b in bodies}
             for sub in child.named_children:
-                if sub.type not in cfg["body"]:
+                if (sub.start_byte, sub.end_byte) not in corpos:
                     seq.items.append(Span(sub.start_byte, sub.end_byte))
             if t in cfg["loop"]:
-                inner = Seq([build_regions(b, key) for b in bodies])
+                inner = Seq([build_regions(b, key, source, consts)
+                             for b in bodies])
                 seq.items.append(Loop(inner))
             else:
-                arms = [build_regions(b, key) for b in bodies]
-                seq.items.append(Branch(arms, has_else=len(bodies) >= 2))
+                arms = [build_regions(b, key, source, consts) for b in bodies]
+                tem_else = len(bodies) >= 2
+                seq.items.append(
+                    Branch(arms, has_else=tem_else,
+                           taken=_arm_taken(child, cfg, source, consts,
+                                            len(bodies))))
         else:
             seq.items.append(Span(child.start_byte, child.end_byte))
     return seq
+
+
+def _arm_taken(node, cfg, source, consts, n_bodies) -> int | None:
+    """Índice do único braço que executa, se a condição for decidível.
+
+    Só para `if`/`unless`: um `switch` precisaria casar o seletor com cada
+    rótulo, e um `try` não tem condição nenhuma. Fora desses casos devolve None
+    e o motor volta a unir os braços, como sempre fez."""
+    if source is None or not consts or n_bodies == 0 or n_bodies > 2:
+        return None
+    if "if" not in node.type:                  # if_statement / if_expression
+        return None
+    cond = node.child_by_field_name("condition")
+    if cond is None:
+        return None
+    texto = source[cond.start_byte:cond.end_byte].decode("utf-8", "replace")
+    v = fold_condition(texto, consts)
+    if v is None:
+        return None
+    if v:
+        return 0                               # só o "então"
+    return 1 if n_bodies >= 2 else -1          # o "senão", ou nada
 
 
 # --- avaliação ---------------------------------------------------------------
@@ -313,6 +489,12 @@ class _Eval:
         if isinstance(region, Span):
             return self.span(region, env, record)
         if isinstance(region, Branch):
+            if region.taken is not None:
+                # condição decidida: só um caminho existe de verdade. Unir com
+                # o braço morto seria propagar sujeira que nunca chega lá.
+                if region.taken < 0:
+                    return set(env)                       # nenhum braço executa
+                return self.run(region.arms[region.taken], set(env), record)
             out = set() if region.has_else else set(env)   # sem else: pode pular
             for arm in region.arms:
                 out |= self.run(arm, set(env), record)

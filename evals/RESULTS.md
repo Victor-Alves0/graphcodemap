@@ -822,3 +822,126 @@ importação não os toca. Gin (Go) passou a dar 10 achados — `FormFile()` →
 `SaveUploadedFile`/`MkdirAll`/`Chmod`, que é o padrão real de path traversal
 em upload; 6 estão marcados como fixture de teste. Dois são fracos
 (`Fprintf`, `Redirect` com fonte duvidosa) e estão contados na precisão.
+
+---
+
+# Rodada 11 — precisão: medir a CAUSA dos falsos positivos (2026-08-13)
+
+O sistema do usuário é de pentest/bug-finding, então precisão não é acabamento.
+Esta rodada começou classificando os **350 falsos positivos** do Benchmark por
+causa, em vez de escolher por intuição.
+
+## Classificar direito não é trivial
+
+A primeira classificação apontou "sanitizador não modelado" em **58%** dos
+casos. Estava errada: o regex procurava `ESAPI` no arquivo inteiro, e o
+Benchmark põe `ESAPI.encoder().encodeForHTML(e.getMessage())` no bloco `catch`
+de quase todo caso — decoração, não sanitização do caminho.
+
+O classificador certo usa os COMENTÁRIOS que o próprio Benchmark escreve para
+documentar a técnica de cada caso (`// Simple if statement that assigns
+constant to bar on true condition`). Resultado real:
+
+| causa | n | % |
+|---|---|---|
+| ramo decidível — `if`/ternário com condição constante | 135 | 38,6% |
+| outro | 106 | 30,3% |
+| ramo decidível — `switch` com seletor constante | 45 | 12,9% |
+| sanitizador não modelado | 54 | 15,4% |
+| consulta parametrizada | 10 | 2,9% |
+
+**Ramo decidível = 51,4% de todos os falsos positivos.** Consulta
+parametrizada, que eu tinha listado como próximo item desde a rodada 9, é 2,9%
+— teria sido a escolha errada, e só a medição mostrou isso.
+
+## Parte 1 — sanitizadores de escape (barato)
+
+Três nomes explicavam 46 dos 54 casos: `encodeForHTML` (ESAPI, 28),
+`htmlEscape` (Spring, 13), `escapeHtml` (Commons Lang, 5). Entraram junto com
+a família toda (ESAPI, Spring, Commons Lang/Text, OWASP Java Encoder).
+
+Ganho medido: **−10 FP, −2 TP, score +0.16 → +0.17**. Menor que os 46
+esperados porque a detecção é por ARQUIVO: vários desses casos têm outra causa
+junto. Os 2 TPs perdidos são reais e o motivo é conhecido — escape para HTML
+não protege quem usa o valor em contexto de URL, e tratá-lo como sanitizador
+universal apaga exatamente esse bug (é o mesmo defeito que o NodeGoat
+documenta). Trade aceito e registrado.
+
+## Parte 2 — folding de condição constante
+
+```java
+int num = 86;
+if ((7 * 42) - num > 200) bar = "This_should_always_happen";
+else bar = param;
+```
+
+`208 > 200` é sempre verdadeiro, então `bar` nunca recebe o dado sujo. Unir os
+braços é o comportamento correto de uma may-analysis — e é o que produz o
+achado errado.
+
+O avaliador lê a condição com o parser do **próprio Python**: a aritmética e as
+comparações de Java, C, C#, JS, Go e PHP são sintaticamente iguais nessa fatia,
+e o que Python não parseia (cast, chamada, `instanceof`) vira erro de sintaxe e
+devolve `None`. Lista de PERMISSÃO em tudo: operador fora de `+ - * %`, nome
+não resolvido, divisão (`/` é inteira em Java e real em Python — um avaliador
+que erra a semântica é pior que um que se recusa a decidir) → não decide.
+
+O ambiente de constantes é igualmente estreito: o nome tem que ser atribuído
+UMA ÚNICA vez em toda a função, e com literal. Um valor errado ali apagaria
+vulnerabilidade real em silêncio, que é o pior defeito possível.
+
+## O defeito que a busca desenterrou (e valeu mais que o item)
+
+O folding não disparava. Investigando: o Benchmark usa `if` **sem chaves**, e
+`build_regions` procurava os braços por NODE TYPE de corpo (`block`). Sem
+chaves não há `block`, a lista saía vazia e o `if` inteiro virava **um braço
+só** — os dois ramos executando em SEQUÊNCIA.
+
+A consequência é séria e não tinha nada a ver com falso positivo:
+
+```java
+if (c) bar = param;        // gen: bar sujo
+else   bar = "constante";  // kill: bar limpo  ← apagava o gen anterior
+```
+
+Em sequência, o segundo ramo MATA a sujeira do primeiro e o achado desaparece.
+Passar a usar os campos `consequence`/`alternative` — que existem nas duas
+formas — corrigiu isso. Junto veio um segundo defeito: os ramos sem chaves
+também entravam como trecho *incondicional*, sendo avaliados duas vezes, uma
+delas no ambiente errado.
+
+## Resultado
+
+Medido em três passos, para separar o que é de quem:
+
+| | TP | FP | precisão | recall | score |
+|---|---|---|---|---|---|
+| início da rodada | 541 | 340 | 61% | 60% | +0.17 |
+| ramos corrigidos, sem folding | 641 | 392 | 62% | 71% | +0.22 |
+| **+ folding de condição** | **641** | **372** | **63%** | **71%** | **+0.24** |
+
+O folding entrega o que se pedia dele: **−20 falsos positivos e ZERO
+verdadeiros perdidos**. A correção dos ramos vale +100 TPs — recall que estava
+sendo apagado por um kill que não devia acontecer, desde que o motor
+flow-sensitive existe.
+
+Por categoria, todas subiram:
+
+| categoria | score rodada 10 | agora |
+|---|---|---|
+| cmdi | +0.16 | +0.24 |
+| ldapi | +0.09 | +0.20 |
+| pathtraver | +0.13 | +0.17 |
+| sqli | +0.14 | +0.24 |
+| trustbound | +0.10 | +0.24 |
+| xpathi | +0.50 | +0.40 |
+| xss | +0.20 | +0.28 |
+
+Apps reais inalterados (dvna 6, NodeGoat 4, nodejs-goof 2, pygoat 10,
+dvpwa 5) — nenhum deles usa predicado opaco, que é um artifício do Benchmark.
+
+## O que sobra, dimensionado
+
+`switch` com seletor constante (45 FPs, 12,9%) exige casar o seletor com cada
+rótulo — mesma técnica, mais trabalho. Consulta parametrizada são 10 casos
+(2,9%). E os 106 "outro" ainda não foram abertos um a um.

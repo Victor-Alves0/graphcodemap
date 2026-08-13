@@ -134,6 +134,28 @@ _CURATED: dict[str, dict[str, set[str]]] = {
             # trust boundary: só na sessão, não em qualquer objeto
             "getSession.setAttribute", "getSession.putValue",
         },
+        # Escape de saída. Medido no OWASP Benchmark: sanitizador não modelado
+        # respondia por 15% de TODOS os falsos positivos, e três nomes
+        # explicavam 46 dos 54 casos — `encodeForHTML` (ESAPI, 28),
+        # `htmlEscape` (Spring, 13) e `escapeHtml` (Commons Lang, 5).
+        # Não modelar o escape é acusar exatamente quem se defendeu.
+        "sanitizers": {
+            # OWASP ESAPI
+            "encodeForHTML", "encodeForHTMLAttribute", "encodeForJavaScript",
+            "encodeForCSS", "encodeForURL", "encodeForXML",
+            "encodeForXMLAttribute", "encodeForXPath", "encodeForLDAP",
+            "encodeForDN", "encodeForSQL", "encodeForOS", "encodeForVBScript",
+            # Spring
+            "htmlEscape", "javaScriptEscape",
+            # Apache Commons Lang / Text
+            "escapeHtml3", "escapeHtml4", "escapeXml", "escapeXml10",
+            "escapeXml11", "escapeEcmaScript", "escapeJava",
+            "escapeJavaScript", "escapeSql",
+            # OWASP Java Encoder
+            "forHtml", "forHtmlContent", "forHtmlAttribute", "forJavaScript",
+            "forUri", "forUriComponent", "forXml", "forCssString",
+            "forXmlContent", "forXmlAttribute",
+        },
     },
     # --- Node/Express/Koa/Fastify --------------------------------------------
     # Quase tudo aqui é QUALIFICADO (`receptor.método`). O motivo é o mesmo do

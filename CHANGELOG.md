@@ -22,6 +22,26 @@ OpenTaint, Graphify) lida no código-fonte, e medido contra gabarito real.
   *chamada*; o novo `flow_evidence` mede a evidência do *fluxo*
   (flow-sensitive vs over-approximated). Um caminho todo `certain` pode ter
   fluxo over-aproximado — juntar os dois num rótulo escondia isso.
+- **Ramo `if` sem chaves era avaliado em SEQUÊNCIA — recall apagado em
+  silêncio.** `build_regions` procurava os braços por node type de corpo
+  (`block`); sem chaves não existe `block`, a lista saía vazia e o `if` inteiro
+  virava um braço só. Com isso `if (c) bar = param; else bar = "const";`
+  executava os dois em sequência e o segundo **matava** a sujeira do primeiro:
+  o achado sumia. Passou a usar os campos `consequence`/`alternative`, que
+  existem nas duas formas. **+100 verdadeiros positivos** no OWASP Benchmark
+  (recall 60% → 71%). Defeito presente desde que o motor flow-sensitive existe.
+- **Folding de condição constante** (`if ((7*42) - num > 200)` com `num = 86`
+  decide sozinho): o braço morto deixa de contribuir. Medido: **−20 falsos
+  positivos e ZERO verdadeiros perdidos**. O avaliador é por lista de permissão
+  e recusa-se a decidir a qualquer sinal de dúvida — divisão fica de fora
+  porque `/` é inteira em Java e real em Python, e um avaliador que erra a
+  semântica é pior que um que não decide. Escolhido por medição: classificando
+  os 350 falsos positivos por causa, **ramo decidível é 51,4%** — e "consulta
+  parametrizada", que estava na minha lista como próximo item, é 2,9%.
+- **Sanitizadores de escape** (ESAPI, Spring, Commons Lang/Text, OWASP Java
+  Encoder). Três nomes explicavam 46 dos 54 casos. Custo honesto: −2
+  verdadeiros positivos, porque escape para HTML não protege uso em contexto de
+  URL e tratá-lo como sanitizador universal apaga esse bug.
 - **Modelos MIT do CodeQL importados: recall de 31% → 60% no OWASP Benchmark**
   (precisão 64% → 61%, score +0.12 → **+0.16**, F1 0.42 → 0.61). Os arquivos
   `*.model.yml` ("Models as Data") de `github/codeql` são **MIT** e são tabelas

@@ -151,9 +151,10 @@ Trust is built by being honest about the boundaries:
   structure, not substring matching.
 - ⚠️ **Treat dataflow/taint findings as candidates.** It is *may-taint* — it
   over-approximates on purpose, so a finding is a lead to verify, not a verdict.
-  Measured on the OWASP Benchmark: **64% precision, 31% recall** (see
-  [evals/RESULTS.md](evals/RESULTS.md)). That is not competitive with a mature
-  SAST, and we publish it rather than claim otherwise.
+  Measured on the OWASP Benchmark: **63% precision, 71% recall** (score
+  TPR−FPR = +0.24; see [evals/RESULTS.md](evals/RESULTS.md), which records how
+  every number moved and why). Still short of a mature SAST, and published as
+  measured rather than claimed.
 
 Full, quantified limitations and benchmark methodology: **[FAQ & Limitations](docs/faq.md)**
 and **[evals/RESULTS.md](evals/RESULTS.md)**.
