@@ -1184,3 +1184,93 @@ superglobal é uma folha, sem receptor. Corrigido: **51 achados**.
 
 O Benchmark não se moveu, como esperado: é Java, sem superglobais e sem código
 de nível de arquivo.
+
+---
+
+# Rodada 15 — Ruby/Rails, e o que os números significam (2026-08-13)
+
+## Ruby: 0 → 2 no RailsGoat
+
+Medido antes de escrever regra: o RailsGoat usa `params[:x]` **62 vezes**
+contra 5 de `params.require`. O idioma dominante é justamente o ambíguo —
+`params` também é nome de variável comum em Python e JS (o próprio dvpwa tem um
+dicionário chamado assim), então marcá-lo como fonte global criaria falso
+positivo nas outras linguagens.
+
+A saída foi resolver **na extração**, que é o único ponto onde a linguagem já é
+conhecida sem espalhá-la por todo o motor: `_LANG_BARE_SOURCES` declara fontes
+que só valem naquela gramática, e a atribuição carrega o resultado num campo
+(`rhs_framework_source`).
+
+Os dois achados são vulnerabilidades documentadas do projeto:
+
+```ruby
+# controllers/benefit_forms_controller.rb:25  →  models/benefits.rb:15
+file = params[:benefits][:upload]
+  … system("cp #{full_file_name} #{data_path}/bak…_#{file.original_filename}")
+
+# controllers/password_resets_controller.rb:6
+user = Marshal.load(Base64.decode64(params[:user]))
+```
+
+O primeiro é **interprocedural**, atravessando controller → model.
+
+## O que os números significam
+
+Vale fixar, porque "recall alto" sozinho não quer dizer nada.
+
+| medida | fórmula | lê-se |
+|---|---|---|
+| **TPR / recall** | TP / (TP + FN) | das vulnerabilidades REAIS, quantas achei |
+| **FPR** | FP / (FP + TN) | do código SEGURO, quanto acusei à toa |
+| **precisão** | TP / (TP + FP) | do que reportei, quanto era verdade |
+| **score** | TPR − FPR | distância da linha do chute aleatório |
+
+Recall alto é bom **só se o FPR não subir junto**. Uma ferramenta que reporta
+tudo tem recall 100% e FPR 100% — score **zero**, igual a chutar. Uma que não
+reporta nada também dá zero. O score existe exatamente para punir os dois
+extremos, e é por isso que ele é a métrica oficial do Benchmark.
+
+Precisão é o que a pessoa SENTE ao ler o relatório; recall é o que ela não vê.
+Para pentest os dois doem de formas diferentes: recall baixo deixa passar o bug,
+precisão baixa faz a ferramenta ser ignorada.
+
+## Onde estamos frente aos placares oficiais
+
+Números publicados no próprio repositório do Benchmark
+(`scorecard/OWASP_Benchmark_Home.html`), portanto do gabarito deles, não nossos:
+
+| ferramenta | TPR | FPR | score |
+|---|---|---|---|
+| FindBugs + FindSecBugs v1.4.6 | 96,8% | 57,7% | **39,1%** |
+| FindBugs + FindSecBugs v1.4.5 | 95,2% | 57,7% | 37,5% |
+| SonarQube Java v3.14 | 50,4% | 17,0% | **33,3%** |
+| SAST-06 (comercial, anônimo) | 85,0% | 52,1% | 32,9% |
+| SAST-04 (comercial, anônimo) | 61,5% | 28,8% | 32,6% |
+| SAST-02 (comercial, anônimo) | 56,1% | 25,5% | 30,6% |
+| **graphcodemap (hoje)** | **74%** | **44%** | **29%** |
+| SAST-03 (comercial, anônimo) | 46,3% | 21,4% | 24,9% |
+| OWASP ZAP (DAST) 2016 | 20,0% | 0,1% | 19,8% |
+| SAST-01 (comercial, anônimo) | 29,0% | 12,2% | 16,7% |
+| SAST-05 (comercial, anônimo) | 47,7% | 29,0% | 18,7% |
+
+**Duas ressalvas que puxam para lados opostos, e nenhuma delas é pequena:**
+
+- **A favor deles:** os placares cobrem as **11** categorias; nós pontuamos
+  só as **7** de taint. As outras quatro são mau uso de API/configuração, que
+  este motor não faz.
+- **A favor nosso, indevidamente:** medimos por ARQUIVO, sem conferir se a
+  categoria do achado bate com a do gabarito. Um scorecard oficial nosso seria
+  MENOR que 29%.
+
+Ou seja: o +0,29 **não é comparável linha a linha** com a tabela acima. O que
+dá para dizer com segurança é a ordem de grandeza — estamos na faixa das
+ferramentas comerciais medianas, acima do SAST-01/03/05 e abaixo do FindSecBugs
+e do SonarQube. Para um motor de 14 mil linhas sem build, é um lugar honesto.
+
+**O que seria "excelente":** ninguém publicado passa de 39%. O FindSecBugs
+chega lá com 96,8% de recall e 57,7% de FPR — mais da metade do código seguro
+acusado, que na prática é insuportável de usar. O SonarQube faz 33,3% com FPR
+de 17%, que é o perfil mais utilizável da lista. **O alvo bom para nós não é
+maximizar o score, é chegar perto do perfil do SonarQube: recall na casa dos
+70% com FPR abaixo de 20%.** Hoje o recall já está lá; o FPR é o que falta.

@@ -191,6 +191,21 @@ _BARE_SOURCE_NAMES = frozenset({
 })
 
 
+# Fontes nuas AMBÍGUAS: só valem na linguagem certa. `params` é *a* fonte do
+# Rails (`params[:id]`, 62 usos no RailsGoat contra 5 de `params.require`), mas
+# `params` também é nome de variável comum em Python e JS — o próprio dvpwa tem
+# um dicionário chamado assim. Por isso estas não entram em
+# `_BARE_SOURCE_NAMES`, que é global: são resolvidas na EXTRAÇÃO, onde a
+# linguagem é conhecida.
+_LANG_BARE_SOURCES = {
+    "ruby": frozenset({"params", "cookies"}),
+}
+
+
+def lang_bare_sources(lang) -> frozenset:
+    return _LANG_BARE_SOURCES.get(lang or "", frozenset())
+
+
 def is_framework_source_path(path) -> bool:
     """O caminho de acesso lê dado de requisição? (`req.query.q`, `$_GET`)
 
@@ -219,12 +234,13 @@ def assign_reads_framework_source(a, sanitizers=frozenset()) -> bool:
     positivo."""
     if getattr(a, "rhs_call", None) is not None and a.rhs_call in sanitizers:
         return False
-    return (is_framework_source_call(getattr(a, "rhs_qualified", None))
+    return (getattr(a, "rhs_framework_source", False)
+            or is_framework_source_call(getattr(a, "rhs_qualified", None))
             or any(is_framework_source_path(p) for p in a.rhs_ids))
 
 
 def _source_reads(source, node, chain, member, call_types, callee,
-                  guards=(), out=None):
+                  guards=(), out=None, bare=frozenset()):
     """Leituras de requisição dentro de uma expressão, cada uma com a cadeia de
     chamadas que a envolve. `chain(source, node)` devolve o caminho de acesso da
     gramática em questão; o resto é igual para todas."""
@@ -237,7 +253,8 @@ def _source_reads(source, node, chain, member, call_types, callee,
     # `$_GET['id']` não tem receptor, e a fonte é a folha lá no fundo. Testar
     # só `t in member` fazia a varredura passar direto por ela.
     p = chain(source, node)
-    if p is not None and is_framework_source_path(p):
+    if p is not None and (is_framework_source_path(p)
+                          or (len(p) == 1 and p[0] in bare)):
         out.append((".".join(p), guards))
         return out
     if t in member and p is not None:
@@ -245,7 +262,8 @@ def _source_reads(source, node, chain, member, call_types, callee,
     if t in call_types:
         guards = guards + (callee(source, node),)
     for c in node.named_children:
-        _source_reads(source, c, chain, member, call_types, callee, guards, out)
+        _source_reads(source, c, chain, member, call_types, callee, guards, out,
+                      bare)
     return out
 
 
@@ -475,6 +493,10 @@ class Assign:
     # então sem isto os dois lados sempre entram em `rhs_ids` juntos.
     # Resolvido em `_resolve_ternaries`, depois que as constantes são conhecidas.
     ternary: tuple | None = None
+    # O RHS lê uma fonte cujo reconhecimento DEPENDE DA LINGUAGEM (`params` do
+    # Rails). Decidido na extração, que é o único ponto onde a linguagem é
+    # conhecida sem espalhá-la por todo o motor.
+    rhs_framework_source: bool = False
 
 
 @dataclass
@@ -1193,6 +1215,8 @@ def _body_of(fn):
 
 
 def _facts_generic(source, fn, lang) -> FnFacts:
+    # fontes que só são fontes NESTA linguagem (`params` do Rails)
+    nuas = lang_bare_sources(lang)
     cfg = GEN[lang]
     idset = cfg["id"]
     calls_t = cfg["calls"]
@@ -1255,7 +1279,8 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                                     _rhs_qualified(source, rhs_node, calls_t),
                                     _const_text(source, rhs_node),
                                     _ternary(source, rhs_node,
-                                             lambda n: _gen_colher(source, n, idset))))
+                                             lambda n: _gen_colher(source, n, idset)),
+                                    any(len(q) == 1 and q[0] in nuas for q in rids)))
 
     # chamadas
     calls: list = []
@@ -1277,7 +1302,7 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                 reads = _source_reads(
                     source, arg, lambda s, n: _gen_chain(s, n, idset),
                     _GEN_MEMBER, calls_t,
-                    lambda s, n: _callee_of(s, n, idset))
+                    lambda s, n: _callee_of(s, n, idset), bare=nuas)
                 if reads:
                     cs.arg_sources[pos] = reads
                 cs.args.append((pos, ids))
