@@ -34,6 +34,7 @@ quem só rodou `pytest` seria o oposto de robustez."""
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -208,3 +209,118 @@ def test_telemetry_is_present_and_coherent(analysed, name):
     assert data["elapsed_ms"] >= 0 and data["steps"] >= 0
     # se truncou, tem que dizer; se não truncou, não pode alegar corte
     assert (data["limit_hit"] is not None) == bool(env.truncated)
+
+
+# ============================================================================
+# D. RECALL: um oráculo INDEPENDENTE do motor
+#
+# Os testes acima são de precisão — provam que o que o motor DIZ se sustenta.
+# Nenhum deles pega o defeito oposto, e mais grave: o motor calar sobre uma
+# vulnerabilidade óbvia. Um scanner que não reporta nada passa em todos eles.
+#
+# Por isso o oráculo aqui NÃO usa a maquinaria do motor. Ele lê o texto do
+# repositório com uma regra deliberadamente burra e estreita:
+#
+#     uma linha que chama um SINK conhecido e, na MESMA linha, lê dado de
+#     requisição, sem nenhum sanitizer à vista, é uma vulnerabilidade.
+#
+# Estreito de propósito. Cruzar a fronteira da linha exigiria reimplementar a
+# análise — e um oráculo que reimplementa o motor não testa nada, só concorda
+# consigo mesmo. Ficando no caso de uma linha só, ele é conferível a olho nu, e
+# o que ele acusa é indefensável: se `eval(req.body.x)` está escrito ali e o
+# motor não falou, o motor perdeu.
+#
+# É dinâmico como o resto: a lista sai do conteúdo atual dos arquivos, então
+# muda sozinha quando o upstream muda.
+# ============================================================================
+
+_SRC_TOKEN = re.compile(
+    r"\b(?:req|request)\s*\.\s*(?:POST|GET|body|query|params|form|args|json|"
+    r"files|FILES|cookies|headers|values|payload|data|match_info)\b")
+_COMMENT = re.compile(r"^\s*(?://|#|\*|/\*)")
+
+
+def _calls_sink(line: str, sinks) -> str | None:
+    """O nome do sink chamado nesta linha, se houver.
+
+    Casar por substring acusaria `res.download(` como o sink `load` — foi o que
+    a primeira versão fez, e uma falha inventada pelo próprio oráculo é pior que
+    a lacuna que ele deveria pegar. Exige fronteira à esquerda, mas ACEITA o
+    ponto: `mathjs.eval(` e `db.query(` são o caso normal."""
+    for s in sinks:
+        if re.search(rf"(?<![A-Za-z0-9_$]){re.escape(s)}\s*\(", line):
+            return s
+    return None
+_CODE_EXT = {".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".rb", ".php"}
+# vendorizado/gerado: não é o código do app, e minificado gera linha gigante
+_SKIP_DIR = {"node_modules", "vendor", "assets", "dist", "build", "static",
+             ".git", "site-packages", "migrations", "test", "tests"}
+
+
+def _rules_for(repo: Path):
+    from codegraph.taint_rules import load_rules
+
+    return load_rules(repo, {"python", "javascript", "typescript", "ruby", "php"})
+
+
+def _obvious_vulns(repo: Path) -> list[tuple[str, int, str, str]]:
+    """(path, linha, sink, texto) para cada linha indefensável do repositório."""
+    rules = _rules_for(repo)
+    out = []
+    for p in repo.rglob("*"):
+        if p.suffix not in _CODE_EXT or not p.is_file():
+            continue
+        rel = p.relative_to(repo)
+        if _SKIP_DIR & set(rel.parts):
+            continue
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for i, line in enumerate(text.splitlines(), 1):
+            if len(line) > 400 or _COMMENT.match(line):
+                continue          # minificado ou comentado: não é código vivo
+            if not _SRC_TOKEN.search(line):
+                continue
+            if any(s in line for s in rules.sanitizers):
+                continue          # há um sanitizer na linha: indecidível a olho nu
+            hit = _calls_sink(line, rules.sinks)
+            if hit is not None:
+                out.append((rel.as_posix(), i, hit, line.strip()[:90]))
+    return out
+
+
+@pytest.mark.parametrize("name", _IDS)
+def test_no_obvious_vulnerability_is_missed(analysed, name):
+    """SEM SILÊNCIO DIANTE DO ÓBVIO — o contrapeso de 'sem caminho, sem achado'."""
+    repo, data, _env = analysed[name]
+    esperados = _obvious_vulns(repo)
+    if not esperados:
+        pytest.skip("este repositório não tem fonte→sink na mesma linha")
+    achados = {(f["sink"]["site_path"], f["sink"]["line"]) for f in data["findings"]}
+    perdidos = [e for e in esperados if (e[0], e[1]) not in achados]
+    assert not perdidos, (
+        f"{len(perdidos)}/{len(esperados)} vulnerabilidades óbvias NÃO reportadas:\n  "
+        + "\n  ".join(f"{p}:{ln} [{sink}] {txt}" for p, ln, sink, txt in perdidos[:10]))
+
+
+@pytest.mark.parametrize("name", _IDS)
+def test_origin_of_a_direct_read_names_the_request(analysed, name):
+    """Quando a fonte é lida direto no argumento do sink, a origem tem que
+    apontar para a linha DAQUELA leitura — não para uma linha qualquer da
+    função. Sem isto o achado é verdadeiro mas a explicação é ficção."""
+    repo, data, _env = analysed[name]
+    diretos = {(p, ln) for p, ln, _s, _t in _obvious_vulns(repo)}
+    if not diretos:
+        pytest.skip("este repositório não tem fonte→sink na mesma linha")
+    ruins = []
+    for f in data["findings"]:
+        s, o = f["sink"], f["origin"]
+        if (s["site_path"], s["line"]) not in diretos:
+            continue
+        texto = _line_of(repo / o["path"], o["line"]) or ""
+        if not _SRC_TOKEN.search(texto):
+            ruins.append(f"{s['site_path']}:{s['line']} → origem "
+                         f"{o['path']}:{o['line']} não lê requisição: "
+                         f"{texto.strip()[:70]}")
+    assert not ruins, "origem incoerente:\n  " + "\n  ".join(ruins[:5])

@@ -1025,13 +1025,19 @@ class QueryEngine:
                     "resolved": callee is not None,
                 }
                 cur_conf = conf_min(path_conf, step["confidence"]) if callee else path_conf
+                # leitura escrita DENTRO do argumento (`eval(req.body.x)`): a
+                # origem é aqui mesmo. Herdar a origem da função inteira daria
+                # um achado verdadeiro com uma explicação inventada.
+                here = origin if af.source is None else {
+                    "kind": "source", "func_fqn": sym_row["fqn"],
+                    "path": sym_row["path"], "line": af.line, "what": af.source}
                 # casa pelo nome simples OU pelo qualificado receptor.método:
                 # `getWriter.println` é sink de XSS, `out.println` não é.
                 if af.callee in rules.sinks or (
                         af.qualified is not None and af.qualified in rules.sinks):
                     if len(findings) < max_findings:
                         findings.append({
-                            "origin": origin,
+                            "origin": here,
                             "sink": {"callee": af.callee, "callee_fqn": step["callee_fqn"],
                                      "site_path": sym_row["path"], "line": af.line,
                                      "arg_index": af.arg_index, "via": af.via,
@@ -1053,7 +1059,7 @@ class QueryEngine:
                         crow = self._crow(callee["dst"])
                         cf, _ = self._df_facts(crow, cache) if crow else (None, None)
                         if cf and af.arg_index < len(cf.params):
-                            trace(crow, {cf.params[af.arg_index]}, origin,
+                            trace(crow, {cf.params[af.arg_index]}, here,
                                   steps + [step], d + 1, visited, cur_conf,
                                   path_flow)
 
@@ -1105,11 +1111,20 @@ class QueryEngine:
                     break
                 scanned += 1
                 seeds = df.source_sites(f, eff_sources, rules.sanitizers)
-                if not seeds:
+                # a fonte também pode estar escrita DENTRO do argumento, sem
+                # passar por variável — aí não há semente, mas há vulnerabilidade
+                # (`eval(req.body.x)`). Sem esta linha a função nem seria varrida.
+                direto = next(((c.line, s) for c in f.calls
+                               for _, s in df.direct_source_args(c, rules.sanitizers)),
+                              None)
+                if not seeds and direto is None:
                     continue
                 names = {n for n, _, _ in seeds}
-                origin = {"kind": "source", "func_fqn": r["fqn"], "path": r["path"],
-                          "line": seeds[0][1], "what": seeds[0][2] + "()"}
+                origin = ({"kind": "source", "func_fqn": r["fqn"], "path": r["path"],
+                           "line": seeds[0][1], "what": seeds[0][2] + "()"} if seeds
+                          else {"kind": "source", "func_fqn": r["fqn"],
+                                "path": r["path"], "line": direto[0],
+                                "what": direto[1]})
                 trace(r, names, origin, [], 1, {(r["id"], -2)}, None)
                 if len(findings) >= max_findings:
                     budget.note("findings")

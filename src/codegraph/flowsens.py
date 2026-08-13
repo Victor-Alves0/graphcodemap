@@ -33,7 +33,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .dataflow import (ArgFlow, Flow, _is_tainted,
-                       assign_reads_framework_source)
+                       assign_reads_framework_source, direct_source_args)
 
 # --- node types de controle de fluxo, por família de gramática ---------------
 # `body`: filhos que são CORPOS (executam condicionalmente); o que não é corpo
@@ -251,12 +251,20 @@ class _Eval:
         return _kill(env, a.targets)                    # kill: alvo vira limpo
 
     def _record_call(self, c, env: set) -> None:
+        # leitura de requisição escrita DENTRO do argumento: suja no ponto da
+        # chamada, sem depender do ambiente — não há variável para o ambiente
+        # carregar. É a mesma ideia do `from_source` no assign.
+        direto = dict(direct_source_args(c, self.sanitizers))
         for idx, ids in c.args:
             hit = [p for p in ids if _is_tainted(p, env)]
             if hit:
                 self.flow.arg_flows.append(
                     ArgFlow(c.callee, idx, c.line, ".".join(sorted(hit)[0]),
-                            c.qualified))
+                            c.qualified, direto.get(idx)))
+            elif idx in direto:
+                self.flow.arg_flows.append(
+                    ArgFlow(c.callee, idx, c.line, direto[idx], c.qualified,
+                            direto[idx]))
 
     def _record_return(self, r, env: set) -> None:
         if r.top_call is not None and r.top_call in self.sanitizers:

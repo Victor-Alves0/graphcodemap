@@ -22,6 +22,27 @@ OpenTaint, Graphify) lida no código-fonte, e medido contra gabarito real.
   *chamada*; o novo `flow_evidence` mede a evidência do *fluxo*
   (flow-sensitive vs over-approximated). Um caminho todo `certain` pode ter
   fluxo over-aproximado — juntar os dois num rótulo escondia isso.
+- **Fonte lida direto no argumento do sink.** O motor exigia que a sujeira
+  passasse por uma variável: semeava em `x = req.body.q` e via `x` chegar ao
+  sink. Só que a forma mais comum de escrever a vulnerabilidade não tem
+  variável nenhuma — `eval(req.body.preTax)`, `exec('ping ' + req.body.address)`
+  — e nessas o motor ficava **calado**. Agora o argumento que lê a requisição
+  suja no ponto da chamada, e a **origem do achado é aquela leitura**, não uma
+  atribuição anterior que não existe. O sanitizer é honrado com a mesma regra
+  do assign (`f(escape(req.q))` sai limpo), de propósito: as duas metades
+  discordando é o que produz falso positivo. Em dois apps vulneráveis reais,
+  5 de 6 vulnerabilidades indefensáveis eram desta forma — e a única que
+  achávamos era justamente a que passava por variável.
+  **dvna 1 → 3, NodeGoat 0 → 3**, sem mover o OWASP Benchmark (Java usa
+  chamada de fonte, não caminho de atributo) e sem falso positivo novo.
+- **Teste de RECALL com oráculo independente do motor** (`tests/test_real_repos.py`).
+  Todos os invariantes até aqui mediam precisão — nenhum pegava o defeito
+  oposto e mais grave, o motor **calar** sobre o óbvio; um scanner que não
+  reporta nada passava em todos. O oráculo novo lê o texto do repositório com
+  uma regra deliberadamente burra ("um sink e uma leitura de requisição na
+  mesma linha, sem sanitizer à vista") e exige um achado ali. Estreito de
+  propósito: cruzar a fronteira da linha exigiria reimplementar a análise, e um
+  oráculo que reimplementa o motor só concorda consigo mesmo.
 - **Modelagem de framework.** Catálogo de sources/sinks gerado (offline) das
   regras **MIT** do OpenTaint + suplemento curado de JDBC/Spring/processo.
   `exec.Command` (Go) e `FileOutputStream` (Java) eram invisíveis.

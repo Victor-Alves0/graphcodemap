@@ -196,6 +196,30 @@ def assign_reads_framework_source(a, sanitizers=frozenset()) -> bool:
             or any(is_framework_source_path(p) for p in a.rhs_ids))
 
 
+def direct_source_args(c, sanitizers=frozenset()):
+    """Argumentos desta chamada que LEEM a requisição na própria expressão.
+
+    O motor sempre exigiu que a sujeira passasse por uma variável: semeava em
+    `x = req.body.q` e depois via `x` chegar no sink. Só que a forma mais
+    comum de escrever a vulnerabilidade não tem variável nenhuma —
+    `eval(req.body.preTax)`, `exec('ping ' + req.body.address)` — e nessas o
+    motor ficava calado. Dos seis casos indefensáveis em dvna e NodeGoat,
+    cinco eram assim; o único que achávamos era justamente o que passava por
+    variável.
+
+    Rende `(índice, caminho_lido)`. O sanitizer é honrado como no assign: se o
+    argumento É uma chamada a sanitizer, o valor sai limpo. Manter a MESMA
+    regra dos dois lados é o que impede a semeadura e a propagação de
+    discordarem — e duas metades que discordam viram falso positivo."""
+    for idx, ids in c.args:
+        top = c.arg_calls.get(idx)
+        if top is not None and top in sanitizers:
+            continue
+        hit = sorted(p for p in ids if is_framework_source_path(p))
+        if hit:
+            yield idx, ".".join(hit[0])
+
+
 def uses_flow_sensitive(facts, lang: str | None) -> bool:
     """O motor FLOW-SENSITIVE roda mesmo para estes fatos?
 
@@ -291,6 +315,11 @@ class CallSite:
     # `response.getWriter().println` do inofensivo `System.out.println`, que
     # pelo último segmento seriam o mesmo nome. Ver flowsens/taint.
     qualified: str | None = None
+    # índice do argumento → callee do TOPO daquele argumento, quando o argumento
+    # é ele próprio uma chamada. Espelha `Assign.rhs_call`, e pela mesma razão:
+    # é o que permite `f(escape(req.q))` sair limpo. Só o topo, como no assign —
+    # a mesma over-aproximação, mantida idêntica de propósito.
+    arg_calls: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -318,6 +347,11 @@ class ArgFlow:
     line: int
     via: str
     qualified: str | None = None
+    # Preenchido quando a sujeira NÃO veio de uma variável e sim de uma leitura
+    # de requisição escrita dentro do próprio argumento (`eval(req.body.x)`).
+    # Quem reporta usa isto como ORIGEM: a origem é aqui mesmo, não uma
+    # atribuição anterior que não existe.
+    source: str | None = None
 
 
 @dataclass
@@ -590,6 +624,9 @@ def _facts_py(source, fn) -> FnFacts:
             ids: set = set()
             if val is not None:
                 _paths(source, val, ids, _PY_MEMBER)
+                if val.type == "call":
+                    cs.arg_calls[idx] = _callee_name(
+                        source, val.child_by_field_name("function"), "py")
             cs.args.append((idx, ids))
         facts.calls.append(cs)
 
@@ -694,6 +731,9 @@ def _facts_js(source, fn) -> FnFacts:
                 continue
             ids: set = set()
             _paths(source, arg, ids, _JS_MEMBER)
+            if arg.type == "call_expression":
+                cs.arg_calls[pos] = _callee_name(
+                    source, arg.child_by_field_name("function"), "js")
             cs.args.append((pos, ids))
             pos += 1
         facts.calls.append(cs)
@@ -1003,6 +1043,9 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                     continue
                 ids: set = set()
                 _arg_paths(source, arg, idset, ids)
+                top = _rhs_call(source, arg, calls_t, idset)
+                if top is not None:
+                    cs.arg_calls[pos] = top
                 cs.args.append((pos, ids))
                 pos += 1
         facts.calls.append(cs)
@@ -1208,12 +1251,18 @@ def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset()) -> Flow:
                         changed = True
     flow = Flow()
     for c in facts.calls:
+        direto = dict(direct_source_args(c, sanitizers))
         for idx, ids in c.args:
             hit = [p for p in ids if _is_tainted(p, tainted)]
             if hit:
                 via = ".".join(sorted(hit)[0])
                 flow.arg_flows.append(
-                    ArgFlow(c.callee, idx, c.line, via, c.qualified))
+                    ArgFlow(c.callee, idx, c.line, via, c.qualified,
+                            direto.get(idx)))
+            elif idx in direto:
+                flow.arg_flows.append(
+                    ArgFlow(c.callee, idx, c.line, direto[idx], c.qualified,
+                            direto[idx]))
     for r in facts.returns:
         if r.top_call is not None and r.top_call in sanitizers:
             continue

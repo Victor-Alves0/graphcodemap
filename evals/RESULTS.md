@@ -515,3 +515,80 @@ interpretação abstrata sobre inteiros. Fica no roadmap, dimensionado.
   caso do Benchmark tem uma vulnerabilidade pretendida, então é um proxy
   razoável — mas isso **infla** nosso número frente ao placar oficial do OWASP.
   O número real de um scorecard oficial seria menor que 61%/18%.
+
+---
+
+# Rodada 8 — apps vulneráveis REAIS: a fonte lida direto no argumento (2026-08-13)
+
+O OWASP Benchmark é código **gerado**, com estilo uniforme. Ele mede bem o que
+já sabemos tratar e esconde o que o código escrito por gente faz. Esta rodada
+troca o gabarito sintético por quatro aplicações vulneráveis reais e uma
+pergunta desconfortável: *o motor cala sobre o quê?*
+
+## O defeito, medido antes de mexer no código
+
+Levantei à mão as vulnerabilidades indefensáveis de dois apps Node —
+linhas onde um sink conhecido recebe uma leitura de requisição na mesma linha:
+
+| local | código | detectado antes? |
+|---|---|---|
+| dvna `core/appHandler.js:10` | `var query = "… " + req.body.login` → `db.sequelize.query(query)` | **sim** |
+| dvna `core/appHandler.js:39` | `exec('ping -c 2 ' + req.body.address, …)` | não |
+| dvna `core/appHandler.js:197` | `mathjs.eval(req.body.eqn)` | não |
+| NodeGoat `app/routes/contributions.js:32` | `eval(req.body.preTax)` | não |
+| NodeGoat `app/routes/contributions.js:33` | `eval(req.body.afterTax)` | não |
+| NodeGoat `app/routes/contributions.js:34` | `eval(req.body.roth)` | não |
+
+O padrão salta aos olhos: **a única que achávamos era a única que passava por
+uma variável**. O motor semeava em `x = fonte()` e depois via `x` chegar ao
+sink; quando o programador escreve a leitura dentro do próprio argumento, não
+havia semente — e sem semente, o motor nem varria aquela função.
+
+Vale registrar que minha hipótese de trabalho era outra (callbacks anônimos não
+indexados, que travariam Express/Koa/Fastify). A medição a derrubou: dos 203
+callbacks anônimos não indexados em NodeGoat, **3** continham sink, e os três em
+`Gruntfile.js` e testes e2e — nenhuma vulnerabilidade. O item certo só apareceu
+porque o palpite foi medido antes de virar código.
+
+## Resultado
+
+| app | antes | depois |
+|---|---|---|
+| dvna (Node/Express/Sequelize) | 1 | **3** |
+| NodeGoat (OWASP, Node/Express) | 0 | **3** |
+| pygoat (OWASP, Django) | 8 | 8 |
+| dvpwa (aiohttp) | 6 | 6 |
+
+Os 5 achados novos são vulnerabilidades documentadas dos próprios projetos
+(injeção de comando, injeção de código, SSJS injection). **Nenhum falso
+positivo novo**, e o OWASP Benchmark não se moveu (64%/31%/+0.12): Java usa
+*chamada* de fonte (`request.getParameter`), não caminho de atributo, então
+esta forma simplesmente não ocorre lá.
+
+## O contrapeso que faltava na suíte
+
+Todos os invariantes dinâmicos até aqui mediam **precisão** — "sem caminho, sem
+achado". Nenhum media o defeito oposto, que é pior: **um scanner que não
+reporta nada passava em todos eles.**
+
+O teste novo usa um oráculo que não toca na maquinaria do motor: lê o texto do
+repositório procurando "um sink e uma leitura de requisição na mesma linha, sem
+sanitizer à vista" e exige um achado ali. É estreito de propósito — cruzar a
+fronteira da linha exigiria reimplementar a análise, e um oráculo que
+reimplementa o motor não testa nada, só concorda consigo mesmo. Dentro de uma
+linha, o que ele acusa é conferível a olho nu e indefensável.
+
+A primeira versão dele acusou uma falha que **não existia**: casando o sink por
+substring, `res.download(` virou o sink `load`. Um oráculo que inventa falha é
+pior que a lacuna que deveria pegar — passou a exigir fronteira à esquerda
+(aceitando o ponto, para `mathjs.eval(` e `db.query(`).
+
+## Limite conhecido, dito aqui
+
+A guarda de sanitizer no argumento olha só o **topo** da expressão — a mesma
+over-aproximação que o caminho da atribuição sempre teve. `f(escape(req.q))`
+sai limpo; `f("a" + escape(req.q))` não. Mantive as duas metades idênticas de
+propósito: quando semeadura e propagação discordam, a discordância vira falso
+positivo (foi exatamente o bug da rodada anterior). Nos quatro apps testados
+não há **nenhuma** ocorrência viva de argumento sanitizado alimentando um sink,
+então essa guarda não foi exercitada por código real — está dito, não medido.
