@@ -1093,7 +1093,7 @@ class QueryEngine:
                     continue
                 collected.append((dict(r), f))
                 direct = any(rt.top_call in rules.sources for rt in f.returns)
-                seed = df.source_vars(f, rules.sources)
+                seed = df.source_vars(f, rules.sources, rules.sanitizers)
                 if direct or (seed and df.analyze(
                         f, seed, lang=flang, sources=eff_src).reaches_return):
                     src_funcs.add(r["name"])
@@ -1104,7 +1104,7 @@ class QueryEngine:
                 if budget.hit():
                     break
                 scanned += 1
-                seeds = df.source_sites(f, eff_sources)
+                seeds = df.source_sites(f, eff_sources, rules.sanitizers)
                 if not seeds:
                     continue
                 names = {n for n, _, _ in seeds}

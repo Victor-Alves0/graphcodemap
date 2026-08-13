@@ -32,7 +32,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .dataflow import ArgFlow, Flow, _is_tainted
+from .dataflow import (ArgFlow, Flow, _is_tainted,
+                       assign_reads_framework_source)
 
 # --- node types de controle de fluxo, por família de gramática ---------------
 # `body`: filhos que são CORPOS (executam condicionalmente); o que não é corpo
@@ -237,8 +238,10 @@ class _Eval:
         # uma FONTE gera sujeira no ponto do programa. Sem isto o motor mataria
         # a própria semente da varredura: `x = input()` tem RHS sem ids, então
         # cairia no kill — o bug que a bateria de recall pegou.
-        from_source = (not sanitized and a.rhs_call is not None
-                       and a.rhs_call in self.sources)
+        from_source = not sanitized and (
+            (a.rhs_call is not None and a.rhs_call in self.sources)
+            # fonte de FRAMEWORK: `x = request.POST.get(..)` / `x = req.query.q`
+            or assign_reads_framework_source(a, self.sanitizers))
         rhs_hit = (not sanitized) and any(_is_tainted(p, env) for p in a.rhs_ids)
         aug_hit = a.is_aug and any(_is_tainted(t, env) for t in a.targets)
         if from_source or rhs_hit or aug_hit:

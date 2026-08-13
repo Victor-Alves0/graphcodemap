@@ -134,6 +134,68 @@ FLOW_SENSITIVE: frozenset[str] = frozenset({
 })
 
 
+# --- FONTES DE FRAMEWORK -----------------------------------------------------
+# Sem isto o motor não vê nada num app web real: `input()` quase não aparece em
+# produção, e o que aparece é `request.POST.get(...)` / `req.query.q`. Medido
+# nos apps vulneráveis reais pygoat e dvpwa: request.POST.get 32x,
+# request.POST 31x, request.form.get 9x.
+#
+# Duas formas, porque as duas ocorrem:
+#   CHAMADA QUALIFICADA  x = request.POST.get("q")   → receptor.método "POST.get"
+#   ACESSO A ATRIBUTO    x = req.query.q             → caminho ("req","query",…)
+#
+# O casamento é qualificado de propósito: marcar o nome nu `get` como fonte
+# tornaria toda leitura de dicionário uma fonte não-confiável.
+
+# receptor (objeto de requisição) → atributos que carregam dado do usuário
+_REQ_RECEIVERS = frozenset({"request", "req", "self.request"})
+_REQ_ATTRS = frozenset({
+    # Django / Flask / FastAPI / aiohttp
+    "POST", "GET", "form", "args", "json", "data", "body", "files",
+    "cookies", "headers", "values", "query_params", "path_params",
+    "match_info", "rel_url", "raw_post_data", "FILES",
+    # Express / Koa / Fastify
+    "query", "params", "payload",
+    # aiohttp / Starlette: o corpo vem de MÉTODO da própria request
+    # (`await request.post()`, `await request.json()`), não de atributo.
+    # Só casam com receptor de requisição, então o risco de colisão é baixo.
+    "post", "text", "read", "multipart", "stream",
+})
+
+# `<attr>.get(...)` onde <attr> é um atributo de requisição
+FRAMEWORK_SOURCE_CALLS: frozenset[str] = frozenset(
+    {f"{a}.{m}" for a in _REQ_ATTRS for m in ("get", "getlist", "getall", "get_all")}
+)
+
+
+def is_framework_source_path(path) -> bool:
+    """O caminho de acesso lê dado de requisição? (`req.query.q`, `request.POST`)
+
+    Exige receptor de requisição E atributo conhecido — só o atributo seria
+    frouxo demais (`x.data` é qualquer coisa)."""
+    if not isinstance(path, tuple) or len(path) < 2:
+        return False
+    return path[0] in _REQ_RECEIVERS and path[1] in _REQ_ATTRS
+
+
+def is_framework_source_call(qualified: str | None) -> bool:
+    return qualified is not None and qualified in FRAMEWORK_SOURCE_CALLS
+
+
+def assign_reads_framework_source(a, sanitizers=frozenset()) -> bool:
+    """Esta atribuição nasce de uma fonte de framework, por chamada ou acesso.
+
+    `sanitizers` NÃO é opcional na prática: `cid = int(request.match_info[...])`
+    lê uma fonte, mas o valor sai limpo. Sem esta checagem a SEMEADURA da
+    varredura marcaria `cid` como sujo enquanto o motor de propagação o trataria
+    como limpo — as duas metades discordando, e a discordância vira falso
+    positivo."""
+    if getattr(a, "rhs_call", None) is not None and a.rhs_call in sanitizers:
+        return False
+    return (is_framework_source_call(getattr(a, "rhs_qualified", None))
+            or any(is_framework_source_path(p) for p in a.rhs_ids))
+
+
 def uses_flow_sensitive(facts, lang: str | None) -> bool:
     """O motor FLOW-SENSITIVE roda mesmo para estes fatos?
 
@@ -214,6 +276,9 @@ class Assign:
     rhs_call: str | None  # nome do callee se o RHS é uma única chamada
     line: int = 0
     span: tuple[int, int] | None = None
+    # RECEPTOR.MÉTODO do RHS (ex.: "POST.get" em `x = request.POST.get("q")`).
+    # É o que permite reconhecer fonte de framework sem marcar o genérico `get`.
+    rhs_qualified: str | None = None
 
 
 @dataclass
@@ -381,6 +446,24 @@ def _callee_name(source: bytes, fn, family: str) -> str:
     return _text(source, fn).rsplit(".", 1)[-1].split("(", 1)[0].strip()
 
 
+def _rhs_qualified(source: bytes, node, call_types) -> str | None:
+    """`request.POST.get("q")` → "POST.get". None se o RHS não for chamada."""
+    if node is None or node.type not in call_types:
+        return None
+    recv = _receiver_last(source, node)
+    if not recv:
+        return None
+    fn = None
+    for f in ("function", "name", "method"):
+        fn = node.child_by_field_name(f)
+        if fn is not None:
+            break
+    if fn is None:
+        return None
+    meth = _text(source, fn).rsplit(".", 1)[-1].split("(", 1)[0].strip()
+    return f"{recv}.{meth}" if meth and meth != recv else None
+
+
 def _receiver_last(source: bytes, call_node) -> str | None:
     """Último segmento do RECEPTOR da chamada.
 
@@ -480,10 +563,11 @@ def _facts_py(source, fn) -> FnFacts:
         _paths(source, right, rids, _PY_MEMBER)
         rhs_call = (_callee_name(source, right.child_by_field_name("function"), "py")
                     if right.type == "call" else None)
+        rhs_q = _rhs_qualified(source, right, {"call"})
         facts.assigns.append(Assign(_target_paths(source, left, _PY_MEMBER), rids,
                                     a.type == "augmented_assignment", rhs_call,
                                     a.start_point[0] + 1,
-                                    (a.start_byte, a.end_byte)))
+                                    (a.start_byte, a.end_byte), rhs_q))
 
     calls: list = []
     _walk(body, {"call"}, stop, calls)
@@ -569,7 +653,9 @@ def _facts_js(source, fn) -> FnFacts:
         _paths(source, value, rids, _JS_MEMBER)
         facts.assigns.append(Assign(targets, rids, False,
                                     rhs_call_name(value), d.start_point[0] + 1,
-                                    (d.start_byte, d.end_byte)))
+                                    (d.start_byte, d.end_byte),
+                                    _rhs_qualified(source, value,
+                                                   {"call_expression"})))
 
     reassigns: list = []
     _walk(body, {"assignment_expression", "augmented_assignment_expression"},
@@ -587,7 +673,9 @@ def _facts_js(source, fn) -> FnFacts:
         facts.assigns.append(Assign(targets, rids,
                                     a.type == "augmented_assignment_expression",
                                     rhs_call_name(right), a.start_point[0] + 1,
-                                    (a.start_byte, a.end_byte)))
+                                    (a.start_byte, a.end_byte),
+                                    _rhs_qualified(source, right,
+                                                   {"call_expression"})))
 
     calls: list = []
     _walk(body, {"call_expression"}, stop, calls)
@@ -895,7 +983,8 @@ def _facts_generic(source, fn, lang) -> FnFacts:
         facts.assigns.append(Assign(targets, rids, False,
                                     _rhs_call(source, rhs_node, calls_t, idset),
                                     n.start_point[0] + 1,
-                                    (n.start_byte, n.end_byte)))
+                                    (n.start_byte, n.end_byte),
+                                    _rhs_qualified(source, rhs_node, calls_t)))
 
     # chamadas
     calls: list = []
@@ -1134,21 +1223,29 @@ def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset()) -> Flow:
     return flow
 
 
-def source_vars(facts: FnFacts, sources) -> set:
+def source_vars(facts: FnFacts, sources, sanitizers=frozenset()) -> set:
     """Caminhos cujo valor nasce de uma chamada a uma fonte (input não-confiável)."""
     out: set = set()
     for a in facts.assigns:
-        if a.rhs_call is not None and a.rhs_call in sources:
+        if (a.rhs_call is not None and a.rhs_call in sources) or                 assign_reads_framework_source(a, sanitizers):
             out |= a.targets
     return out
 
 
-def source_sites(facts: FnFacts, sources) -> list[tuple]:
+def source_sites(facts: FnFacts, sources, sanitizers=frozenset()) -> list[tuple]:
     """(caminho, linha, fonte) para cada atribuição a partir de uma fonte.
     O caminho é uma tupla (semente para o motor); renderize com '.'.join()."""
     out = []
     for a in facts.assigns:
+        rotulo = None
         if a.rhs_call is not None and a.rhs_call in sources:
-            for t in sorted(a.targets):
-                out.append((t, a.line, a.rhs_call))
+            rotulo = a.rhs_call
+        elif assign_reads_framework_source(a, sanitizers):
+            rotulo = a.rhs_qualified or next(
+                (".".join(p) for p in sorted(a.rhs_ids)
+                 if is_framework_source_path(p)), "request")
+        if rotulo is None:
+            continue
+        for t in sorted(a.targets):
+            out.append((t, a.line, rotulo))
     return out
