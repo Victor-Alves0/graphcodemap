@@ -299,7 +299,7 @@ def uses_flow_sensitive(facts, lang: str | None) -> bool:
 
 
 def analyze(facts, tainted, sanitizers=frozenset(), lang: str | None = None,
-            sources=frozenset()):
+            sources=frozenset(), nonprop=frozenset()):
     """Ponto único de entrada do motor de taint.
 
     Usa o motor FLOW-SENSITIVE quando a linguagem suporta e os fatos têm CFG;
@@ -309,10 +309,10 @@ def analyze(facts, tainted, sanitizers=frozenset(), lang: str | None = None,
     if lang in FLOW_SENSITIVE:
         from .flowsens import analyze_flow
 
-        flow = analyze_flow(facts, tainted, sanitizers, sources)
+        flow = analyze_flow(facts, tainted, sanitizers, sources, nonprop)
         if flow is not None:
             return flow
-    return analyze_facts(facts, tainted, sanitizers)
+    return analyze_facts(facts, tainted, sanitizers, nonprop)
 
 
 def _build_regions(body_node, family: str, source=None, assigns=None):
@@ -1489,7 +1489,8 @@ def extract_facts(source: bytes, fn_node, lang: str) -> FnFacts:
 
 # -- motor de taint (compartilhado) -------------------------------------------
 
-def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset()) -> Flow:
+def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset(),
+                  nonprop=frozenset()) -> Flow:
     """Fixpoint may-taint FIELD-SENSITIVE. O conjunto sujo guarda *caminhos de
     acesso* (tuplas); ler um caminho está sujo se ele ou qualquer prefixo seu
     estiver sujo (`_is_tainted`). `tainted_init` deve conter caminhos — um nome
@@ -1499,8 +1500,9 @@ def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset()) -> Flow:
     while changed:
         changed = False
         for a in facts.assigns:
-            if a.rhs_call is not None and a.rhs_call in sanitizers:
-                continue  # RHS sanitizado → alvo limpo
+            if ((a.rhs_call is not None and a.rhs_call in sanitizers)
+                    or a.line in nonprop):
+                continue  # sanitizado, ou chamada que não devolve o argumento
             rhs_hit = any(_is_tainted(p, tainted) for p in a.rhs_ids)
             aug_hit = a.is_aug and any(_is_tainted(t, tainted) for t in a.targets)
             if rhs_hit or aug_hit:

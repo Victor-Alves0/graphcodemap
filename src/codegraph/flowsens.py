@@ -517,9 +517,13 @@ def _kill(env: set, targets) -> set:
 class _Eval:
     """Interpreta a CFG estruturada propagando o ambiente sujo."""
 
-    def __init__(self, facts, sanitizers, sinks_out: Flow, sources=frozenset()):
+    def __init__(self, facts, sanitizers, sinks_out: Flow, sources=frozenset(),
+                 nonprop=frozenset()):
         self.sanitizers = sanitizers
         self.sources = sources
+        # LINHAS cuja chamada foi resolvida SEMANTICAMENTE (L1) e cujo alvo
+        # comprovadamente não devolve o argumento recebido
+        self.nonprop = nonprop
         self.flow = sinks_out
         # todos os fatos ordenados por posição, para o casamento por span
         self.assigns = sorted(facts.assigns, key=lambda a: (a.span or (0, 0))[0])
@@ -529,7 +533,11 @@ class _Eval:
     # -- transferências --
 
     def _apply_assign(self, a, env: set) -> set:
-        sanitized = a.rhs_call is not None and a.rhs_call in self.sanitizers
+        # `x = f(sujo)` só suja `x` se `f` DEVOLVER o que recebeu. A pergunta
+        # só é feita quando o L1 resolveu a chamada: por NOME o alvo pode ser
+        # outro, e matar sujeira do alvo errado apaga vulnerabilidade real.
+        sanitized = ((a.rhs_call is not None and a.rhs_call in self.sanitizers)
+                     or a.line in self.nonprop)
         # uma FONTE gera sujeira no ponto do programa. Sem isto o motor mataria
         # a própria semente da varredura: `x = input()` tem RHS sem ids, então
         # cairia no kill — o bug que a bateria de recall pegou.
@@ -633,7 +641,8 @@ class _Eval:
         return env
 
 
-def analyze_flow(facts, tainted_init, sanitizers=frozenset(), sources=frozenset()):
+def analyze_flow(facts, tainted_init, sanitizers=frozenset(), sources=frozenset(),
+                 nonprop=frozenset()):
     """Versão flow-sensitive de `dataflow.analyze_facts`.
 
     Usa `facts.regions`, a CFG estruturada montada na EXTRAÇÃO (estrutura pura
@@ -652,7 +661,7 @@ def analyze_flow(facts, tainted_init, sanitizers=frozenset(), sources=frozenset(
         return None                      # extractor ainda não popula spans
     env = {p if isinstance(p, tuple) else (p,) for p in tainted_init}
     flow = Flow()
-    ev = _Eval(facts, sanitizers, flow, sources)
+    ev = _Eval(facts, sanitizers, flow, sources, nonprop)
     ev.run(regions, env)
     # dedupe: o fixpoint de laço pode registrar o mesmo arg_flow 2x
     seen, uniq = set(), []

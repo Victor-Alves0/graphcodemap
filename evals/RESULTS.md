@@ -1274,3 +1274,69 @@ acusado, que na prática é insuportável de usar. O SonarQube faz 33,3% com FPR
 de 17%, que é o perfil mais utilizável da lista. **O alvo bom para nós não é
 maximizar o score, é chegar perto do perfil do SonarQube: recall na casa dos
 70% com FPR abaixo de 20%.** Hoje o recall já está lá; o FPR é o que falta.
+
+---
+
+# Rodada 16 — a ponte L1 → taint, e o gargalo que ela revelou (2026-08-13)
+
+## O que foi construído
+
+O sumário de retorno da rodada 13 foi rejeitado por um motivo específico:
+resolvia a chamada por NOME e apagava 109 vulnerabilidades reais. A correção
+não é analisar melhor — é **só decidir quando a resolução é confiável**.
+
+O grafo já carrega essa informação: cada aresta `calls` tem uma `confidence`, e
+`certain` significa resolvida SEMANTICAMENTE pela camada L1 (LSP). O sumário
+agora só mata a propagação quando a chamada é `certain`. Sem L1 rodado, nada é
+morto e o motor volta a over-aproximar — o lado seguro.
+
+## O que entregou
+
+**Segurança, comprovada:** rodando o mesmo repositório com e sem `refine`, os
+achados são idênticos. Nenhuma vulnerabilidade some.
+
+| app | sem L1 | com L1 | arestas promovidas |
+|---|---|---|---|
+| pygoat | 10 | 10 | 29 |
+| dvpwa | 1 | 1 | 47 |
+| dvna | 6 | 6 | 21 |
+
+**E dispara** — não é código morto:
+
+| app | funções que não propagam | atribuições com chamada `certain` | linhas mortas |
+|---|---|---|---|
+| pygoat | 35 | 13 | **3** |
+| dvpwa | 195 | 3 | **1** |
+| dvna | 33 | 0 | 0 |
+
+## O que NÃO entregou, e por quê
+
+O alvo era derrubar o FPR de 44% para a faixa dos 20%. **Não aconteceu**, e a
+medição mostra exatamente onde trava: das centenas de atribuições com chamada
+nesses repositórios, só **13** (pygoat) e **3** (dvpwa) têm resolução `certain`.
+O jedi resolve o que alcança; o resto são chamadas a bibliotecas de terceiros e
+despacho dinâmico.
+
+**O gargalo não é o sumário — é a cobertura do L1.** E no OWASP Benchmark ele
+nem pode disparar: os resolvers disponíveis nesta máquina são
+`go, javascript, python, rust, tsx, typescript`. Não há **jdtls**, então Java
+não tem uma única aresta `certain`, e o Benchmark segue em **+0.29**, sem
+mover uma casa.
+
+## Leitura
+
+Esta rodada não melhora número nenhum, e isso está dito no topo em vez de
+escondido no rodapé. O que ela faz é trocar um mecanismo *perigoso* por um
+mecanismo *correto e ocioso*, e medir por que ele fica ocioso.
+
+O caminho para o FPR agora tem nome e ordem:
+
+1. **Instalar/embarcar resolvers L1 para Java e PHP** (jdtls, intelephense).
+   É o que transforma o sumário de ocioso em eficaz, e é pré-requisito de tudo
+   o mais em precisão.
+2. Ampliar a cobertura do L1 nas linguagens que já têm resolver — hoje a
+   maioria das chamadas continua `inferred`.
+3. Só então voltar às demais causas de falso positivo.
+
+Trocar a ordem seria repetir o erro da rodada 13: otimizar precisão sobre uma
+resolução em que não se pode confiar.

@@ -883,15 +883,45 @@ class QueryEngine:
             fc.popitem(last=False)             # despeja o mais antigo
         return facts, lang
 
-    def _df_resolve_call(self, src_id, line):
+    def _df_resolve_call(self, src_id, line, name=None):
+        """Alvo da chamada nesta linha. `name` desempata quando há mais de uma:
+        em `new Test().doSomething(x)` a linha tem duas arestas — a do `new`,
+        para a classe, e a do método — e sem o filtro sai a errada."""
+        extra = " AND s.name=?" if name else ""
+        args = (src_id, line, name) if name else (src_id, line)
         rows = self.conn.execute(
             "SELECT e.dst, e.confidence, s.fqn, s.kind, s.start_line, "
             "f.path, f.language FROM edges e JOIN symbols s ON e.dst=s.id "
             "JOIN files f ON s.file_id=f.id WHERE e.src=? AND e.kind='calls' "
-            "AND e.line=? AND e.dst IS NOT NULL "
+            f"AND e.line=? AND e.dst IS NOT NULL{extra} "
             "ORDER BY CASE e.confidence WHEN 'certain' THEN 0 "
-            "WHEN 'inferred' THEN 1 ELSE 2 END LIMIT 1", (src_id, line)).fetchall()
+            "WHEN 'inferred' THEN 1 ELSE 2 END LIMIT 1", args).fetchall()
         return dict(rows[0]) if rows else None
+
+    def _nonprop_lines(self, sym_row, facts, nao_propaga_fqn, cache):
+        """Linhas cuja atribuição chama função que NÃO devolve o argumento.
+
+        Exige `confidence='certain'`, isto é, chamada resolvida SEMANTICAMENTE
+        pela camada L1 (LSP). Esta é a diferença entre otimização e defeito:
+        uma tentativa anterior resolvia por nome e apagou 109 vulnerabilidades
+        reais do OWASP Benchmark, porque `doSomething` existe em centenas de
+        arquivos com corpos diferentes. Sem L1 rodado, nada é morto — o motor
+        volta a over-aproximar, que é o lado seguro."""
+        if not nao_propaga_fqn:
+            return frozenset()
+        chave = sym_row["id"]
+        if chave in cache:
+            return cache[chave]
+        out = set()
+        for a in facts.assigns:
+            if a.rhs_call is None:
+                continue
+            alvo = self._df_resolve_call(chave, a.line, a.rhs_call)
+            if (alvo and alvo["confidence"] == "certain"
+                    and alvo["fqn"] in nao_propaga_fqn):
+                out.add(a.line)
+        cache[chave] = frozenset(out)
+        return cache[chave]
 
     def _crow(self, sym_id):
         r = self.conn.execute(
@@ -995,6 +1025,8 @@ class QueryEngine:
         # `x = fonte()` GERA sujeira no ponto do programa (senão mataria a
         # própria semente). Na varredura passa a incluir os wrappers.
         eff_src: set = set(rules.sources)
+        nao_propaga_fqn: set = set()      # preenchido na 1ª passada da varredura
+        nonprop_cache: dict = {}
 
         def conf_min(a, b):
             if a is None:
@@ -1017,7 +1049,10 @@ class QueryEngine:
             if not df.uses_flow_sensitive(f, flang):
                 path_flow = "over-approximated"
             flow = df.analyze(f, tainted, rules.sanitizers, lang=flang,
-                              sources=eff_src)
+                              sources=eff_src,
+                              nonprop=self._nonprop_lines(sym_row, f,
+                                                          nao_propaga_fqn,
+                                                          nonprop_cache))
             for af in flow.arg_flows:
                 if budget.hit():
                     return
@@ -1119,6 +1154,15 @@ class QueryEngine:
                 if direct or (seed and df.analyze(
                         f, seed, lang=flang, sources=eff_src).reaches_return):
                     src_funcs.add(r["name"])
+                # SUMÁRIO DE RETORNO: esta função devolve o que recebe?
+                # Só funções COM parâmetros — `x = obj.metodo()` sem argumento
+                # ainda pode devolver dado do RECEPTOR (`sb.toString()`), e
+                # matá-lo apagaria fluxo real. Wrapper de fonte também fica de
+                # fora: ele não propaga o argumento, mas devolve dado sujo.
+                if (f.params and r["name"] not in src_funcs
+                        and not df.analyze(f, set(f.params), rules.sanitizers,
+                                           lang=flang).reaches_return):
+                    nao_propaga_fqn.add(r["fqn"])
             eff_sources = rules.sources | src_funcs
             eff_src |= src_funcs               # o motor flow-sensitive também vê
             scanned = 0
