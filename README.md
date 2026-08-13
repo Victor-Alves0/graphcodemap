@@ -17,7 +17,8 @@ Symbols, call graph, references, impact, dataflow and taint over any codebase �
 [Why it exists](#why-it-exists) ·
 [Documentation](docs/README.md) ·
 [When to use it](#when-to-use-it-and-when-not-to) ·
-[Benchmarks](evals/RESULTS.md)
+[Benchmarks](evals/RESULTS.md) ·
+[Roadmap](docs/ROADMAP.md)
 
 </div>
 
@@ -151,13 +152,17 @@ Trust is built by being honest about the boundaries:
   structure, not substring matching.
 - ⚠️ **Treat dataflow/taint findings as candidates.** It is *may-taint* — it
   over-approximates on purpose, so a finding is a lead to verify, not a verdict.
-  Measured on the OWASP Benchmark: **63% precision, 71% recall** (score
-  TPR−FPR = +0.24; see [evals/RESULTS.md](evals/RESULTS.md), which records how
-  every number moved and why). Still short of a mature SAST, and published as
-  measured rather than claimed.
+  Measured on the OWASP Benchmark: **65% precision, 74% recall** (score
+  TPR−FPR = +0.29; see [evals/RESULTS.md](evals/RESULTS.md), which records how
+  every number moved and why — including the changes that were measured and
+  then *rejected*). That is in the range of mid-tier commercial SAST on the
+  benchmark's own published scorecards, and short of the best. The gap that
+  matters is the false-positive rate, and the plan for it is in
+  [docs/ROADMAP.md](docs/ROADMAP.md).
 
 Full, quantified limitations and benchmark methodology: **[FAQ & Limitations](docs/faq.md)**
-and **[evals/RESULTS.md](evals/RESULTS.md)**.
+and **[evals/RESULTS.md](evals/RESULTS.md)**. What is being worked on next, and
+why in that order: **[docs/ROADMAP.md](docs/ROADMAP.md)**.
 
 ## Languages
 

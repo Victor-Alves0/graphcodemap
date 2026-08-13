@@ -32,6 +32,9 @@ AI agent — organized from first run to internals.
   incremental re-indexing, and why the invariants hold.
 - **[FAQ & Limitations](faq.md)** — honest, quantified answers about scope,
   accuracy, scale, and benchmarks.
+- **[Roadmap](ROADMAP.md)** — where the taint engine stands against published
+  SAST scorecards, what is being worked on next and in which order, and the
+  approaches that were built, measured and *rejected* (so they are not retried).
 
 ## Design history
 
