@@ -416,3 +416,86 @@ chamada**, gerando um DB de 2,4 GB + 1,2 GB de WAL — antes mesmo do resolve.
   SQLite. Storage com escrita não-serial daria só um fator constante (~1,5×) e
   feriria o local-first — baixa alavancagem. Para uso real, `--scope` resolve.
   Números honestos > alegação de SOTA.
+
+---
+
+# OWASP Benchmark v1.2 — detecção de vulnerabilidade (2026-07-31)
+
+Primeira medição de **detecção de vulnerabilidade** com gabarito. Até aqui todos
+os nossos benchmarks mediam *localização* e *alcançabilidade para agente* — e
+"nosso taint é bom" sem número contra gabarito é opinião, não engenharia.
+
+Harness reproduzível: [`evals/owaspbench.py`](owaspbench.py). Motor no estado
+pós-P1 (flow-sensitive), P2 (dois eixos) e P3 (catálogo de framework).
+
+## Resultado (1.698 casos, as 7 categorias baseadas em taint)
+
+| categoria | TP | FP | FN | TN | precisão | recall | F1 | score |
+|---|---|---|---|---|---|---|---|---|
+| sqli | 90 | 54 | 182 | 178 | 62% | 33% | 0.43 | +0.10 |
+| cmdi | 33 | 23 | 93 | 102 | 59% | 26% | 0.36 | +0.08 |
+| pathtraver | 25 | 15 | 108 | 120 | 62% | 19% | 0.29 | +0.08 |
+| xpathi | 7 | 1 | 8 | 19 | 88% | 47% | 0.61 | +0.42 |
+| ldapi | 6 | 11 | 21 | 21 | 35% | 22% | 0.27 | **−0.12** |
+| xss | 0 | 0 | 246 | 209 | — | **0%** | 0.00 | 0.00 |
+| trustbound | 0 | 0 | 83 | 43 | — | **0%** | 0.00 | 0.00 |
+| **TOTAL** | **161** | **104** | **741** | **692** | **61%** | **18%** | **0.28** | **+0.05** |
+
+Custo: 11,2s para indexar + 5,5s de análise nos 1.698 arquivos.
+
+## Leitura honesta
+
+**Isto não é um resultado competitivo como SAST.** Score +0.05 (a métrica
+oficial é TPR − FPR; 0 = aleatório) significa que, no agregado, estamos pouco
+acima de chutar. Em LDAP injection somos **piores que aleatório** (−0.12).
+Publicamos porque um número ruim medido vale mais que um número bom alegado —
+e porque agora cada melhoria é verificável.
+
+O que o benchmark permitiu separar, e que inspeção manual não separaria:
+
+### 1. Lacuna de CATÁLOGO (barata, já parcialmente fechada)
+
+Antes de adicionar os sinks de JDBC/Spring que faltavam, o total era 85%
+precisão / 9% recall. Só nomear `queryForObject`, `executeUpdate`,
+`batchUpdate`, `ProcessBuilder` e `evaluate` levou sqli de 8% → 33% de recall e
+xpathi a 47%, **com a precisão subindo junto** — sinal de que são nomes
+distintivos, não chutes.
+
+### 2. Lacuna de ARQUITETURA: XSS e trust-boundary têm recall ZERO
+
+Não é falta de esforço: os sinks de XSS em Java são `println`/`print`/`write`
+num `PrintWriter` de resposta, e os de trust-boundary são `setAttribute`. São
+genéricos demais para casar pelo último segmento — tratá-los como sink por
+nome-nu dispararia em todo `System.out.println` de qualquer código.
+
+**329 dos 741 falsos negativos (44%) são XSS + trustbound**, estruturalmente
+inatingíveis sem **casamento qualificado por receptor/pacote**. Isso promove
+esse item de "melhoria desejável" a *bloqueador medido*.
+
+### 3. Os falsos positivos são, em boa parte, PREDICADOS OPACOS
+
+Amostrando 120 casos sqli marcados como seguros, 18 foram acusados. O padrão:
+
+```java
+bar = (7 * 18) + num > 200 ? "This_should_always_happen" : param;
+```
+
+A condição é sempre verdadeira, então `bar` nunca recebe o dado sujo. O
+Benchmark usa isso de propósito para exercitar path-sensitivity.
+
+Nossa análise é **may-taint**: no encontro de ramos, une. Acusar aqui é o
+comportamento *correto* de uma may-analysis, não um bug — e "consertar"
+ingenuamente quebraria detecção real (nosso próprio teste
+`test_taint_in_one_branch_is_still_a_finding` exige a união). A correção certa é
+**constant folding na condição do ramo** antes do meet, o que exige
+interpretação abstrata sobre inteiros. Fica no roadmap, dimensionado.
+
+## Ressalvas metodológicas (as duas mexem no número, uma para cada lado)
+
+- **Só as 7 categorias de taint são pontuadas.** `weakrand`, `crypto`, `hash` e
+  `securecookie` são mau uso de API/configuração, que nosso motor não faz;
+  pontuar nelas — para bem ou para mal — seria desonesto.
+- **Detecção em nível de arquivo, sem conferir a categoria do achado.** Cada
+  caso do Benchmark tem uma vulnerabilidade pretendida, então é um proxy
+  razoável — mas isso **infla** nosso número frente ao placar oficial do OWASP.
+  O número real de um scorecard oficial seria menor que 61%/18%.

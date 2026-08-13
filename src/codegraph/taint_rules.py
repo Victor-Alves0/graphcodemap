@@ -67,6 +67,36 @@ def default_rules() -> TaintRules:
     return TaintRules(frozenset(_SOURCES), frozenset(_SINKS), frozenset(_SANITIZERS))
 
 
+# Suplemento CURADO À MÃO, por linguagem. Complementa o catálogo gerado com
+# APIs perigosas que as regras do OpenTaint não cobriam. Critério de inclusão:
+# o nome tem que ser DISTINTIVO o bastante para casar pelo último segmento sem
+# disparar em código comum (`queryForObject` sim; `println` não).
+#
+# Lacuna conhecida e declarada: os sinks de XSS em Java são `println`/`print`/
+# `write` num PrintWriter de resposta, e de trust-boundary são `setAttribute`.
+# São genéricos demais para nome-nu — ficam de fora até existir casamento
+# QUALIFICADO por receptor/pacote. Enquanto isso o recall de XSS é ZERO, e é
+# melhor dizer isso do que fingir cobertura.
+_CURATED: dict[str, dict[str, set[str]]] = {
+    "java": {
+        "sinks": {
+            # JDBC / Spring JdbcTemplate
+            "executeUpdate", "executeLargeUpdate", "addBatch", "batchUpdate",
+            "queryForObject", "queryForList", "queryForMap", "queryForRowSet",
+            "queryForInt", "queryForLong", "createStatement",
+            # processo
+            "ProcessBuilder",
+            # XPath / expressão
+            "evaluate", "compileExpression", "getValue", "setValue",
+        },
+    },
+}
+
+
+def _curated(lang: str, bucket: str) -> set[str]:
+    return set(_CURATED.get(lang, {}).get(bucket, ()))
+
+
 def catalog_for(languages) -> TaintRules:
     """Regras default + o catálogo por FRAMEWORK das linguagens presentes.
 
@@ -89,6 +119,10 @@ def catalog_for(languages) -> TaintRules:
         src |= set(b.get("sources", ()))
         snk |= set(b.get("sinks", ()))
         san |= set(b.get("sanitizers", ()))
+    for lang in languages or ():
+        src |= _curated(lang, "sources")
+        snk |= _curated(lang, "sinks")
+        san |= _curated(lang, "sanitizers")
     return TaintRules(frozenset(src), frozenset(snk), frozenset(san))
 
 
