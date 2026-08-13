@@ -592,3 +592,148 @@ propósito: quando semeadura e propagação discordam, a discordância vira fals
 positivo (foi exatamente o bug da rodada anterior). Nos quatro apps testados
 não há **nenhuma** ocorrência viva de argumento sanitizado alimentando um sink,
 então essa guarda não foi exercitada por código real — está dito, não medido.
+
+---
+
+# Rodada 9 — catálogo de sinks, e três defeitos que ele desenterrou (2026-08-13)
+
+O oráculo da rodada 8 usa `rules.sinks`. Ampliar o catálogo torna o teste de
+recall **automaticamente mais exigente** — e foi assim que esta rodada
+funcionou: cada sink novo virou uma cobrança nova sobre o motor, e três das
+cobranças expuseram defeitos que não tinham nada a ver com catálogo.
+
+## Defeito 1 — o casamento qualificado só funcionava em Java
+
+`_receiver_last` procurava o receptor nos campos `object`/`receiver`/`operand`
+e, não achando, caía no campo `function`. Só que em Python e JS o campo
+`function` guarda o callee INTEIRO (`res.redirect`), então a função devolvia o
+último segmento — **o próprio método**. Como quem chama descarta `recv ==
+callee`, o resultado era `qualified = None` em todo Python e todo JavaScript.
+
+A regra qualificada existia desde que foi escrita, mas só a gramática de Java
+(que tem campo `object`) a exercitava. `res.redirect`, `fs.readFile` e
+`POST.get` nunca chegaram a casar — regra viva no código, morta na prática.
+É o mesmo tipo de defeito do `getparameter` em minúsculas, e igualmente
+invisível sem uma medição que o cobrasse.
+
+## Defeito 2 — a linha reportada podia não conter o sink
+
+```js
+Todo.
+  find({}).
+  sort('-updated_at').
+  exec(function (err, todos) {     // ← o sink está aqui, na linha 219
+```
+
+A expressão de chamada COMEÇA em `Todo`, na linha 217, e era essa a linha
+reportada. O invariante central da suíte — *a linha reportada tem que conter o
+sink* — pegou o caso em código real (nodejs-goof). A linha agora sai do nó do
+NOME do callee, que é também onde o extractor grava a aresta `calls`; os dois
+passaram a concordar.
+
+## Defeito 3 — a origem podia ser de outra fonte da mesma função
+
+A varredura montava UMA origem por função (a primeira fonte encontrada) e a
+carimbava em todos os achados dela. Em pygoat:
+
+```python
+file = request.FILES["file"]              # 582
+function_str = request.POST.get("function")   # 583
+...
+output = ImageMath.eval(function_str, img=img, ...)   # 588
+```
+
+O achado do argumento 0 é verdadeiro, mas era explicado pela linha 582 — a
+fonte errada. Agora, quando a variável que chega ao sink é ela própria uma
+semente, a origem é a linha dela. Achado certo com explicação inventada é
+pior que achado nenhum: ensina a não conferir.
+
+## O catálogo, e o que ele custou aprender
+
+Duas regras foram medidas e **revertidas** antes de entrar:
+
+- `HttpResponse` como sink de XSS acusava código correto: toda view Django
+  devolve uma, em geral com conteúdo já escapado pelo template. Ficou só
+  `mark_safe`, que é o que efetivamente desliga o escape.
+- `requests.request("PATCH", url, data=payload)` virava SSRF com URL
+  constante. O modelo de sink não distingue argumento, então só ficaram as
+  formas em que a URL é o primeiro argumento.
+
+E duas ambiguidades de nome nu pediram uma régua nova, `bare_sinks` (só casa
+sem receptor):
+
+- `open(caminho)` é path traversal; `Image.open(arquivo_enviado)` não é.
+- `exec(cmd)` é execução de comando; `Todo.find({}).sort().exec(cb)` é Mongoose.
+
+Só que restringir `exec` globalmente **derrubou o recall de cmdi do OWASP
+Benchmark de 26% para 3%**: em Java a forma real é `Runtime r =
+Runtime.getRuntime(); … r.exec(cmd)`, com o receptor numa variável local, que
+nenhuma regra qualificada consegue nomear. A régua passou a ser por linguagem,
+com empate resolvido a favor do recall. O Benchmark voltou a 64%/31%/+0.12,
+idêntico ao anterior — que é o resultado desejado: esta rodada é sobre Node e
+Python, e não deveria mexer no número de Java.
+
+## Callbacks anônimos: a hipótese descartada na rodada 8, agora comprovada
+
+Na rodada 8 medi callbacks anônimos e descartei o item: dos 203 não indexados
+em NodeGoat, só 3 continham sink, todos em `Gruntfile.js` e testes e2e. A
+medição estava certa **para o catálogo daquele momento** — `res.redirect` e
+`res.send` ainda não eram sinks, então não havia o que encontrar lá dentro.
+
+Com o catálogo ampliado o oráculo passou a cobrar, e a lacuna apareceu em
+código real:
+
+```js
+app.get("/learn", isLoggedIn, (req, res) => {
+    return res.redirect(req.query.url);      // open redirect do NodeGoat
+});
+```
+
+Funções passadas como argumento agora viram símbolos próprios (`get#2`). O
+achado mais valioso da rodada veio disso, em nodejs-goof, e depende de três
+capacidades ao mesmo tempo:
+
+```
+req.body.redirectPage   lido DENTRO de um callback anônimo   (routes/index.js:54)
+   → adminLoginSuccess(redirectPage, …)     INTERPROCEDURAL
+      → res.redirect(redirectPage)          sink QUALIFICADO  (routes/index.js:74)
+```
+
+Lição registrada: uma lacuna medida como irrelevante pode estar **mascarada
+por outra**. As duas se escondiam mutuamente.
+
+## Resultado
+
+| app | rodada 8 | agora |
+|---|---|---|
+| dvna (Node/Express/Sequelize) | 3 | **6** |
+| NodeGoat (OWASP, Node/Express) | 3 | **4** |
+| nodejs-goof (Snyk, Node/Express) | — | **2** |
+| pygoat (OWASP, Django) | 8 | **10** |
+| dvpwa (aiohttp) | 6 | 5 |
+
+dvpwa caiu de 6 para 5 por **deduplicação**: o mesmo par (origem, sink,
+argumento) era reportado duas vezes quando o resolvedor ligava `res.redirect` à
+função `redirect` exportada pelo próprio módulo, fazendo a função chamar a si
+mesma. Agora fica a versão mais confiável e, em empate, a de cadeia mais curta.
+
+Os achados novos, todos conferidos linha a linha, são vulnerabilidades
+documentadas dos próprios projetos: open redirect (dvna, NodeGoat,
+nodejs-goof), desserialização insegura e XXE (dvna), path traversal e SSRF
+(pygoat).
+
+## O ruído que apareceu junto, dito sem maquiagem
+
+Varrer o **Express** dá 73 achados — e **68 estão na suíte de testes dele**,
+que existe justamente para ecoar a requisição (`res.send(req.params.id)`). São
+achados verdadeiros e sem nenhum interesse. Não os escondi: cada achado passou
+a trazer `in_test`, eles vão para o fim da lista e o cabeçalho diz quantos são.
+Dos 5 restantes, 4 são padrões genuínos nos exemplos (path traversal em
+`downloads`, eco em `vhost`/`params`, open redirect em `mvc`).
+
+**Falso positivo conhecido e não resolvido:** os 4 achados no tutorial do Flask
+são consultas PARAMETRIZADAS (`db.execute("… VALUES (?, ?)", (a, b))`). O motor
+vê dado do usuário chegando em `execute` e não distingue parâmetro ligado de
+concatenação. Resolver isso exige olhar como a string da consulta foi
+CONSTRUÍDA — é o próximo item natural de precisão, e está dimensionado, não
+escondido.

@@ -998,7 +998,7 @@ class QueryEngine:
             return a if order[a] <= order[b] else b
 
         def trace(sym_row, tainted, origin, steps, d, visited, path_conf,
-                  path_flow="flow-sensitive"):
+                  path_flow="flow-sensitive", seed_map=None):
             if budget.hit():
                 return
             budget.tick()
@@ -1028,13 +1028,23 @@ class QueryEngine:
                 # leitura escrita DENTRO do argumento (`eval(req.body.x)`): a
                 # origem é aqui mesmo. Herdar a origem da função inteira daria
                 # um achado verdadeiro com uma explicação inventada.
-                here = origin if af.source is None else {
-                    "kind": "source", "func_fqn": sym_row["fqn"],
-                    "path": sym_row["path"], "line": af.line, "what": af.source}
+                here = origin
+                if af.source is not None:
+                    here = {"kind": "source", "func_fqn": sym_row["fqn"],
+                            "path": sym_row["path"], "line": af.line,
+                            "what": af.source}
+                elif seed_map is not None and af.via in seed_map:
+                    # a função pode ter VÁRIAS fontes; atribuir a todos os
+                    # achados a primeira delas dá um achado certo com uma
+                    # origem errada. Quando a variável que chega ao sink é ela
+                    # própria semente, a origem é a linha DELA.
+                    ln, rotulo = seed_map[af.via]
+                    here = {"kind": "source", "func_fqn": sym_row["fqn"],
+                            "path": sym_row["path"], "line": ln,
+                            "what": rotulo + "()"}
                 # casa pelo nome simples OU pelo qualificado receptor.método:
                 # `getWriter.println` é sink de XSS, `out.println` não é.
-                if af.callee in rules.sinks or (
-                        af.qualified is not None and af.qualified in rules.sinks):
+                if rules.is_sink(af.callee, af.qualified):
                     if len(findings) < max_findings:
                         findings.append({
                             "origin": here,
@@ -1125,12 +1135,36 @@ class QueryEngine:
                           else {"kind": "source", "func_fqn": r["fqn"],
                                 "path": r["path"], "line": direto[0],
                                 "what": direto[1]})
-                trace(r, names, origin, [], 1, {(r["id"], -2)}, None)
+                seed_map = {".".join(p): (ln, rot) for p, ln, rot in seeds}
+                trace(r, names, origin, [], 1, {(r["id"], -2)}, None,
+                      seed_map=seed_map)
                 if len(findings) >= max_findings:
                     budget.note("findings")
                     break
 
-        findings.sort(key=lambda x: -order[x["confidence"]])
+        # Um mesmo par (origem, sink) pode ser alcançado por mais de um caminho —
+        # inclusive pela função chamando a si mesma, quando o resolvedor liga
+        # `res.redirect` à função `redirect` exportada pelo próprio módulo.
+        # Reportar o mesmo defeito duas vezes não acrescenta informação e faz o
+        # relatório parecer maior do que é. Fica a versão mais CONFIÁVEL e, em
+        # empate, a de cadeia mais curta — a explicação mais direta de conferir.
+        unicos: dict = {}
+        for f in findings:
+            k = (f["origin"]["path"], f["origin"]["line"], f["sink"]["site_path"],
+                 f["sink"]["line"], f["sink"]["callee"], f["sink"]["arg_index"])
+            atual = unicos.get(k)
+            if atual is None or (order[f["confidence"]], -len(f["steps"])) > (
+                    order[atual["confidence"]], -len(atual["steps"])):
+                unicos[k] = f
+        findings = list(unicos.values())
+        # Fixture de teste é código de verdade e não some do relatório — mas vai
+        # para o fim. Medido: varrer o Express dá 73 achados, dos quais 68 são
+        # `res.send(req.params.id)` na SUÍTE DELE, que existe justamente para
+        # ecoar a requisição. Deixá-los no meio afoga os 5 do código de
+        # produção, e um relatório que afoga o próprio sinal não é usado.
+        for f in findings:
+            f["in_test"] = _is_test_path(f["sink"]["site_path"])
+        findings.sort(key=lambda x: (x["in_test"], -order[x["confidence"]]))
         if budget.limit_hit:
             env.truncated = True
             env.warn(f"truncated: análise parada em '{budget.limit_hit}' — "

@@ -204,6 +204,19 @@ def test_chain_is_non_empty_and_ordered(analysed, name):
 
 
 @pytest.mark.parametrize("name", _IDS)
+def test_test_fixtures_are_marked_and_come_last(analysed, name):
+    """Achado em fixture de teste é verdadeiro e sem interesse. Fica no
+    relatório, marcado, e no fim — senão afoga o código de produção (medido:
+    68 dos 73 achados no Express são a suíte dele ecoando a requisição)."""
+    repo, data, _env = analysed[name]
+    fs = data["findings"]
+    for f in fs:
+        assert isinstance(f.get("in_test"), bool), "achado sem a marca in_test"
+    marcas = [f["in_test"] for f in fs]
+    assert marcas == sorted(marcas), "achado de produção listado após um de teste"
+
+
+@pytest.mark.parametrize("name", _IDS)
 def test_telemetry_is_present_and_coherent(analysed, name):
     repo, data, env = analysed[name]
     assert data["elapsed_ms"] >= 0 and data["steps"] >= 0
@@ -238,6 +251,12 @@ _SRC_TOKEN = re.compile(
     r"\b(?:req|request)\s*\.\s*(?:POST|GET|body|query|params|form|args|json|"
     r"files|FILES|cookies|headers|values|payload|data|match_info)\b")
 _COMMENT = re.compile(r"^\s*(?://|#|\*|/\*)")
+# leitura usada só como ÍNDICE: `users[req.params.id]`. O motor descarta o
+# índice de um subscrito por decisão declarada (ver `_chain_path`) — o que
+# chega ao sink é o elemento do array, não o texto da requisição. Exigir isso
+# aqui seria o oráculo cobrando o oposto de uma escolha de projeto, não pegando
+# uma lacuna.
+_READ_AS_INDEX = re.compile(r"\[[^\]]*\b(?:req|request)\s*\.")
 
 
 def _calls_sink(line: str, sinks) -> str | None:
@@ -280,7 +299,8 @@ def _obvious_vulns(repo: Path) -> list[tuple[str, int, str, str]]:
         for i, line in enumerate(text.splitlines(), 1):
             if len(line) > 400 or _COMMENT.match(line):
                 continue          # minificado ou comentado: não é código vivo
-            if not _SRC_TOKEN.search(line):
+            leituras = _SRC_TOKEN.findall(line)
+            if not leituras or len(_READ_AS_INDEX.findall(line)) == len(leituras):
                 continue
             if any(s in line for s in rules.sanitizers):
                 continue          # há um sanitizer na linha: indecidível a olho nu
@@ -302,6 +322,68 @@ def test_no_obvious_vulnerability_is_missed(analysed, name):
     assert not perdidos, (
         f"{len(perdidos)}/{len(esperados)} vulnerabilidades óbvias NÃO reportadas:\n  "
         + "\n  ".join(f"{p}:{ln} [{sink}] {txt}" for p, ln, sink, txt in perdidos[:10]))
+
+
+def _sanitized_sink_lines(repo: Path) -> list[tuple[str, int, str]]:
+    """Linhas em que um sink recebe leitura de requisição JÁ sanitizada.
+
+    É o espelho de `_obvious_vulns`: ali o motor tem obrigação de falar, aqui
+    tem obrigação de calar. Exige que TODAS as leituras da linha estejam
+    envolvidas por sanitizer — uma linha meio-sanitizada é vulnerável e não
+    entra."""
+    rules = _rules_for(repo)
+    envolto = re.compile(
+        r"\b(?:" + "|".join(re.escape(s.rsplit(".", 1)[-1]) for s in rules.sanitizers)
+        + r")\s*\(\s*(?:req|request)\s*\.")
+    out = []
+    for p in repo.rglob("*"):
+        if p.suffix not in _CODE_EXT or not p.is_file():
+            continue
+        rel = p.relative_to(repo)
+        if _SKIP_DIR & set(rel.parts):
+            continue
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for i, line in enumerate(text.splitlines(), 1):
+            if len(line) > 400 or _COMMENT.match(line):
+                continue
+            leituras = len(_SRC_TOKEN.findall(line))
+            if not leituras or leituras != len(envolto.findall(line)):
+                continue
+            if _calls_sink(line, rules.sinks) is not None:
+                out.append((rel.as_posix(), i, line.strip()[:90]))
+    return out
+
+
+@pytest.mark.parametrize("name", _IDS)
+def test_a_sanitized_read_is_not_a_finding(analysed, name):
+    """Acusar quem escreveu a versão SEGURA é o pior falso positivo que existe:
+    ensina a ignorar a ferramenta."""
+    repo, data, _env = analysed[name]
+    limpas = _sanitized_sink_lines(repo)
+    if not limpas:
+        pytest.skip("este repositório não sanitiza a leitura na linha do sink")
+    achados = {(f["sink"]["site_path"], f["sink"]["line"]) for f in data["findings"]}
+    ruins = [f"{p}:{ln} {txt}" for p, ln, txt in limpas if (p, ln) in achados]
+    assert not ruins, ("achado sobre leitura JÁ sanitizada:\n  "
+                       + "\n  ".join(ruins[:5]))
+
+
+@pytest.mark.parametrize("name", _IDS)
+def test_the_same_defect_is_reported_once(analysed, name):
+    """Mesma origem, mesmo sink, mesmo argumento = um defeito só. Repetir infla
+    o relatório e faz o leitor desconfiar de tudo que está nele."""
+    repo, data, _env = analysed[name]
+    vistos: dict = {}
+    for f in data["findings"]:
+        s, o = f["sink"], f["origin"]
+        k = (o["path"], o["line"], s["site_path"], s["line"], s["callee"],
+             s["arg_index"])
+        vistos[k] = vistos.get(k, 0) + 1
+    repetidos = [k for k, n in vistos.items() if n > 1]
+    assert not repetidos, f"achados repetidos: {repetidos[:5]}"
 
 
 @pytest.mark.parametrize("name", _IDS)

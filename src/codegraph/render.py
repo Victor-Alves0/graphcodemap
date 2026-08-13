@@ -315,9 +315,14 @@ def reaches(sym, data, env) -> str:
 def taint(data, env) -> str:
     fs = data["findings"]
     mode = "entry" if data["mode"] == "entry" else "scan"
+    em_teste = sum(1 for f in fs if f.get("in_test"))
     head = (f"taint ({mode}) — {len(fs)} caminho(s) fonte→sink; "
             f"{data['scanned']} função(ões) analisada(s):")
     lines = [head]
+    if em_teste:
+        # dito no cabeçalho porque muda como o resto se lê: uma suíte que ecoa
+        # a requisição de propósito produz achados verdadeiros e sem interesse
+        lines.append(f"  [{em_teste} em arquivo de TESTE — listados por último]")
     if data.get("limit_hit"):
         lines.append(f"  [parcial: parou em '{data['limit_hit']}' — "
                      f"{data.get('explored', 0)} nós, {data.get('elapsed_ms', 0)}ms]")
@@ -335,7 +340,8 @@ def taint(data, env) -> str:
         # rótulo só esconderia que um caminho inteiro 'certain' pode ter fluxo
         # over-aproximado — e vice-versa.
         ev = fi.get("flow_evidence")
-        selo = f"[{fi['confidence']}" + (f" · fluxo {ev}]" if ev else "]")
+        selo = f"[{fi['confidence']}" + (f" · fluxo {ev}" if ev else "")
+        selo += " · teste]" if fi.get("in_test") else "]"
         lines.append(f"  [{i}] {selo} {src}")
         lines.append(f"      → SINK {sink_fqn} ({arg}, via {s['via']})  "
                      f"{s['site_path']}:{s['line']}")

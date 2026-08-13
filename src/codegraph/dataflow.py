@@ -196,6 +196,29 @@ def assign_reads_framework_source(a, sanitizers=frozenset()) -> bool:
             or any(is_framework_source_path(p) for p in a.rhs_ids))
 
 
+def _source_reads(source, node, chain, member, call_types, callee,
+                  guards=(), out=None):
+    """Leituras de requisição dentro de uma expressão, cada uma com a cadeia de
+    chamadas que a envolve. `chain(source, node)` devolve o caminho de acesso da
+    gramática em questão; o resto é igual para todas."""
+    if out is None:
+        out = []
+    if node is None:
+        return out
+    t = node.type
+    if t in member:
+        p = chain(source, node)
+        if p is not None:
+            if is_framework_source_path(p):
+                out.append((".".join(p), guards))
+            return out                          # caminho maximal: não desce
+    if t in call_types:
+        guards = guards + (callee(source, node),)
+    for c in node.named_children:
+        _source_reads(source, c, chain, member, call_types, callee, guards, out)
+    return out
+
+
 def direct_source_args(c, sanitizers=frozenset()):
     """Argumentos desta chamada que LEEM a requisição na própria expressão.
 
@@ -207,17 +230,14 @@ def direct_source_args(c, sanitizers=frozenset()):
     cinco eram assim; o único que achávamos era justamente o que passava por
     variável.
 
-    Rende `(índice, caminho_lido)`. O sanitizer é honrado como no assign: se o
-    argumento É uma chamada a sanitizer, o valor sai limpo. Manter a MESMA
-    regra dos dois lados é o que impede a semeadura e a propagação de
-    discordarem — e duas metades que discordam viram falso positivo."""
-    for idx, ids in c.args:
-        top = c.arg_calls.get(idx)
-        if top is not None and top in sanitizers:
-            continue
-        hit = sorted(p for p in ids if is_framework_source_path(p))
-        if hit:
-            yield idx, ".".join(hit[0])
+    Rende `(índice, caminho_lido)`. Uma leitura envolvida por sanitizer em
+    QUALQUER nível é descartada: `res.send("olá " + escapeHtml(req.params.uid))`
+    é a forma correta de escrever, e acusá-la seria punir quem acertou."""
+    for idx, reads in c.arg_sources.items():
+        limpas = sorted(p for p, guards in reads
+                        if not any(g in sanitizers for g in guards))
+        if limpas:
+            yield idx, limpas[0]
 
 
 def uses_flow_sensitive(facts, lang: str | None) -> bool:
@@ -315,11 +335,16 @@ class CallSite:
     # `response.getWriter().println` do inofensivo `System.out.println`, que
     # pelo último segmento seriam o mesmo nome. Ver flowsens/taint.
     qualified: str | None = None
-    # índice do argumento → callee do TOPO daquele argumento, quando o argumento
-    # é ele próprio uma chamada. Espelha `Assign.rhs_call`, e pela mesma razão:
-    # é o que permite `f(escape(req.q))` sair limpo. Só o topo, como no assign —
-    # a mesma over-aproximação, mantida idêntica de propósito.
-    arg_calls: dict[int, str] = field(default_factory=dict)
+    # índice do argumento → leituras de requisição escritas DENTRO dele, cada
+    # uma com a CADEIA de chamadas que a envolve:
+    #     res.send("olá " + escapeHtml(req.params.uid))
+    #       → {0: [("req.params.uid", ("escapeHtml",))]}
+    # A cadeia é o que permite o sanitizer cortar em qualquer nível. Olhar só o
+    # topo do argumento (como `Assign.rhs_call` faz) deixaria passar justamente
+    # a forma mais comum de escrever a versão SEGURA — concatenar texto com o
+    # valor já escapado — e transformá-la em falso positivo.
+    arg_sources: dict[int, list[tuple[str, tuple[str, ...]]]] = field(
+        default_factory=dict)
 
 
 @dataclass
@@ -505,13 +530,27 @@ def _receiver_last(source: bytes, call_node) -> str | None:
     É a informação mínima que separa um sink real de um homônimo inofensivo,
     sem precisar de inferência de tipos."""
     obj = None
-    for f in ("object", "receiver", "operand", "function"):
+    for f in ("object", "receiver", "operand"):
         obj = call_node.child_by_field_name(f)
         if obj is not None:
             break
+    # Python e JS não têm campo de receptor: `function` guarda o callee INTEIRO
+    # (`res.redirect`), então o receptor é o que vem ANTES do último segmento.
+    # Sem essa distinção o resultado era o PRÓPRIO método — e como quem chama
+    # descarta `recv == callee`, todo `qualified` fora do Java saía None. A
+    # regra qualificada existia desde o começo, mas só o Java a exercitava:
+    # `res.redirect`, `fs.readFile` e `POST.get` nunca chegaram a casar.
+    whole = obj is None
+    if whole:
+        obj = call_node.child_by_field_name("function")
     if obj is None:
         return None
     txt = _text(source, obj).strip()
+    if whole:
+        head, sep, _method = txt.rpartition(".")
+        if not sep:
+            return None                    # chamada sem receptor: `eval(x)`
+        txt = head
     txt = txt.split("(", 1)[0] if txt.endswith(")") is False else txt
     # remove a lista de argumentos de uma chamada encadeada: `a.b(x)` → `a.b`
     if txt.endswith(")"):
@@ -527,6 +566,27 @@ def _receiver_last(source: bytes, call_node) -> str | None:
         txt = txt[:cut]
     seg = txt.rsplit(".", 1)[-1].strip()
     return seg or None
+
+
+def _callee_site(call_node):
+    """Nó do NOME do callee — é dele que sai a linha reportada.
+
+    Numa cadeia fluente quebrada em linhas (`Todo.\\n find({}).\\n exec(cb)`) a
+    expressão de chamada COMEÇA em `Todo`, três linhas antes do `exec`. Usar o
+    início da expressão dava um achado apontando para uma linha onde o sink não
+    aparece — e a promessa do produto é exatamente que a linha se confira. É
+    também a posição em que o extractor grava a aresta `calls`, então usar a
+    mesma casa o fato com a aresta."""
+    fn = None
+    for f in ("function", "name", "method", "target"):
+        fn = call_node.child_by_field_name(f)
+        if fn is not None:
+            break
+    if fn is None:
+        return call_node
+    fld = _MEMBER_UNWRAP.get(fn.type)
+    seg = fn.child_by_field_name(fld) if fld else None
+    return seg if seg is not None else fn
 
 
 def _body_of(fn_node, family: str):
@@ -611,7 +671,7 @@ def _facts_py(source, fn) -> FnFacts:
             continue
         callee = _callee_name(source, call.child_by_field_name("function"), "py")
         recv = _receiver_last(source, call)
-        cs = CallSite(callee, call.start_point[0] + 1, [],
+        cs = CallSite(callee, _callee_site(call).start_point[0] + 1, [],
                       (call.start_byte, call.end_byte),
                       f"{recv}.{callee}" if recv and recv != callee else None)
         pos = 0
@@ -624,9 +684,13 @@ def _facts_py(source, fn) -> FnFacts:
             ids: set = set()
             if val is not None:
                 _paths(source, val, ids, _PY_MEMBER)
-                if val.type == "call":
-                    cs.arg_calls[idx] = _callee_name(
-                        source, val.child_by_field_name("function"), "py")
+                reads = _source_reads(
+                    source, val, lambda s, n: _chain_path(s, n, _PY_MEMBER),
+                    _PY_MEMBER, {"call"},
+                    lambda s, n: _callee_name(
+                        s, n.child_by_field_name("function"), "py"))
+                if reads:
+                    cs.arg_sources[idx] = reads
             cs.args.append((idx, ids))
         facts.calls.append(cs)
 
@@ -722,7 +786,7 @@ def _facts_js(source, fn) -> FnFacts:
             continue
         callee = _callee_name(source, call.child_by_field_name("function"), "js")
         recv = _receiver_last(source, call)
-        cs = CallSite(callee, call.start_point[0] + 1, [],
+        cs = CallSite(callee, _callee_site(call).start_point[0] + 1, [],
                       (call.start_byte, call.end_byte),
                       f"{recv}.{callee}" if recv and recv != callee else None)
         pos = 0
@@ -731,9 +795,13 @@ def _facts_js(source, fn) -> FnFacts:
                 continue
             ids: set = set()
             _paths(source, arg, ids, _JS_MEMBER)
-            if arg.type == "call_expression":
-                cs.arg_calls[pos] = _callee_name(
-                    source, arg.child_by_field_name("function"), "js")
+            reads = _source_reads(
+                source, arg, lambda s, n: _chain_path(s, n, _JS_MEMBER),
+                _JS_MEMBER, {"call_expression"},
+                lambda s, n: _callee_name(
+                    s, n.child_by_field_name("function"), "js"))
+            if reads:
+                cs.arg_sources[pos] = reads
             cs.args.append((pos, ids))
             pos += 1
         facts.calls.append(cs)
@@ -1033,7 +1101,7 @@ def _facts_generic(source, fn, lang) -> FnFacts:
         args = _args_of(call)
         callee = _callee_of(source, call, idset)
         recv = _receiver_last(source, call)
-        cs = CallSite(callee, call.start_point[0] + 1, [],
+        cs = CallSite(callee, _callee_site(call).start_point[0] + 1, [],
                       (call.start_byte, call.end_byte),
                       f"{recv}.{callee}" if recv else None)
         if args is not None:
@@ -1043,9 +1111,12 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                     continue
                 ids: set = set()
                 _arg_paths(source, arg, idset, ids)
-                top = _rhs_call(source, arg, calls_t, idset)
-                if top is not None:
-                    cs.arg_calls[pos] = top
+                reads = _source_reads(
+                    source, arg, lambda s, n: _gen_chain(s, n, idset),
+                    _GEN_MEMBER, calls_t,
+                    lambda s, n: _callee_of(s, n, idset))
+                if reads:
+                    cs.arg_sources[pos] = reads
                 cs.args.append((pos, ids))
                 pos += 1
         facts.calls.append(cs)

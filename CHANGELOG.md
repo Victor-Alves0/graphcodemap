@@ -22,6 +22,36 @@ OpenTaint, Graphify) lida no código-fonte, e medido contra gabarito real.
   *chamada*; o novo `flow_evidence` mede a evidência do *fluxo*
   (flow-sensitive vs over-approximated). Um caminho todo `certain` pode ter
   fluxo over-aproximado — juntar os dois num rótulo escondia isso.
+- **Casamento qualificado passou a funcionar fora do Java.** `_receiver_last`
+  caía no campo `function` quando a gramática não tem campo de receptor — e em
+  Python e JS esse campo guarda o callee INTEIRO, então a função devolvia o
+  próprio método e todo `qualified` saía `None`. A regra existia desde que foi
+  escrita e só o Java a exercitava: `res.redirect`, `fs.readFile` e `POST.get`
+  nunca chegaram a casar.
+- **Catálogo de sinks para Node e Python**, quase todo QUALIFICADO pelo mesmo
+  motivo do Java (`send`/`write`/`open`/`redirect` são comuns demais nus):
+  saída HTTP (XSS), open redirect, path traversal (`fs.*`, `res.download`),
+  `vm`, desserialização (`unserialize`), XXE (`parseXmlString`), SSRF.
+  Nova régua `bare_sinks` para os homônimos que só valem SEM receptor:
+  `open(caminho)` é path traversal, `Image.open(arquivo)` não é; `exec(cmd)` é
+  comando, `Todo.find().sort().exec(cb)` é Mongoose. A régua é POR LINGUAGEM
+  depois que restringi-la globalmente derrubou o recall de cmdi do OWASP de
+  26% para 3% (em Java o receptor de `exec` é uma variável local).
+- **Callbacks anônimos viram símbolos** (`get#2`). `app.get("/x", (req,res) =>
+  {…})` é *o* idioma de rota do Node e o corpo não tinha dono; como a varredura
+  itera símbolos, o handler inteiro era invisível. Esta lacuna foi medida como
+  irrelevante uma rodada antes e estava **mascarada** pela ausência dos sinks de
+  Node — as duas se escondiam mutuamente.
+- **A linha reportada agora contém o sink** também em cadeia fluente
+  multi-linha (`Todo.\n find({}).\n exec(cb)` começa 3 linhas antes do `exec`).
+- **A origem do achado é a fonte certa.** A varredura carimbava a PRIMEIRA
+  fonte da função em todos os achados dela; numa função com duas fontes o
+  achado saía verdadeiro com explicação inventada.
+- **Um defeito, um achado.** Deduplicação por (origem, sink, argumento),
+  ficando a versão mais confiável e, em empate, a cadeia mais curta.
+- **Achado em fixture de teste é marcado (`in_test`) e vai para o fim.** Varrer
+  o Express dá 73 achados e 68 são a suíte dele ecoando a requisição de
+  propósito: verdadeiros, sem interesse, e afogavam os 5 de produção.
 - **Fonte lida direto no argumento do sink.** O motor exigia que a sujeira
   passasse por uma variável: semeava em `x = req.body.q` e via `x` chegar ao
   sink. Só que a forma mais comum de escrever a vulnerabilidade não tem

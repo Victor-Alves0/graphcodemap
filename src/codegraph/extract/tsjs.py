@@ -21,7 +21,15 @@ _HOLE = "\x00"
 
 
 class TsJsExtractor(BaseExtractor):
+    def __init__(self, *a, **kw) -> None:
+        super().__init__(*a, **kw)
+        # nós já visitados dentro do escopo do próprio símbolo (callbacks
+        # anônimos); a descida genérica os pula para não visitar duas vezes
+        self._done: set[int] = set()
+
     def visit(self, node) -> None:
+        if node.id in self._done:
+            return
         t = node.type
         if t == "export_statement":
             decl = node.child_by_field_name("declaration")
@@ -63,6 +71,7 @@ class TsJsExtractor(BaseExtractor):
             return
         if t == "call_expression":
             self._call(node)
+            self._callback_args(node)
             for c in node.children:
                 self.visit(c)
             return
@@ -273,6 +282,44 @@ class TsJsExtractor(BaseExtractor):
         else:
             for c in node.children:
                 self.visit(c)
+
+    def _callback_args(self, node) -> None:
+        """Função passada como ARGUMENTO vira símbolo próprio.
+
+        `app.get("/learn", isLoggedIn, (req, res) => {…})` é *o* idioma de rota
+        do Node, e a função ali não tem nome para se pendurar. Sem símbolo o
+        corpo do handler fica sem dono — e como a varredura de taint itera
+        símbolos, o handler inteiro era invisível. Medido em código real: o
+        open redirect do NodeGoat (`res.redirect(req.query.url)`) mora
+        exatamente dentro de um desses.
+
+        O nome é `callee#índice` (`get#2`): curto, determinístico e sem fingir
+        que existe um identificador no código. Nomes repetidos no mesmo escopo
+        se separam pelo ordinal, como qualquer homônimo.
+        """
+        args = node.child_by_field_name("arguments")
+        if args is None:
+            return
+        fn = node.child_by_field_name("function")
+        callee = self.text(fn).rsplit(".", 1)[-1].strip() if fn is not None else "call"
+        if not callee or any(ch in callee for ch in "\n([?!"):
+            return                        # callee não-nomeável: não inventa nome
+        idx = 0
+        for arg in args.named_children:
+            if arg.type == "comment":
+                continue
+            if arg.type in _FUNCTION_VALUES:
+                name_node = arg.child_by_field_name("name")
+                name = self.text(name_node) if name_node is not None else f"{callee}#{idx}"
+                body = arg.child_by_field_name("body")
+                self.add_sym(arg, "function", name,
+                             signature=self.sig_of(arg, body))
+                self._done.add(arg.id)
+                self.scope.append((name, "function"))
+                for c in arg.children:
+                    self.visit(c)
+                self.scope.pop()
+            idx += 1
 
     def _doc_comment(self, node) -> str | None:
         prev = node.prev_sibling
