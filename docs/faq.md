@@ -36,7 +36,11 @@ Treat findings as **candidates to verify, not verdicts.** The analysis is:
 
 - **may-taint** — it over-approximates, so it can report a flow that a stricter
   analysis would rule out (false positives are expected; the goal is not to miss).
-- **flow-insensitive** — it doesn't model statement order.
+- **flow-sensitive** in 18 of the 19 dedicated code languages (everything but
+  Clojure) — statement order and redefinition ARE modelled: reassigning a
+  variable kills the old taint. The `codegraph capabilities` map says which
+  languages have it; the ones that don't fall back to the over-approximating
+  engine, and each finding declares which was used (`flow_evidence`).
 - **field-sensitive** — access paths with a prefix rule: a tainted object taints
   its fields, but tainting one field does not taint its siblings (validated for
   Python and JS/TS; the generic tier applies a safe base-name fallback).

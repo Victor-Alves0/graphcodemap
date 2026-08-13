@@ -122,7 +122,12 @@ Each layer is independently useful; higher layers refine, never gate.
   [Languages & Resolvers](languages.md).
 - **L2 — graph metrics.** PageRank (structural centrality, recomputed lazily) and
   Louvain community detection (subsystems/domains). Powers `overview`, `impact`
-  ranking, and `communities`.
+  ranking, and `communities`. Also the home of **dataflow/taint**, which is
+  *flow-sensitive* in 18 of the 19 dedicated code languages: the taint
+  environment travels a structured CFG, so a redefinition kills the old taint
+  (`x = input(); x = escape(x); sink(x)` is clean). Findings carry two
+  independent axes — `confidence` (was the call resolved?) and `flow_evidence`
+  (was the flow verified, or over-approximated?).
 - **L3 — descriptions (LLM).** On-demand, cached, provider-agnostic natural-
   language summaries of a symbol, module, or domain. Invalidated by body-hash, so
   a summary never silently describes old code. Entirely optional — nothing else

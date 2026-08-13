@@ -10,7 +10,7 @@ Symbols, call graph, references, impact, dataflow and taint over any codebase �
 [![CI](https://github.com/Victor-Alves0/graphcodemap/actions/workflows/tests.yml/badge.svg)](https://github.com/Victor-Alves0/graphcodemap/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%E2%80%93%203.12-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1284%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-1373%20passing-brightgreen)](tests/)
 [![Status](https://img.shields.io/badge/status-alpha%20v0.1-orange)](#status)
 
 [Quick start](#quick-start) ·
@@ -123,7 +123,9 @@ Full reference: **[CLI](docs/cli.md)** · **[MCP tools](docs/mcp.md)** · **[Lib
   PageRank × path-confidence; feed it a git diff to ask *"what does my branch
   break?"* → [CLI](docs/cli.md#impact)
 - **Dataflow & taint (CPG-lite).** Source→sink reachability with sanitizers,
-  interprocedural and computed on demand. Covers all 18 dedicated languages.
+  interprocedural and computed on demand. **Flow-sensitive** in 18 of the 19
+  dedicated code languages: a redefinition kills the taint, so
+  `x = input(); x = escape(x); sink(x)` is correctly reported clean.
   → [Concepts](docs/concepts.md#dataflow--taint)
 - **Semantic L1 via LSP.** Promotes edges to `certain` through one generic LSP
   client; every dedicated language has a resolver wired.
@@ -147,8 +149,11 @@ Trust is built by being honest about the boundaries:
 - ⚠️ **Reach for grep first when you just want to *find* a string.** For plain
   text search grep is often enough and cheaper; the graph earns its cost on
   structure, not substring matching.
-- ⚠️ **Treat dataflow/taint findings as candidates.** It is *may-taint* (it
-  over-approximates) and flow-insensitive — a lead to verify, not a verdict.
+- ⚠️ **Treat dataflow/taint findings as candidates.** It is *may-taint* — it
+  over-approximates on purpose, so a finding is a lead to verify, not a verdict.
+  Measured on the OWASP Benchmark: **64% precision, 31% recall** (see
+  [evals/RESULTS.md](evals/RESULTS.md)). That is not competitive with a mature
+  SAST, and we publish it rather than claim otherwise.
 
 Full, quantified limitations and benchmark methodology: **[FAQ & Limitations](docs/faq.md)**
 and **[evals/RESULTS.md](evals/RESULTS.md)**.
@@ -178,7 +183,7 @@ cover all 18 dedicated *code* languages. → **[Languages & Resolvers](docs/lang
 
 ## Status
 
-**Alpha (v0.1.0).** The core is feature-complete and covered by **1284 tests**
+**Alpha (v0.1.0).** The core is feature-complete and covered by **1373 tests**
 (including a contract-test suite that locks the graph's ten load-bearing
 invariants), across a CI matrix of Linux + Windows on Python 3.10–3.12. It has
 not yet been battle-tested by broad real-world usage — expect rough edges, and

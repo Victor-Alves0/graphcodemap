@@ -6,6 +6,40 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ## [Unreleased]
 
+### Added / Changed — precisão do taint (fase "estado da arte")
+
+Ciclo dirigido por uma análise dos concorrentes (Joern, Semgrep/Opengrep,
+OpenTaint, Graphify) lida no código-fonte, e medido contra gabarito real.
+
+- **Taint FLOW-SENSITIVE em 18 das 19 linguagens dedicadas.** O motor mantinha um
+  conjunto `tainted` monotônico por função, sem kill: uma vez sujo, sempre sujo.
+  Agora o ambiente é avaliado por ponto do programa sobre uma CFG estruturada
+  (`flowsens.py`), com `out = gen ∪ (in − kill)` e kill **ciente de campos**
+  (reatribuir `x` mata `x.a`). Elimina 4 classes de falso positivo medidas,
+  incluindo o caso canônico `x = input(); x = escape(x); sink(x)`. Clojure segue
+  no motor que over-aproxima, e o mapa declara isso.
+- **Dois eixos de confiança no achado.** `confidence` mede a resolução da
+  *chamada*; o novo `flow_evidence` mede a evidência do *fluxo*
+  (flow-sensitive vs over-approximated). Um caminho todo `certain` pode ter
+  fluxo over-aproximado — juntar os dois num rótulo escondia isso.
+- **Modelagem de framework.** Catálogo de sources/sinks gerado (offline) das
+  regras **MIT** do OpenTaint + suplemento curado de JDBC/Spring/processo.
+  `exec.Command` (Go) e `FileOutputStream` (Java) eram invisíveis.
+- **Casamento qualificado `receptor.método`.** `getWriter.println` é sink de XSS;
+  `out.println` não é. Sem isso, XSS e trust-boundary eram estruturalmente
+  indetectáveis (44% dos falsos negativos).
+- **Mapa de capacidades por linguagem** (`codegraph capabilities`), derivado do
+  código, com teste de paridade que **quebra o build** se um extractor dedicado
+  novo aparecer sem dataflow.
+- **Primeiro benchmark de detecção de vulnerabilidade** (OWASP Benchmark v1.2,
+  1.698 casos): **64% de precisão, 31% de recall, score +0.12**. Não é
+  competitivo com um SAST maduro, e está publicado assim em
+  [`evals/RESULTS.md`](evals/RESULTS.md) junto das ressalvas metodológicas.
+
+Correções pré-existentes encontradas no caminho: a regra `getparameter` estava
+em minúsculas e o casamento é case-sensitive (nunca casou com o `getParameter`
+real de um servlet); Kotlin e Swift não transformavam reatribuição em fato.
+
 ### Added / Changed
 
 - **Anti-explosão de `taint`/`reaches` (fecho transitivo com teto).**

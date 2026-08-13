@@ -6,9 +6,12 @@ e incremental, estilo Semgrep — não whole-program (Joern) nem IFDS pesado.
 Duas partes:
 - EXTRAÇÃO DE FATOS por linguagem (`extract_facts`): normaliza o corpo de uma
   função em params, atribuições, chamadas e returns — abstraindo a gramática.
-- MOTOR DE TAINT compartilhado (`analyze_facts`): fixpoint may-taint
-  (flow-insensitive → over-aproxima, lado seguro p/ segurança); sanitizers
-  cortam a propagação; sources semeiam.
+- MOTOR DE TAINT: `analyze()` despacha para o motor FLOW-SENSITIVE
+  (`flowsens.py`: CFG estruturada + kill na redefinição) nas linguagens de
+  `FLOW_SENSITIVE`, e cai em `analyze_facts` (fixpoint may-taint
+  flow-INsensitive, que over-aproxima) no resto. Sanitizers cortam a
+  propagação; sources semeiam. Os dois são may-taint: sujo em ALGUM caminho
+  basta.
 
 INTER-procedural fica no query.py, compondo estes sumários ao longo do call
 graph. Computado sob demanda do código no disco (sempre fresco). Suporte:
