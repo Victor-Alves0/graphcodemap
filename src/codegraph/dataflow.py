@@ -20,6 +20,7 @@ Python e JavaScript/TypeScript.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 # Config de extração de fatos por linguagem. As irregularidades das gramáticas
@@ -274,28 +275,97 @@ def _build_regions(body_node, family: str, source=None, assigns=None):
         return None
     from .flowsens import build_regions
 
-    return build_regions(body_node, family, source, _const_env(assigns or ()))
+    consts = _const_env(assigns or ())
+    _resolve_ternaries(assigns or (), consts)
+    return build_regions(body_node, family, source, consts)
+
+
+# Texto de RHS que PODE ser constante: literal, ou cadeia de acessos e chamadas
+# sobre nomes. Filtro grosseiro de propósito — quem decide de verdade é o
+# avaliador de `flowsens`, que só aceita métodos puros sobre valores conhecidos.
+_TALVEZ_CONST = re.compile(r"""^[\w.'"\s()\[\],+\-*%]+$""")
 
 
 def _const_text(source: bytes, node) -> str | None:
-    """Texto do RHS quando ele é um literal simples; senão None."""
+    """Texto do RHS quando ele pode ser uma expressão constante; senão None."""
     if node is None:
         return None
-    from .flowsens import is_literal
-
     t = _text(source, node).strip()
-    return t if is_literal(t) else None
+    if len(t) > 120 or not t or not _TALVEZ_CONST.match(t):
+        return None
+    return t
+
+
+def _py_colher_de(source):
+    def colher(n):
+        out: set = set()
+        _paths(source, n, out, _PY_MEMBER)
+        return out
+    return colher
+
+
+def _js_colher_de(source):
+    def colher(n):
+        out: set = set()
+        _paths(source, n, out, _JS_MEMBER)
+        return out
+    return colher
+
+
+def _gen_colher(source, n, idset):
+    out: set = set()
+    _gen_paths(source, n, idset, out)
+    return out
+
+
+def _ternary(source, node, colher) -> tuple | None:
+    """(condição, ids do então, ids do senão) se o RHS for um ternário.
+
+    `colher(nó)` monta o conjunto de caminhos daquele lado, na gramática certa.
+    Os campos `condition`/`consequence`/`alternative` cobrem Java, C, C#, JS e
+    PHP; Python não nomeia os campos e escreve na ordem `A if C else B`, tratada
+    à parte."""
+    if node is None:
+        return None
+    if "ternary" not in node.type and "conditional_expression" not in node.type:
+        return None
+    cond = node.child_by_field_name("condition")
+    cons = node.child_by_field_name("consequence")
+    alt = node.child_by_field_name("alternative")
+    if cond is None and len(node.named_children) == 3:
+        cons, cond, alt = node.named_children
+    if cond is None or cons is None or alt is None:
+        return None
+    return (_text(source, cond), colher(cons), colher(alt))
+
+
+def _resolve_ternaries(assigns, consts) -> None:
+    """Com as constantes conhecidas, mantém só o lado do ternário que executa."""
+    from .flowsens import fold_condition
+
+    for a in assigns:
+        if a.ternary is None:
+            continue
+        cond, ids_entao, ids_senao = a.ternary
+        v = fold_condition(cond, consts)
+        if v is not None:
+            a.rhs_ids = ids_entao if v else ids_senao
 
 
 def _const_env(assigns) -> dict:
-    """{nome: literal} das variáveis locais que valem uma constante.
+    """{nome: valor} das variáveis locais que valem uma constante.
 
     Regra deliberadamente estreita: o nome tem que ser atribuído UMA ÚNICA vez
-    em toda a função, e essa atribuição tem que ser um literal. Qualquer
-    segunda atribuição — mesmo de outro literal — elimina o nome, porque a
-    ordem entre ela e o uso não é considerada aqui. Um valor errado neste mapa
-    apagaria um achado real em silêncio; um valor faltando só desliga o
-    folding, que é o lado seguro do erro."""
+    em toda a função. Qualquer segunda atribuição — mesmo de outro literal —
+    elimina o nome, porque a ordem entre ela e o uso não é considerada aqui.
+    Um valor errado neste mapa apagaria um achado real em silêncio; um valor
+    faltando só desliga o folding, que é o lado seguro do erro.
+
+    Resolve em rodadas porque as constantes se encadeiam:
+    `String guess = "ABC"; char alvo = guess.charAt(1);` — `alvo` só vira
+    conhecido depois de `guess`."""
+    from .flowsens import eval_const
+
     vistos: dict = {}
     for a in assigns:
         for alvo in a.targets:
@@ -306,7 +376,19 @@ def _const_env(assigns) -> dict:
                 vistos[nome] = None           # reatribuído: não é constante
             else:
                 vistos[nome] = a.rhs_const
-    return {n: v for n, v in vistos.items() if v is not None}
+    pendentes = {n: t for n, t in vistos.items() if t is not None}
+    resolvidos: dict = {}
+    for _ in range(4):                        # teto: cadeias reais são curtas
+        mudou = False
+        for nome, texto in list(pendentes.items()):
+            v = eval_const(texto, resolvidos)
+            if v is not None:
+                resolvidos[nome] = v
+                del pendentes[nome]
+                mudou = True
+        if not mudou:
+            break
+    return resolvidos
 
 
 def _func_types(lang: str) -> set[str]:
@@ -359,6 +441,11 @@ class Assign:
     # É a matéria-prima do folding de condição: sem saber que `num` vale 86 não
     # dá para decidir `(7*42) - num > 200`.
     rhs_const: str | None = None
+    # `bar = cond ? "constante" : sujo` — (texto da condição, ids do então,
+    # ids do senão). Um ternário não é um `if` e não vira região de controle,
+    # então sem isto os dois lados sempre entram em `rhs_ids` juntos.
+    # Resolvido em `_resolve_ternaries`, depois que as constantes são conhecidas.
+    ternary: tuple | None = None
 
 
 @dataclass
@@ -698,7 +785,8 @@ def _facts_py(source, fn) -> FnFacts:
                                     a.type == "augmented_assignment", rhs_call,
                                     a.start_point[0] + 1,
                                     (a.start_byte, a.end_byte), rhs_q,
-                                    _const_text(source, right)))
+                                    _const_text(source, right),
+                                    _ternary(source, right, _py_colher_de(source))))
 
     calls: list = []
     _walk(body, {"call"}, stop, calls)
@@ -794,7 +882,8 @@ def _facts_js(source, fn) -> FnFacts:
                                     (d.start_byte, d.end_byte),
                                     _rhs_qualified(source, value,
                                                    {"call_expression"}),
-                                    _const_text(source, value)))
+                                    _const_text(source, value),
+                                    _ternary(source, value, _js_colher_de(source))))
 
     reassigns: list = []
     _walk(body, {"assignment_expression", "augmented_assignment_expression"},
@@ -815,7 +904,8 @@ def _facts_js(source, fn) -> FnFacts:
                                     (a.start_byte, a.end_byte),
                                     _rhs_qualified(source, right,
                                                    {"call_expression"}),
-                                    _const_text(source, right)))
+                                    _const_text(source, right),
+                                    _ternary(source, right, _js_colher_de(source))))
 
     calls: list = []
     _walk(body, {"call_expression"}, stop, calls)
@@ -1132,7 +1222,9 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                                     n.start_point[0] + 1,
                                     (n.start_byte, n.end_byte),
                                     _rhs_qualified(source, rhs_node, calls_t),
-                                    _const_text(source, rhs_node)))
+                                    _const_text(source, rhs_node),
+                                    _ternary(source, rhs_node,
+                                             lambda n: _gen_colher(source, n, idset))))
 
     # chamadas
     calls: list = []

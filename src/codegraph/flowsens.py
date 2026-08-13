@@ -203,7 +203,8 @@ def is_literal(text: str) -> bool:
     return bool(_LITERAL.match(text.strip()))
 
 
-def _py_literal(text: str):
+def py_literal(text: str):
+    """Valor Python de um literal escrito em qualquer uma das linguagens."""
     t = text.strip()
     if t in ("true", "True"):
         return True
@@ -215,12 +216,46 @@ def _py_literal(text: str):
         return None
 
 
+# Métodos PUROS sobre constante. `String guess = "ABC"; guess.charAt(1)` é uma
+# expressão constante de verdade, não um truque: o valor está inteiramente
+# escrito no arquivo. Só entram métodos sem efeito colateral e com semântica
+# idêntica entre as linguagens — nada de `format`, `replaceAll` (regex difere)
+# ou qualquer coisa dependente de locale.
+_PUROS = {
+    "charAt": lambda s, a: s[a[0]] if isinstance(s, str) and a and
+    isinstance(a[0], int) and 0 <= a[0] < len(s) else None,
+    "length": lambda s, a: len(s) if isinstance(s, str) and not a else None,
+    "toUpperCase": lambda s, a: s.upper() if isinstance(s, str) and not a else None,
+    "toLowerCase": lambda s, a: s.lower() if isinstance(s, str) and not a else None,
+    "upper": lambda s, a: s.upper() if isinstance(s, str) and not a else None,
+    "lower": lambda s, a: s.lower() if isinstance(s, str) and not a else None,
+    "trim": lambda s, a: s.strip() if isinstance(s, str) and not a else None,
+    "strip": lambda s, a: s.strip() if isinstance(s, str) and not a else None,
+}
+
+
 def _eval(node, consts):
     """Valor de um nó da AST Python, ou None se não for decidível."""
     if isinstance(node, ast.Constant):
         return node.value if isinstance(node.value, (int, bool, str)) else None
     if isinstance(node, ast.Name):
-        return _py_literal(consts[node.id]) if node.id in consts else None
+        return consts.get(node.id)
+    if isinstance(node, ast.Call):
+        fn = node.func
+        if not isinstance(fn, ast.Attribute) or fn.attr not in _PUROS:
+            return None
+        if node.keywords:
+            return None
+        alvo = _eval(fn.value, consts)
+        if alvo is None:
+            return None
+        args = [_eval(a, consts) for a in node.args]
+        if any(a is None for a in args):
+            return None
+        try:
+            return _PUROS[fn.attr](alvo, args)
+        except (TypeError, ValueError, IndexError):
+            return None
     if isinstance(node, ast.UnaryOp):
         v = _eval(node.operand, consts)
         if v is None or isinstance(v, str):
@@ -262,34 +297,34 @@ def _eval(node, consts):
     return None
 
 
-def fold_condition(text: str, consts: dict) -> bool | None:
-    """A condição é decidível com o que sabemos? True/False, ou None.
-
-    O texto é lido com o parser do PRÓPRIO Python. A aritmética e as comparações
-    de Java, C, C#, JS, Go e PHP são sintaticamente iguais às de Python nessa
-    fatia; `&&`/`||` são traduzidos. O que Python não parseia — cast, chamada,
-    `instanceof` — vira erro de sintaxe e devolve None, que é o resultado certo.
-    """
+def eval_const(text: str, consts: dict):
+    """Valor da expressão, ou None quando não é decidível. Base de tudo aqui."""
     if not text or len(text) > 200:
         return None
     t = text.strip()
     while t.startswith("(") and t.endswith(")"):
-        t = t[1:-1].strip()                 # `if (cond)` do C/Java
+        t = t[1:-1].strip()                 # `if (cond)` / `switch (x)` do C/Java
     t = t.replace("&&", " and ").replace("||", " or ")
-    if any(bad in t for bad in ("=", "!", "~", "&", "|", "^", "/", "<<", ">>")):
+    protegido = t.replace("==", "\0").replace("!=", "\0").replace("<=", "\0") \
+                 .replace(">=", "\0")
+    if any(bad in protegido for bad in ("=", "!", "~", "&", "|", "^", "/",
+                                        "<<", ">>")):
         # `=` sozinho seria atribuição; `!`/`~` e os bit-a-bit não estão
-        # modelados. `==`/`!=`/`<=`/`>=` reentram pela troca abaixo.
-        t2 = t.replace("==", "\0EQ\0").replace("!=", "\0NE\0") \
-              .replace("<=", "\0LE\0").replace(">=", "\0GE\0")
-        if any(bad in t2 for bad in ("=", "!", "~", "&", "|", "^", "/",
-                                     "<<", ">>")):
-            return None
+        # modelados; `/` é inteira em Java e real em Python, e um avaliador que
+        # erra a semântica é pior que um que se recusa a decidir.
+        return None
     try:
         tree = ast.parse(t, mode="eval")
     except (SyntaxError, ValueError, MemoryError, RecursionError):
         return None
-    v = _eval(tree.body, consts)
+    return _eval(tree.body, consts)
+
+
+def fold_condition(text: str, consts: dict) -> bool | None:
+    """A condição é decidível com o que sabemos? True/False, ou None."""
+    v = eval_const(text, consts)
     return None if v is None or isinstance(v, str) else bool(v)
+
 
 
 def build_regions(body_node, key: str, source: bytes | None = None,
@@ -328,6 +363,21 @@ def build_regions(body_node, key: str, source: bytes | None = None,
                 campos = [c for c in campos if c is not None]
                 if campos:
                     bodies = campos
+            eh_switch = any(k in t for k in ("switch", "match", "when", "case"))
+            if eh_switch:
+                # `switch (x) { case 'A': …  case 'B': … }` — o corpo é UM
+                # contêiner (`switch_block`) e os grupos de case ficavam dentro
+                # dele, virando trecho SEQUENCIAL. Com isso `case 'A': bar =
+                # sujo;` seguido de `case 'B': bar = "limpo";` apagava a
+                # sujeira do primeiro: exatamente o mesmo defeito do `if` sem
+                # chaves, e a mesma perda silenciosa de recall. Um corpo que
+                # contém outros corpos é contêiner de BRAÇOS.
+                expandido = []
+                for b in bodies:
+                    filhos = [c for c in b.named_children
+                              if c.type in cfg["body"]]
+                    expandido.extend(filhos or [b])
+                bodies = expandido
             if not bodies:
                 # gramática sem nó de corpo: trata o nó todo como braço único
                 arm = Seq([Span(child.start_byte, child.end_byte)])
@@ -350,14 +400,83 @@ def build_regions(body_node, key: str, source: bytes | None = None,
                 seq.items.append(Loop(inner))
             else:
                 arms = [build_regions(b, key, source, consts) for b in bodies]
-                tem_else = len(bodies) >= 2
-                seq.items.append(
-                    Branch(arms, has_else=tem_else,
-                           taken=_arm_taken(child, cfg, source, consts,
-                                            len(bodies))))
+                # Num `switch`, "tem 2+ braços" NÃO significa que algum sempre
+                # executa: sem `default` o seletor pode não casar com nenhum e
+                # o bloco inteiro é pulado. Quem decide é a presença do rótulo
+                # padrão; na dúvida, assume que não há — o ambiente de entrada
+                # entra na união e nenhum kill escapa, que é o lado seguro.
+                tem_else = (_tem_default(bodies, source) if eh_switch
+                            else len(bodies) >= 2)
+                if source is None or not consts:
+                    escolhido = None
+                elif eh_switch:
+                    escolhido = _switch_taken(child, source, consts, bodies)
+                else:
+                    escolhido = _arm_taken(child, cfg, source, consts,
+                                           len(bodies))
+                seq.items.append(Branch(arms, has_else=tem_else,
+                                        taken=escolhido))
         else:
             seq.items.append(Span(child.start_byte, child.end_byte))
     return seq
+
+
+_DEFAULT = re.compile(r"^\s*(?:default\b|else\b|case\s+_\b|_\s*(?:=>|->))")
+
+
+def _tem_default(bodies, source) -> bool:
+    """Algum braço do switch é o rótulo padrão?"""
+    if source is None:
+        return False
+    for b in bodies:
+        cabeca = source[b.start_byte:b.start_byte + 40].decode("utf-8", "replace")
+        if _DEFAULT.match(cabeca):
+            return True
+    return False
+
+
+_ROTULO = re.compile(r"\bcase\s+([^:\n]+?)\s*(?::|->)")
+_CORTA = re.compile(r"\b(?:break|return|throw|continue)\b")
+
+
+def _switch_taken(node, source, consts, bodies) -> int | None:
+    """Índice do único grupo de `case` que executa, se o seletor for constante.
+
+    Recusa quando o grupo escolhido pode CAIR no seguinte (sem `break`/`return`):
+    aí mais de um corpo executa e escolher um só apagaria o outro."""
+    sel = None
+    for f in ("condition", "value", "subject"):
+        sel = node.child_by_field_name(f)
+        if sel is not None:
+            break
+    if sel is None:
+        return None
+    alvo = eval_const(source[sel.start_byte:sel.end_byte].decode("utf-8", "replace"),
+                      consts)
+    if alvo is None or isinstance(alvo, bool):
+        return None
+    padrao = None
+    escolhido = None
+    for i, b in enumerate(bodies):
+        texto = source[b.start_byte:b.end_byte].decode("utf-8", "replace")
+        cabeca = texto[:60]
+        if _DEFAULT.match(cabeca):
+            padrao = i
+            continue
+        for bruto in _ROTULO.findall(texto[:200]):
+            v = py_literal(bruto)
+            if v is None:
+                return None            # rótulo que não sabemos ler: desiste
+            if v == alvo:
+                if escolhido is not None:
+                    return None        # dois grupos casando: não deveria, desiste
+                escolhido = i
+    if escolhido is None:
+        return padrao if padrao is not None else -1
+    corpo = source[bodies[escolhido].start_byte:bodies[escolhido].end_byte]
+    if not _CORTA.search(corpo.decode("utf-8", "replace")):
+        return None                    # pode cair no próximo grupo
+    return escolhido
 
 
 def _arm_taken(node, cfg, source, consts, n_bodies) -> int | None:

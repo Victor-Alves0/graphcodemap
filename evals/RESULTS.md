@@ -945,3 +945,94 @@ dvpwa 5) — nenhum deles usa predicado opaco, que é um artifício do Benchmark
 `switch` com seletor constante (45 FPs, 12,9%) exige casar o seletor com cada
 rótulo — mesma técnica, mais trabalho. Consulta parametrizada são 10 casos
 (2,9%). E os 106 "outro" ainda não foram abertos um a um.
+
+---
+
+# Rodada 12 — `switch` e ternário: +0.24 → +0.29 (2026-08-13)
+
+Continuação direta da rodada 11, mesma técnica em mais duas formas.
+
+## `switch` tinha o MESMO defeito estrutural do `if`
+
+O corpo de um `switch` é um contêiner (`switch_block`) e os grupos de `case`
+ficavam DENTRO dele, virando um trecho sequencial:
+
+```java
+case 'A': bar = param;   break;   // gen: bar sujo
+case 'B': bar = "bob";   break;   // kill: apagava a sujeira do anterior
+```
+
+Mesmo defeito do `if` sem chaves, mesma perda silenciosa de recall. Um corpo
+que contém outros corpos é contêiner de BRAÇOS. Corrigido: **+25 verdadeiros
+positivos** (recall 71% → 74%), ao custo de +23 falsos positivos — que são
+exatamente os casos que passaram a precisar de folding.
+
+Junto veio uma correção de semântica: num `switch`, "tem 2+ braços" NÃO
+significa que algum sempre executa. Sem `default` o seletor pode não casar com
+nenhum. Quem decide agora é a presença do rótulo padrão; na dúvida, assume que
+não há — o ambiente de entrada entra na união e nenhum kill escapa.
+
+## Folding do seletor, e propagação por métodos puros
+
+O idioma do Benchmark é `String guess = "ABC"; char alvo = guess.charAt(1);`.
+Folding só de literais não resolve: `alvo` depende de `guess`. O ambiente de
+constantes passou a resolver **em rodadas**, e o avaliador ganhou um conjunto
+de métodos PUROS (`charAt`, `length`, `substring`, `toUpperCase`, `trim`…) —
+métodos sem efeito colateral cuja semântica é idêntica entre as linguagens.
+Ficaram de fora `format` e `replaceAll`, cujo comportamento difere.
+
+Guarda contra fall-through: se o grupo escolhido não termina em
+`break`/`return`/`throw`, o folding se recusa — mais de um corpo executa e
+escolher um só apagaria o outro.
+
+Resultado: **−23 falsos positivos, zero verdadeiros perdidos.**
+
+## Ternário
+
+`bar = (7 * 18) + num > 200 ? "constante" : param` não é um `if` e não vira
+região de controle, então os dois lados sempre entravam juntos em `rhs_ids`.
+Agora a atribuição guarda `(condição, ids do então, ids do senão)` e, depois
+que as constantes são conhecidas, fica só o lado que executa.
+
+Resultado: **−18 falsos positivos, zero verdadeiros perdidos.**
+
+## Placar
+
+| | TP | FP | precisão | recall | score |
+|---|---|---|---|---|---|
+| fim da rodada 11 | 641 | 372 | 63% | 71% | +0.24 |
+| `switch` estruturado | 666 | 395 | 63% | 74% | +0.24 |
+| + folding do seletor | 666 | 372 | 64% | 74% | +0.27 |
+| + ternário | **666** | **354** | **65%** | **74%** | **+0.29** |
+
+As três formas de folding entregaram a mesma propriedade: **só removem falso
+positivo, nunca verdadeiro**. É o que se pede de uma otimização de precisão.
+
+## O maior bloco restante, agora diagnosticado
+
+Abrindo os falsos positivos que sobraram, a causa dominante não é mais
+predicado opaco — é **taint atravessando o retorno de uma chamada sem
+sumário**:
+
+```java
+String bar = new Test().doSomething(request, param);   // <- aqui
+java.io.File fileTarget = new java.io.File(bar);       // <- achado
+...
+class Test {
+    String doSomething(HttpServletRequest request, String param) {
+        String bar = "alsosafe";     // NUNCA recebe param
+        return bar;
+    }
+}
+```
+
+O motor intra-procedural vê `param` dentro da expressão do RHS e suja `bar`.
+Não pergunta se `doSomething` de fato **propaga** o argumento até o retorno —
+e neste caso não propaga. O folding dentro do auxiliar é irrelevante: o
+chamador já decidiu sozinho.
+
+A máquina para responder isso já existe (`Flow.reaches_return`), e já é usada
+numa passada para descobrir *wrappers de fonte*. Falta usá-la no sentido
+inverso: um sumário por função de "qual parâmetro chega ao retorno", consultado
+na atribuição. É a próxima peça, e é ARQUITETURAL — nenhuma regra de catálogo
+a resolve.
