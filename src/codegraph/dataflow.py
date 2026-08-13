@@ -123,6 +123,13 @@ for _l in GEN:
 _BODY_TYPES = {"block", "function_body", "statement_block", "compound_statement",
                "do_block", "statements", "body_statement", "statement_list"}
 
+# Raiz de arquivo. Em linguagem de script o código perigoso mora FORA de
+# qualquer função — em PHP é a norma, e o DVWA inteiro é assim. Sem tratar a
+# raiz como um corpo, a varredura (que itera símbolos de função) não enxerga
+# nada do arquivo.
+_ROOT_TYPES = {"program", "module", "source_file", "translation_unit",
+               "compilation_unit", "chunk", "document"}
+
 
 # Linguagens cujo taint é FLOW-SENSITIVE (flowsens.py: CFG estruturada + kill na
 # redefinição). Rollout por etapas e DECLARADO — o mapa `codegraph capabilities`
@@ -169,14 +176,33 @@ FRAMEWORK_SOURCE_CALLS: frozenset[str] = frozenset(
 )
 
 
-def is_framework_source_path(path) -> bool:
-    """O caminho de acesso lê dado de requisição? (`req.query.q`, `request.POST`)
+# Nomes que são a PRÓPRIA fonte, sem receptor: as superglobais do PHP.
+# `$_GET["id"]` não tem objeto de requisição — a variável global É a
+# requisição. São seguras de casar por nome nu porque nenhuma outra linguagem
+# tem variável chamada `_GET`. O extractor de PHP entrega o nome sem o `$`,
+# mas as duas formas entram para não depender disso.
+#
+# `_SERVER` fica de fora: metade dele é cabeçalho do usuário e metade é
+# configuração do servidor (`DOCUMENT_ROOT`), e sem distinguir a chave o
+# resultado seria acusar todo `include` de app PHP.
+_BARE_SOURCE_NAMES = frozenset({
+    "_GET", "_POST", "_REQUEST", "_COOKIE", "_FILES",
+    "$_GET", "$_POST", "$_REQUEST", "$_COOKIE", "$_FILES",
+})
 
-    Exige receptor de requisição E atributo conhecido — só o atributo seria
-    frouxo demais (`x.data` é qualquer coisa)."""
-    if not isinstance(path, tuple) or len(path) < 2:
+
+def is_framework_source_path(path) -> bool:
+    """O caminho de acesso lê dado de requisição? (`req.query.q`, `$_GET`)
+
+    Com receptor, exige receptor de requisição E atributo conhecido — só o
+    atributo seria frouxo demais (`x.data` é qualquer coisa). Sem receptor,
+    só as superglobais do PHP, que não são ambíguas."""
+    if not isinstance(path, tuple) or not path:
         return False
-    return path[0] in _REQ_RECEIVERS and path[1] in _REQ_ATTRS
+    if len(path) == 1:
+        return path[0] in _BARE_SOURCE_NAMES
+    return ((path[0] in _REQ_RECEIVERS and path[1] in _REQ_ATTRS)
+            or path[0] in _BARE_SOURCE_NAMES)
 
 
 def is_framework_source_call(qualified: str | None) -> bool:
@@ -207,12 +233,15 @@ def _source_reads(source, node, chain, member, call_types, callee,
     if node is None:
         return out
     t = node.type
-    if t in member:
-        p = chain(source, node)
-        if p is not None:
-            if is_framework_source_path(p):
-                out.append((".".join(p), guards))
-            return out                          # caminho maximal: não desce
+    # tenta resolver o caminho em QUALQUER nó, não só nos de acesso a membro:
+    # `$_GET['id']` não tem receptor, e a fonte é a folha lá no fundo. Testar
+    # só `t in member` fazia a varredura passar direto por ela.
+    p = chain(source, node)
+    if p is not None and is_framework_source_path(p):
+        out.append((".".join(p), guards))
+        return out
+    if t in member and p is not None:
+        return out                              # caminho maximal: não desce
     if t in call_types:
         guards = guards + (callee(source, node),)
     for c in node.named_children:
@@ -764,7 +793,7 @@ def _facts_py(source, fn) -> FnFacts:
             if n:
                 params.append(n)
     facts = FnFacts(params=params)
-    body = fn.child_by_field_name("body")
+    body = fn if fn.type in _ROOT_TYPES else fn.child_by_field_name("body")
     if body is None:
         return facts
     stop = {"function_definition", "lambda"}
@@ -856,7 +885,7 @@ def _facts_js(source, fn) -> FnFacts:
             if n:
                 params.append(n)
     facts = FnFacts(params=params)
-    body = fn.child_by_field_name("body")
+    body = fn if fn.type in _ROOT_TYPES else fn.child_by_field_name("body")
     if body is None:
         return facts
     stop = _JS_FUNCS
@@ -1152,6 +1181,8 @@ def _params_generic(source, fn, cfg, idset):
 
 
 def _body_of(fn):
+    if fn.type in _ROOT_TYPES:
+        return fn                      # arquivo inteiro: o corpo é a raiz
     b = fn.child_by_field_name("body")
     if b is not None:
         return b

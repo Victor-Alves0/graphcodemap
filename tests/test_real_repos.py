@@ -249,7 +249,9 @@ def test_telemetry_is_present_and_coherent(analysed, name):
 
 _SRC_TOKEN = re.compile(
     r"\b(?:req|request)\s*\.\s*(?:POST|GET|body|query|params|form|args|json|"
-    r"files|FILES|cookies|headers|values|payload|data|match_info)\b")
+    r"files|FILES|cookies|headers|values|payload|data|match_info)\b"
+    # superglobais do PHP: a variável É a requisição, não há receptor
+    r"|\$_(?:GET|POST|REQUEST|COOKIE|FILES)\b")
 _COMMENT = re.compile(r"^\s*(?://|#|\*|/\*)")
 # leitura usada só como ÍNDICE: `users[req.params.id]`. O motor descarta o
 # índice de um subscrito por decisão declarada (ver `_chain_path`) — o que

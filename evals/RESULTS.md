@@ -1098,3 +1098,89 @@ apaga vulnerabilidade.
 Revertido. A `_df_resolve_call` com filtro por nome (que desempata
 `new Test().doSomething(x)`, onde a linha tem a aresta do `new` para a classe e
 a do método) foi revertida junto por não ter mais uso.
+
+---
+
+# Rodada 14 — PHP e o argumento que importa (2026-08-13)
+
+Os dois itens que faltavam da lista, com um defeito estrutural no meio.
+
+## Só o argumento 0 é a consulta
+
+`cur.execute(q, params)` com `q` literal e placeholders é a forma SEGURA de
+consultar: o dado do usuário vai em `params` justamente para NÃO ser
+interpretado como SQL. Sujeira chegando no argumento 1 não é injeção — é o
+mecanismo que a impede. O motor acusava quem acertou.
+
+A regra certa não era analisar como a string foi construída (que era a minha
+hipótese desde a rodada 9), e sim restringir o sink ao argumento onde o perigo
+mora. Os modelos do CodeQL trazem esse índice em cada linha (`Argument[0]`); nós
+o descartamos na importação porque o motor ainda não o usava.
+
+Resultado em app vulnerável real — **dvpwa: 5 achados → 1**, e o que sobrou é a
+única injeção verdadeira do projeto:
+
+```python
+q = ("INSERT INTO students (name) VALUES ('%(name)s')" % {'name': name})
+await cur.execute(q)                      # interpolação, não binding
+```
+
+Os quatro removidos eram todos parametrizados
+(`cur.execute('… WHERE username = %s', (username,))`). O tutorial do Flask caiu
+de 5 para 1 pelo mesmo motivo — era o falso positivo declarado na rodada 9.
+**dvpwa e Flask passaram a ter 100% de precisão.**
+
+## PHP: 0 → 51 num app vulnerável real
+
+DVWA tem 102 `$_POST` e 99 `$_GET`, e o motor achava **zero**. Três causas
+empilhadas:
+
+1. **Superglobal não é caminho com receptor.** `$_GET['id']` produz o caminho
+   `("_GET",)`, de UM segmento, e a regra de fonte de framework exigia dois
+   (`req` + `query`). Nomes como `_GET` são seguros de casar nus — nenhuma
+   outra linguagem tem variável com esse nome. `_SERVER` ficou de fora: metade
+   dele é cabeçalho do usuário e metade é configuração do servidor, e sem
+   distinguir a chave o resultado seria acusar todo `include` de app PHP.
+
+2. **Não havia catálogo de PHP.** Nem o CodeQL publica MaD para PHP, nem o
+   OpenTaint cobria. Levantado à mão a partir do que aparece no DVWA:
+   `mysqli_query`, `shell_exec`, `unserialize`, `move_uploaded_file`,
+   `file_get_contents`, `header`… e os sanitizers (`htmlspecialchars`,
+   `mysqli_real_escape_string`, `escapeshellarg`, `intval`…).
+
+3. **Código de nível de ARQUIVO era invisível.** Este é o defeito estrutural, e
+   vale para qualquer linguagem de script. A varredura itera símbolos de função;
+   em PHP o código perigoso mora fora de qualquer função — o DVWA inteiro é
+   assim:
+
+   ```php
+   if( isset( $_REQUEST[ 'Submit' ] ) ) {
+       $id = $_REQUEST[ 'id' ];
+       $query = "SELECT … WHERE user_id = '$id';";
+       $result = mysqli_query($GLOBALS["___mysqli_ston"], $query);
+   }
+   ```
+
+   Agora o símbolo de ARQUIVO também é analisado, com a raiz da árvore fazendo
+   o papel de corpo. Como a extração já para nas funções aninhadas, não há
+   contagem dupla.
+
+O oráculo de recall, estendido para as superglobais, cobrou mais cinco casos
+que ainda faltavam: `header("location: " . $_GET['redirect'])` e
+`move_uploaded_file($_FILES['uploaded']['tmp_name'], …)`. A causa era a
+coleta de fontes dentro do argumento só olhar nós de acesso a MEMBRO — e a
+superglobal é uma folha, sem receptor. Corrigido: **51 achados**.
+
+## Sem efeito colateral
+
+| repo | antes | agora |
+|---|---|---|
+| DVWA (PHP) | 0 | **51** |
+| dvpwa | 5 | **1** (4 eram parametrizados) |
+| Flask | 5 | **1** (4 eram parametrizados) |
+| dvna / NodeGoat / nodejs-goof / pygoat | 6 / 4 / 2 / 10 | iguais |
+| Express / gin | 73 / 10 | iguais |
+| OWASP Benchmark | +0.29 | **+0.29** |
+
+O Benchmark não se moveu, como esperado: é Java, sem superglobais e sem código
+de nível de arquivo.

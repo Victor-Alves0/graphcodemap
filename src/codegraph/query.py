@@ -870,7 +870,13 @@ class QueryEngine:
         data, tree = self._df_parse(sym_row["path"], lang, cache)
         if tree is None:
             return None, lang                  # erro de I/O: não cacheia (transitório)
-        fn = df.find_function_node(tree.root_node, sym_row["start_line"], lang)
+        # símbolo de ARQUIVO: o corpo é a raiz. Em linguagem de script o código
+        # perigoso mora fora de qualquer função (o DVWA inteiro é assim), e uma
+        # varredura que só itera funções não enxerga nada dele.
+        if sym_row.get("kind") == "file":
+            fn = tree.root_node
+        else:
+            fn = df.find_function_node(tree.root_node, sym_row["start_line"], lang)
         facts = df.extract_facts(data, fn, lang) if fn is not None else None
         fc[ck] = facts
         if len(fc) > self._facts_cache_cap:
@@ -1044,7 +1050,7 @@ class QueryEngine:
                             "what": rotulo + "()"}
                 # casa pelo nome simples OU pelo qualificado receptor.método:
                 # `getWriter.println` é sink de XSS, `out.println` não é.
-                if rules.is_sink(af.callee, af.qualified):
+                if rules.is_sink(af.callee, af.qualified, af.arg_index):
                     if len(findings) < max_findings:
                         findings.append({
                             "origin": here,
@@ -1096,7 +1102,7 @@ class QueryEngine:
                 args = [like_escape(scope.rstrip("/").replace("\\", "/")) + "%"]
             rows = self.conn.execute(
                 f"SELECT s.*, f.path FROM symbols s JOIN files f ON s.file_id=f.id "
-                f"WHERE s.kind IN ('function','method'){where}", args).fetchall()
+                f"WHERE s.kind IN ('function','method','file'){where}", args).fetchall()
             # 1ª passada: funções que RETORNAM dado de fonte viram elas próprias
             # fontes (pega o idioma comum do wrapper `x = get_input()`)
             collected: list = []

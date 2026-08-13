@@ -76,6 +76,30 @@ _SANITIZERS = {
 # de 26% para 3%; a régua por linguagem existe por causa dessa medição.
 _BARE_SINKS = {"open", "exec"}
 
+# Sinks em que SÓ O PRIMEIRO ARGUMENTO é perigoso.
+#
+# `cur.execute(q, params)` com `q` literal e placeholders é a forma SEGURA de
+# consultar — o dado do usuário vai em `params` justamente para não ser
+# interpretado como SQL. Sujeira chegando no argumento 1 não é injeção; é o
+# mecanismo que a impede. Sem esta distinção o motor acusava quem acertou,
+# medido num app real (dvpwa `dao/review.py`) e em 10 casos do Benchmark.
+#
+# Mesma ideia para template: em `render_template_string(tpl, **ctx)` o sink é o
+# TEMPLATE; passar dado do usuário como contexto é o uso correto.
+#
+# Os modelos do CodeQL trazem esse índice em cada linha (`Argument[0]`); nós o
+# descartamos na importação porque o motor ainda não o usava. Aqui está o
+# começo do uso — por enquanto só onde o ganho foi medido.
+_ARG0_ONLY = {
+    # SQL: o argumento 0 é a consulta, o resto é ligação de parâmetros
+    "execute", "executemany", "executescript", "executeQuery", "executeUpdate",
+    "executeLargeUpdate", "addBatch", "batchUpdate", "queryForObject",
+    "queryForList", "queryForMap", "queryForRowSet", "queryForInt",
+    "queryForLong", "prepareStatement", "prepareCall", "query",
+    # template
+    "render_template_string",
+}
+
 
 @dataclass(frozen=True)
 class TaintRules:
@@ -83,22 +107,33 @@ class TaintRules:
     sinks: frozenset[str]
     sanitizers: frozenset[str]
     bare_sinks: frozenset[str] = frozenset()
+    arg0_only: frozenset[str] = frozenset()
 
-    def is_sink(self, callee: str, qualified: str | None) -> bool:
+    def is_sink(self, callee: str, qualified: str | None,
+                arg_index: int | None = None) -> bool:
         """A chamada é um sink? Casa pelo `receptor.método` OU pelo nome nu.
 
         Um nome em `bare_sinks` só casa SEM receptor: é o que separa
-        `open(caminho)` de `Image.open(arquivo)`."""
-        if qualified is not None and qualified in self.sinks:
-            return True
+        `open(caminho)` de `Image.open(arquivo)`.
+
+        Um nome em `arg0_only` só casa no PRIMEIRO argumento: em
+        `execute(consulta, params)` o dado do usuário em `params` é a defesa,
+        não a falha. `arg_index` negativo é kwarg — posição desconhecida, então
+        continua valendo, que é o lado seguro."""
         if callee in self.bare_sinks:
-            return qualified is None
-        return callee in self.sinks
+            casou = qualified is None
+        else:
+            casou = ((qualified is not None and qualified in self.sinks)
+                     or callee in self.sinks)
+        if casou and arg_index is not None and arg_index > 0 \
+                and callee in self.arg0_only:
+            return False
+        return casou
 
 
 def default_rules() -> TaintRules:
     return TaintRules(frozenset(_SOURCES), frozenset(_SINKS), frozenset(_SANITIZERS),
-                      frozenset(_BARE_SINKS))
+                      frozenset(_BARE_SINKS), frozenset(_ARG0_ONLY))
 
 
 # Suplemento CURADO À MÃO, por linguagem. Complementa o catálogo gerado com
@@ -155,6 +190,40 @@ _CURATED: dict[str, dict[str, set[str]]] = {
             "forHtml", "forHtmlContent", "forHtmlAttribute", "forJavaScript",
             "forUri", "forUriComponent", "forXml", "forCssString",
             "forXmlContent", "forXmlAttribute",
+        },
+    },
+    # --- PHP -----------------------------------------------------------------
+    # O CodeQL não publica modelos MaD para PHP e o OpenTaint também não cobria,
+    # então este bloco é levantado à mão a partir do que aparece em app PHP
+    # vulnerável real (DVWA). As fontes são as superglobais, tratadas em
+    # `dataflow._BARE_SOURCE_NAMES` porque não têm receptor.
+    "php": {
+        "sinks": {
+            # SQL — nomes de função, não método: PHP expõe tudo global
+            "mysqli_query", "mysqli_multi_query", "mysqli_real_query",
+            "mysql_query", "pg_query", "pg_send_query", "sqlite_query",
+            "sqlsrv_query", "oci_parse",
+            # comando
+            "shell_exec", "passthru", "proc_open", "pcntl_exec",
+            # execução de código
+            "assert", "create_function", "call_user_func", "call_user_func_array",
+            # arquivo → path traversal / LFI
+            "file_get_contents", "file_put_contents", "readfile", "fopen",
+            "unlink", "move_uploaded_file", "copy", "rename", "scandir",
+            "opendir", "glob",
+            # desserialização
+            "unserialize",
+            # LDAP / XPath
+            "ldap_search", "ldap_bind", "xpath",
+            # cabeçalho controlado pelo usuário → open redirect / splitting
+            "header",
+        },
+        "sanitizers": {
+            "htmlspecialchars", "htmlentities", "strip_tags", "addslashes",
+            "mysqli_real_escape_string", "mysql_real_escape_string",
+            "pg_escape_string", "pg_escape_literal", "intval", "floatval",
+            "urlencode", "rawurlencode", "basename", "escapeshellarg",
+            "escapeshellcmd", "filter_var", "preg_quote",
         },
     },
     # --- Node/Express/Koa/Fastify --------------------------------------------
@@ -261,7 +330,7 @@ def catalog_for(languages) -> TaintRules:
         from .taint_catalog import CATALOG
     except ImportError:                       # catálogo é opcional
         return TaintRules(frozenset(src), frozenset(snk), frozenset(san),
-                          frozenset(bare))
+                          frozenset(bare), frozenset(_ARG0_ONLY))
     try:
         from .taint_catalog_codeql import CATALOG_CODEQL
     except ImportError:                       # também opcional
@@ -284,7 +353,7 @@ def catalog_for(languages) -> TaintRules:
     # execução de comando é pior que acusar um homônimo.
     bare -= snk
     return TaintRules(frozenset(src), frozenset(snk), frozenset(san),
-                      frozenset(bare))
+                      frozenset(bare), frozenset(_ARG0_ONLY))
 
 
 def load_rules(root: Path, languages=None) -> TaintRules:
@@ -309,4 +378,4 @@ def load_rules(root: Path, languages=None) -> TaintRules:
         # arquivo existe UMA lista de sinks, e a distinção é detalhe interno.
         bare -= set(rem.get("sinks", [])) | set(rem.get("bare_sinks", []))
     return TaintRules(frozenset(src), frozenset(snk), frozenset(san),
-                      frozenset(bare))
+                      frozenset(bare), frozenset(base.arg0_only))
