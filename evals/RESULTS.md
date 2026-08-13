@@ -1036,3 +1036,65 @@ numa passada para descobrir *wrappers de fonte*. Falta usá-la no sentido
 inverso: um sumário por função de "qual parâmetro chega ao retorno", consultado
 na atribuição. É a próxima peça, e é ARQUITETURAL — nenhuma regra de catálogo
 a resolve.
+
+---
+
+# Rodada 13 — sumário de retorno: TENTADO E REJEITADO (2026-08-13)
+
+Registro de resultado negativo, porque ele vale tanto quanto os positivos.
+
+## A hipótese
+
+Diagnosticada na rodada 12: `x = f(sujo)` suja `x` sem perguntar se `f` devolve
+o argumento. A máquina para responder já existia (`Flow.reaches_return`), usada
+numa passada para achar *wrappers de fonte*. Bastaria usá-la no sentido inverso.
+
+## O que foi construído
+
+- Passada prévia calculando, por função, se algum parâmetro alcança o `return`.
+- Resolução do callee do RHS por **FQN**, não por nome: o Benchmark tem 1.698
+  métodos `doSomething` diferentes, e decidir pelo nome ou não decide nada (uma
+  definição que propaga contamina todas) ou decide errado. A resolução preferiu
+  a definição do MESMO ARQUIVO quando ela é única.
+- Guardas: só funções COM parâmetros (senão `sb.toString()` seria morto, e ele
+  devolve dado derivado do receptor), e wrappers de fonte fora.
+
+## Por que foi rejeitado
+
+| | TP | FP | precisão | recall | score |
+|---|---|---|---|---|---|
+| sem sumário | 666 | 354 | 65% | 74% | +0.29 |
+| com sumário | 557 | **0** | **100%** | 62% | +0.62 |
+
+O score dobra. E ainda assim não entra, por três motivos:
+
+1. **Custa 109 verdadeiros positivos** — 12% do recall — por um motivo que não
+   consegui isolar. Para uma ferramenta de bug-finding, perda de recall
+   inexplicada é o pior defeito possível: some vulnerabilidade real, em
+   silêncio, sem nada no relatório indicando que sumiu.
+2. **Zero falso positivo em 796 casos seguros não é resultado, é alarme.**
+   Nenhuma análise estática real acerta 796 de 796. O número seria bonito de
+   publicar e eu não confiaria nele.
+3. O mecanismo é **quase inerte em código real** — nos cinco apps vulneráveis
+   ele mudou exatamente um achado — e **decisivo no Benchmark**, porque o
+   artifício de segurança do Benchmark é justamente esse método auxiliar. Um
+   ganho que só aparece no gabarito sintético é um ganho no gabarito, não no
+   produto.
+
+O único efeito em código real foi *correto*: removeu
+`sqli/dao/review.py:36` do dvpwa, que é uma consulta PARAMETRIZADA
+(`INSERT … VALUES (%(course_id)s, %(review_text)s)` com dict de params) —
+falso positivo nosso, e por acaso um dos 10 casos daquela categoria.
+
+## O que fica
+
+A ideia está certa e é o que o `summaryModel` do CodeQL faz. O que falta não é
+a análise, é a **resolução**: saber a qual definição uma chamada se refere exige
+tipo, não nome. Isso é trabalho da camada L1 (LSP), que já existe no projeto
+para outras consultas e ainda não alimenta o motor de taint. Enquanto essa
+ponte não existir, o sumário decide sobre o alvo errado — e decidir errado aqui
+apaga vulnerabilidade.
+
+Revertido. A `_df_resolve_call` com filtro por nome (que desempata
+`new Test().doSomething(x)`, onde a linha tem a aresta do `new` para a classe e
+a do método) foi revertida junto por não ter mais uso.
