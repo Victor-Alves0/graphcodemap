@@ -219,6 +219,10 @@ class CallSite:
     line: int
     args: list[tuple[int, set[str]]]  # (arg_index 0-based; -1=kwarg, ids)
     span: tuple[int, int] | None = None
+    # RECEPTOR.MÉTODO (ex.: "getWriter.println"). Distingue o sink de XSS
+    # `response.getWriter().println` do inofensivo `System.out.println`, que
+    # pelo último segmento seriam o mesmo nome. Ver flowsens/taint.
+    qualified: str | None = None
 
 
 @dataclass
@@ -245,6 +249,7 @@ class ArgFlow:
     arg_index: int
     line: int
     via: str
+    qualified: str | None = None
 
 
 @dataclass
@@ -373,6 +378,37 @@ def _callee_name(source: bytes, fn, family: str) -> str:
     return _text(source, fn).rsplit(".", 1)[-1].split("(", 1)[0].strip()
 
 
+def _receiver_last(source: bytes, call_node) -> str | None:
+    """Último segmento do RECEPTOR da chamada.
+
+    `response.getWriter().println` → "getWriter"; `System.out.println` → "out".
+    É a informação mínima que separa um sink real de um homônimo inofensivo,
+    sem precisar de inferência de tipos."""
+    obj = None
+    for f in ("object", "receiver", "operand", "function"):
+        obj = call_node.child_by_field_name(f)
+        if obj is not None:
+            break
+    if obj is None:
+        return None
+    txt = _text(source, obj).strip()
+    txt = txt.split("(", 1)[0] if txt.endswith(")") is False else txt
+    # remove a lista de argumentos de uma chamada encadeada: `a.b(x)` → `a.b`
+    if txt.endswith(")"):
+        depth, cut = 0, len(txt)
+        for i in range(len(txt) - 1, -1, -1):
+            if txt[i] == ")":
+                depth += 1
+            elif txt[i] == "(":
+                depth -= 1
+                if depth == 0:
+                    cut = i
+                    break
+        txt = txt[:cut]
+    seg = txt.rsplit(".", 1)[-1].strip()
+    return seg or None
+
+
 def _body_of(fn_node, family: str):
     return fn_node.child_by_field_name("body")
 
@@ -453,8 +489,10 @@ def _facts_py(source, fn) -> FnFacts:
         if args is None:
             continue
         callee = _callee_name(source, call.child_by_field_name("function"), "py")
+        recv = _receiver_last(source, call)
         cs = CallSite(callee, call.start_point[0] + 1, [],
-                      (call.start_byte, call.end_byte))
+                      (call.start_byte, call.end_byte),
+                      f"{recv}.{callee}" if recv and recv != callee else None)
         pos = 0
         for arg in args.named_children:
             if arg.type == "keyword_argument":
@@ -555,8 +593,10 @@ def _facts_js(source, fn) -> FnFacts:
         if args is None:
             continue
         callee = _callee_name(source, call.child_by_field_name("function"), "js")
+        recv = _receiver_last(source, call)
         cs = CallSite(callee, call.start_point[0] + 1, [],
-                      (call.start_byte, call.end_byte))
+                      (call.start_byte, call.end_byte),
+                      f"{recv}.{callee}" if recv and recv != callee else None)
         pos = 0
         for arg in args.named_children:
             if arg.type == "comment":
@@ -860,8 +900,10 @@ def _facts_generic(source, fn, lang) -> FnFacts:
     for call in calls:
         args = _args_of(call)
         callee = _callee_of(source, call, idset)
+        recv = _receiver_last(source, call)
         cs = CallSite(callee, call.start_point[0] + 1, [],
-                      (call.start_byte, call.end_byte))
+                      (call.start_byte, call.end_byte),
+                      f"{recv}.{callee}" if recv else None)
         if args is not None:
             pos = 0
             for arg in args.named_children:
@@ -1078,7 +1120,8 @@ def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset()) -> Flow:
             hit = [p for p in ids if _is_tainted(p, tainted)]
             if hit:
                 via = ".".join(sorted(hit)[0])
-                flow.arg_flows.append(ArgFlow(c.callee, idx, c.line, via))
+                flow.arg_flows.append(
+                    ArgFlow(c.callee, idx, c.line, via, c.qualified))
     for r in facts.returns:
         if r.top_call is not None and r.top_call in sanitizers:
             continue

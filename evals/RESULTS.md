@@ -432,45 +432,61 @@ pós-P1 (flow-sensitive), P2 (dois eixos) e P3 (catálogo de framework).
 
 | categoria | TP | FP | FN | TN | precisão | recall | F1 | score |
 |---|---|---|---|---|---|---|---|---|
+| xss | 87 | 37 | 159 | 172 | 70% | 35% | 0.47 | +0.18 |
 | sqli | 90 | 54 | 182 | 178 | 62% | 33% | 0.43 | +0.10 |
+| pathtraver | 40 | 25 | 93 | 110 | 62% | 30% | 0.40 | +0.12 |
 | cmdi | 33 | 23 | 93 | 102 | 59% | 26% | 0.36 | +0.08 |
-| pathtraver | 25 | 15 | 108 | 120 | 62% | 19% | 0.29 | +0.08 |
+| trustbound | 20 | 7 | 63 | 36 | 74% | 24% | 0.36 | +0.08 |
 | xpathi | 7 | 1 | 8 | 19 | 88% | 47% | 0.61 | +0.42 |
 | ldapi | 6 | 11 | 21 | 21 | 35% | 22% | 0.27 | **−0.12** |
-| xss | 0 | 0 | 246 | 209 | — | **0%** | 0.00 | 0.00 |
-| trustbound | 0 | 0 | 83 | 43 | — | **0%** | 0.00 | 0.00 |
-| **TOTAL** | **161** | **104** | **741** | **692** | **61%** | **18%** | **0.28** | **+0.05** |
+| **TOTAL** | **283** | **158** | **619** | **638** | **64%** | **31%** | **0.42** | **+0.12** |
 
 Custo: 11,2s para indexar + 5,5s de análise nos 1.698 arquivos.
 
+### Evolução medida no mesmo harness
+
+| etapa | precisão | recall | score |
+|---|---|---|---|
+| catálogo base (só regras universais) | 85%\* | 9%\* | +0.06\* |
+| + sinks de framework curados (JDBC/Spring/processo) | 61% | 18% | +0.05 |
+| **+ casamento qualificado receptor.método (P3b)** | **64%** | **31%** | **+0.12** |
+
+\* medido numa amostra de 200 casos antes da corrida completa; a amostra era
+alfabética e portanto enviesada — os 85% não se sustentaram nos 1.698. Fica
+registrado como lembrete de que amostra pequena não ordenada aleatoriamente
+mente.
+
 ## Leitura honesta
 
-**Isto não é um resultado competitivo como SAST.** Score +0.05 (a métrica
-oficial é TPR − FPR; 0 = aleatório) significa que, no agregado, estamos pouco
-acima de chutar. Em LDAP injection somos **piores que aleatório** (−0.12).
-Publicamos porque um número ruim medido vale mais que um número bom alegado —
-e porque agora cada melhoria é verificável.
+**Ainda não é um resultado competitivo como SAST.** Score +0.12 (métrica oficial
+é TPR − FPR; 0 = aleatório) é baixo, e em LDAP injection continuamos **piores
+que aleatório** (−0.12). Publicamos porque um número ruim medido vale mais que
+um número bom alegado — e porque agora cada melhoria é verificável.
 
 O que o benchmark permitiu separar, e que inspeção manual não separaria:
 
-### 1. Lacuna de CATÁLOGO (barata, já parcialmente fechada)
+### 1. Lacuna de CATÁLOGO (barata)
 
-Antes de adicionar os sinks de JDBC/Spring que faltavam, o total era 85%
-precisão / 9% recall. Só nomear `queryForObject`, `executeUpdate`,
-`batchUpdate`, `ProcessBuilder` e `evaluate` levou sqli de 8% → 33% de recall e
-xpathi a 47%, **com a precisão subindo junto** — sinal de que são nomes
-distintivos, não chutes.
+Nomear os sinks de JDBC/Spring que faltavam (`queryForObject`, `executeUpdate`,
+`batchUpdate`, `ProcessBuilder`, `evaluate`) levou sqli de 8% → 33% de recall e
+xpathi a 47%. Nomes distintivos: entram sem custo de precisão.
 
-### 2. Lacuna de ARQUITETURA: XSS e trust-boundary têm recall ZERO
+### 2. Lacuna de ARQUITETURA: resolvida por casamento QUALIFICADO
 
-Não é falta de esforço: os sinks de XSS em Java são `println`/`print`/`write`
-num `PrintWriter` de resposta, e os de trust-boundary são `setAttribute`. São
-genéricos demais para casar pelo último segmento — tratá-los como sink por
-nome-nu dispararia em todo `System.out.println` de qualquer código.
+Na primeira medição, **XSS e trust-boundary tinham recall ZERO** — 329 dos 741
+falsos negativos (44%). Não era falta de esforço: o sink de XSS em Java é
+`println` num `PrintWriter` de resposta, e casar `println` pelo último segmento
+dispararia em todo `System.out.println` de qualquer código.
 
-**329 dos 741 falsos negativos (44%) são XSS + trustbound**, estruturalmente
-inatingíveis sem **casamento qualificado por receptor/pacote**. Isso promove
-esse item de "melhoria desejável" a *bloqueador medido*.
+A saída não foi inferência de tipos, e sim casar o par **receptor.método**:
+
+    response.getWriter().println(sujo)   → getWriter.println   ← sink
+    System.out.println(sujo)             → out.println         ← inofensivo
+
+Duas informações em vez de uma. Resultado: XSS 0% → **35%** de recall
+(87 achados), trust-boundary 0% → **24%**, path traversal 19% → **30%** — e a
+precisão global SUBIU (61% → 64%). Ganhar recall sem pagar em ruído é a única
+troca que interessa aqui.
 
 ### 3. Os falsos positivos são, em boa parte, PREDICADOS OPACOS
 

@@ -252,7 +252,8 @@ class _Eval:
             hit = [p for p in ids if _is_tainted(p, env)]
             if hit:
                 self.flow.arg_flows.append(
-                    ArgFlow(c.callee, idx, c.line, ".".join(sorted(hit)[0])))
+                    ArgFlow(c.callee, idx, c.line, ".".join(sorted(hit)[0]),
+                            c.qualified))
 
     def _record_return(self, r, env: set) -> None:
         if r.top_call is not None and r.top_call in self.sanitizers:

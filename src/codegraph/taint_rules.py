@@ -88,6 +88,14 @@ _CURATED: dict[str, dict[str, set[str]]] = {
             "ProcessBuilder",
             # XPath / expressão
             "evaluate", "compileExpression", "getValue", "setValue",
+            # XSS: QUALIFICADOS (receptor.método). `println` puro pegaria todo
+            # System.out.println do mundo; `getWriter.println` só pega escrita
+            # na resposta HTTP, que é o sink de verdade.
+            "getWriter.println", "getWriter.print", "getWriter.write",
+            "getWriter.printf", "getWriter.format", "getWriter.append",
+            "getOutputStream.write", "getOutputStream.print",
+            # trust boundary: só na sessão, não em qualquer objeto
+            "getSession.setAttribute", "getSession.putValue",
         },
     },
 }

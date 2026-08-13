@@ -1025,7 +1025,10 @@ class QueryEngine:
                     "resolved": callee is not None,
                 }
                 cur_conf = conf_min(path_conf, step["confidence"]) if callee else path_conf
-                if af.callee in rules.sinks:
+                # casa pelo nome simples OU pelo qualificado receptor.método:
+                # `getWriter.println` é sink de XSS, `out.println` não é.
+                if af.callee in rules.sinks or (
+                        af.qualified is not None and af.qualified in rules.sinks):
                     if len(findings) < max_findings:
                         findings.append({
                             "origin": origin,
