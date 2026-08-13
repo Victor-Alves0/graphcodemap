@@ -160,3 +160,65 @@ def test_swift_l1_promotes_cross_file_call(tmp_path):
     assert active and promoted > 0
     assert row is not None and row["dst"] is not None
     assert row["confidence"] == "certain"
+
+
+# -- descoberta do intelephense (roda SEM o servidor instalado) ---------------
+# O resolver é distribuído por npm, e a descoberta virou não-trivial (env, o
+# tools/php do repo, prefixos globais, shim no PATH). Estes testes fixam as duas
+# pontas do contrato: inerte quando ausente, e lançado via node quando presente.
+
+def test_php_resolver_inerte_sem_intelephense(monkeypatch):
+    from codegraph.l1 import php_intelephense as php
+
+    monkeypatch.delenv("CODEGRAPH_INTELEPHENSE", raising=False)
+    monkeypatch.setattr(php, "_module_dirs", lambda: [])
+    monkeypatch.setattr(php.shutil, "which", lambda name: None)
+    assert php.IntelephenseResolver.available() is False
+
+
+def test_php_resolver_inerte_sem_node(monkeypatch, tmp_path):
+    """Entrypoint .js sem node é o mesmo que servidor ausente — melhor inerte
+    do que estourar no Popen."""
+    from codegraph.l1 import php_intelephense as php
+
+    js = tmp_path / "intelephense" / "lib" / "intelephense.js"
+    js.parent.mkdir(parents=True)
+    js.write_text("// stub")
+    monkeypatch.delenv("CODEGRAPH_INTELEPHENSE", raising=False)
+    monkeypatch.setattr(php, "_module_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(php, "_find_node", lambda: None)
+    assert php.IntelephenseResolver.available() is False
+    monkeypatch.setattr(php, "_find_node", lambda: "node")
+    assert php.IntelephenseResolver.available() is True
+    argv = php.IntelephenseResolver._popen_argv(
+        object.__new__(php.IntelephenseResolver))
+    assert argv == ["node", str(js), "--stdio"]
+
+
+def test_lsp_warmup_nao_envenena_o_memo(monkeypatch, tmp_path):
+    """Servidor que responde `[]` enquanto indexa (intelephense) em vez de
+    segurar a requisição (gopls): o warmup não pode ficar preso ao 'ainda não'
+    memoizado — era exatamente isso que zerava o L1 de PHP."""
+    from codegraph.l1 import lsp_base
+    from codegraph.l1.php_intelephense import IntelephenseResolver
+
+    monkeypatch.setattr(lsp_base.time, "sleep", lambda _s: None)
+    r = object.__new__(IntelephenseResolver)
+    r.root = tmp_path
+    r._defcache = {}
+    r._lines = {"main.php": ["<?php", "compute(2);"]}
+    r._ready = False
+    calls = []
+
+    def fake_request(method, params, timeout_msgs=2000):
+        calls.append(params["position"])
+        if len(calls) < 3:            # indexando
+            return []
+        return [{"uri": (tmp_path / "calc.php").as_uri(),
+                 "range": {"start": {"line": 1, "character": 0}}}]
+
+    r._request = fake_request
+    r._warmup("main.php", [{"line": 2, "col": 0, "dst_name": "compute"}])
+    assert r._ready and len(calls) == 3
+    # só o resultado ÚTIL sobrevive no memo (o vazio foi descartado)
+    assert r._defcache[("main.php", 1, 0)]

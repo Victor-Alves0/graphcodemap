@@ -73,8 +73,15 @@ client plus two special cases:
 
 | Status | Languages |
 |---|---|
-| **Validated against a live server** | Python (jedi), JS/TS (tsserver), Go (`gopls`), Rust (`rust-analyzer`), Lua (`lua-language-server`), Clojure (`clojure-lsp`), Java (`jdtls`) |
-| **Wired, inert until the toolchain is present** | C/C++ (`clangd`), PHP (`intelephense`), Ruby (`solargraph`), Kotlin (`kotlin-language-server`), C# (`csharp-ls`), Scala (`metals`), Swift (`sourcekit-lsp`) |
+| **Validated against a live server** | Python (jedi), JS/TS (tsserver), Go (`gopls`), Rust (`rust-analyzer`), Lua (`lua-language-server`), Clojure (`clojure-lsp`), Java (`jdtls`), PHP (`intelephense`) |
+| **Wired, inert until the toolchain is present** | C/C++ (`clangd`), Ruby (`solargraph`), Kotlin (`kotlin-language-server`), C# (`csharp-ls`), Scala (`metals`), Swift (`sourcekit-lsp`) |
+
+PHP's `intelephense` is the first server shipped as an **npm package** rather
+than a native binary. What `npm` puts on `PATH` is a shim (`.cmd` on Windows),
+which `CreateProcess` cannot launch without a shell — so discovery prefers the
+real entrypoint (`lib/intelephense.js`) and runs it under `node`. Measured on
+DVWA (169 PHP files): **0 → 659 `certain` edges**, 75% of all call edges, with
+taint findings unchanged.
 
 Java's `jdtls` is notable as the first **launcher-based** server (it runs on the
 JVM via an Eclipse launcher, `java -jar <equinox-launcher> …`, not a bare `PATH`

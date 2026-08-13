@@ -25,11 +25,12 @@ def all_resolvers() -> list[type]:
     Cada linguagem dedicada tem um resolver wired; ele só ATIVA quando seu LSP
     está no PATH (`available()`), inerte caso contrário. Validados ao vivo:
     Python (jedi), JS/TS (tsserver), Go (gopls), Rust (rust-analyzer), Lua
-    (lua-language-server), Clojure (clojure-lsp), Java (jdtls) — 7 famílias,
-    incluindo a primeira por *launcher* (jdtls). Wired via lsp_base genérico,
-    ativam quando o servidor/toolchain existe (não validados ao vivo aqui):
-    C/C++ (clangd), PHP (intelephense), Ruby (solargraph), Kotlin
-    (kotlin-language-server), C# (csharp-ls), Scala (metals), Swift (sourcekit)."""
+    (lua-language-server), Clojure (clojure-lsp), Java (jdtls), PHP
+    (intelephense) — 8 famílias, incluindo a primeira por *launcher* (jdtls) e a
+    primeira distribuída como pacote npm (intelephense). Wired via lsp_base
+    genérico, ativam quando o servidor/toolchain existe (não validados ao vivo
+    aqui): C/C++ (clangd), Ruby (solargraph), Kotlin (kotlin-language-server),
+    C# (csharp-ls), Scala (metals), Swift (sourcekit)."""
     from .clangd import ClangdResolver
     from .clojure_lsp import ClojureLspResolver
     from .csharp_ls import CSharpLsResolver

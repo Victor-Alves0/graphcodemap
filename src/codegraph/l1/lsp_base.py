@@ -265,6 +265,12 @@ class LspResolver:
         while time.time() < deadline:
             if self._definition(rel, e["line"] - 1, col):
                 break
+            # resposta VAZIA durante o warmup é "ainda indexando", não "não
+            # existe" — e não pode ficar no memo, senão a própria espera relê o
+            # "ainda não" cacheado e nunca vê o servidor ficar pronto. Servidores
+            # que seguram a requisição até indexar (gopls) nunca caem aqui; o
+            # intelephense responde [] na hora, e era isso que zerava o L1 de PHP.
+            self._defcache.pop((rel, e["line"] - 1, col), None)
             time.sleep(1.0)
         self._ready = True
 
