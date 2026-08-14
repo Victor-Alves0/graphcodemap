@@ -81,17 +81,18 @@ OWASP Benchmark v1.2, 1.698 casos das 7 categorias de taint:
 
 | | valor |
 |---|---|
-| precisão | 78,6% |
+| precisão | 84,5% |
 | recall (TPR) | 82,6% |
-| FPR | 25,5% |
-| score (TPR − FPR) | **+0.571** |
+| FPR | 17,2% |
+| score (TPR − FPR) | **+0.654** |
 
 Esta é a primeira linha medida com concordância obrigatória de **arquivo e
 categoria**, no mesmo commit do alvo. Na mesma régua, OpenTaint marcou +0.338
 (recall 90,8%, FPR 57,0%). GraphCodeMap agora lidera o score desta matriz, mas
-ainda perde 74 TPs para o OpenTaint. O objetivo imediato é FPR <20% sem
-devolver recall, seguido dos 23 FNs restantes de path traversal. Veja a matriz em
-[Security Benchmark](SECURITY_BENCHMARK.md).
+ainda perde 74 TPs para o OpenTaint. O gate de FPR <20% foi atingido sem perder
+nenhum TP. O objetivo imediato agora é recuperar pelo menos 10 dos 23 FNs de
+path traversal, levando a categoria de 83% para 90% de recall sem devolver o
+FPR total acima de 20%. Veja a matriz em [Security Benchmark](SECURITY_BENCHMARK.md).
 
 Em aplicações vulneráveis REAIS (não gabarito sintético):
 
@@ -114,15 +115,15 @@ Placares oficiais publicados no repositório do Benchmark
 |---|---|---|---|
 | FindBugs + FindSecBugs 1.4.6 | 96,8% | 57,7% | 39,1% |
 | SonarQube Java 3.14 | 50,4% | 17,0% | 33,3% |
-| **graphcodemap (7 categorias, category-correct)** | **82,6%** | **25,5%** | **57,1%** |
+| **graphcodemap (7 categorias, category-correct)** | **82,6%** | **17,2%** | **65,4%** |
 | OWASP ZAP (DAST) | 20,0% | 0,1% | 19,8% |
 
 O líder em score tem **57,7% de FPR** — mais da metade do código seguro
 acusado. Ninguém revisa um relatório assim; o score alto não se traduz em
 ferramenta usável.
 
-> **Alvo: o perfil do SonarQube — recall na casa dos 70% com FPR abaixo de 20%.
-> O recall já está lá. O FPR é a única coisa que falta.**
+> **O perfil-alvo inicial foi atingido: recall acima de 80% com FPR abaixo de
+> 20%. O próximo gate é path traversal com recall >=90%, preservando esse FPR.**
 
 Ressalva da comparação: os placares cobrem 11 categorias e nós pontuamos 7.
 Nossa medição agora exige arquivo **e categoria**, mas ainda não é comparação
@@ -144,8 +145,9 @@ semanticamente (`confidence='certain'`).
 
 Medido: das centenas de atribuições com chamada, só **13** em pygoat e **3** em
 dvpwa têm resolução `certain`. No OWASP Benchmark, o JDTLS agora promove
-**12.937** arestas sem erro, mas a poda de retorno Java permanece desativada:
-alvo de chamada certo não prova fluxo de retorno em despacho virtual.
+**12.937** arestas sem erro. A poda de retorno Java permanece fechada para
+despacho virtual/reflexão, mas aceita controle local comprovado e listas locais
+com `add/remove/get` e índices constantes.
 
 | ação | estado |
 |---|---|
@@ -153,16 +155,22 @@ alvo de chamada certo não prova fluxo de retorno em despacho virtual.
 | resolver L1 de PHP (intelephense) | em investigação |
 | aumentar taxa de promoção em Python/JS | em investigação |
 
-Path traversal passou de 46% para 83% de recall. O próximo micro-goal é reduzir
-os 203 falsos positivos restantes até FPR <20%, sem perder os 745 TPs atuais.
+Path traversal passou de 46% para 83% de recall. O micro-goal de FPR <20% foi
+concluído em 17,2%, sem perder os 745 TPs. O próximo é recuperar ao menos 10
+dos 23 FNs de path traversal e manter o FPR total abaixo de 20%.
 
 ### 2. Causas de falso positivo ainda abertas
 
 Classificação medida dos falsos positivos (a distribuição muda a cada rodada;
 reclassificar antes de escolher):
 
-- **Taint atravessando o retorno sem sumário** — a maior. Resolvida pelo item 1.
-- **Sanitizador não modelado** — parcialmente feito (ESAPI, Spring, Commons
+- **Lista local com índice constante** — 66 FPs resolvidos na rodada 20; as 65
+  versões vulneráveis equivalentes continuaram detectadas.
+- **Map local com chave constante** — 48 FPs restantes; exige domínio por chave
+  e overwrite, sem transformar qualquer `Map.get` em prova de limpeza.
+- **Despacho/reflexão com argumento constante** — 52 FPs restantes; alvo de
+  chamada certo ainda não prova o valor devolvido pela implementação runtime.
+- **Sanitizador HTML contextual** — 37 FPs restantes (ESAPI, Spring, Commons
   Lang, OWASP Java Encoder). Custa recall: escape para HTML não protege uso em
   contexto de URL, e tratá-lo como universal apaga esse bug.
 - **Propagação pelo RECEPTOR** — `String s = objSujo.toString()`. Hoje o motor

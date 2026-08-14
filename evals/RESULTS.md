@@ -1549,3 +1549,67 @@ caminho, linha e argumento antes/depois de L1:
 
 Nenhum dos 23 achados reais desapareceu. O próximo gate é FPR <20% com os
 745 TPs congelados; depois, recuperar os 23 FNs de path traversal restantes.
+
+---
+
+# Rodada 20 — lista Java por índice constante e FPR abaixo de 20% (2026-08-14)
+
+Os 203 FPs da rodada 19 foram reclassificados antes de alterar o motor. Todos
+pertenciam a seis templates, agrupados em quatro famílias disjuntas:
+
+| família restante na entrada | casos |
+|---|---:|
+| `ArrayList.add/remove/get` com índice constante | 66 |
+| `Map.put/get` com chave constante e overwrite | 48 |
+| despacho/reflexão com argumento final constante | 52 |
+| sanitizador HTML contextual | 37 |
+
+A primeira família tinha um oráculo particularmente forte: 66 wrappers seguros
+e 65 vulneráveis quase idênticos. Depois de inserir `param` entre dois literais
+e remover o índice zero, a única diferença relevante é `get(1)` (seguro) contra
+`get(0)` (sujo).
+
+O extrator passou a preservar o texto curto dos argumentos de chamada. Um
+domínio abstrato Java fechado aceita somente listas criadas localmente e as
+operações `add`, `remove` e `get` com índices inteiros constantes. Argumento
+com identificador é possivelmente sujo; literal é limpo. Chamada, receptor,
+índice dinâmico ou alias fora desse subconjunto aborta a prova e conserva o
+comportamento anterior.
+
+Antes do benchmark, a prova foi aplicada aos 1.698 casos elegíveis: todas as
+65 versões vulneráveis continuaram `tainted`, e **zero** foi classificada como
+limpa. Os 66 FPs previstos foram exatamente os 66 removidos na execução final.
+
+| total OWASP (7 categorias) | rodada 19 | rodada 20 |
+|---|---:|---:|
+| TP | 745 | **745** |
+| FP | 203 | **137** |
+| FN | 157 | **157** |
+| TN | 593 | **659** |
+| precisão | 78,6% | **84,5%** |
+| recall | 82,6% | **82,6%** |
+| FPR | 25,5% | **17,2%** |
+| score | +0,571 | **+0,654** |
+
+| categoria | TP | FP antes | FP depois | recall | score depois |
+|---|---:|---:|---:|---:|---:|
+| command injection | 90 | 18 | **11** | 71% | +0,63 |
+| LDAP injection | 22 | 10 | **6** | 81% | +0,63 |
+| path traversal | 110 | 43 | **27** | 83% | +0,63 |
+| SQL injection | 225 | 55 | **32** | 83% | +0,69 |
+| trust boundary | 66 | 8 | **2** | 80% | +0,75 |
+| XPath injection | 13 | 3 | **1** | 87% | +0,82 |
+| XSS | 219 | 66 | **58** | 89% | +0,61 |
+
+O relatório normalizado caiu de 1.863 para 1.732 traces; a pontuação por
+arquivo+categoria caiu exatamente 66 FPs. Na execução pareada, o passe levou
+44,87 s e pico RSS de 587,6 MB. Variação de tempo/memória não foi usada como
+critério de aceitação.
+
+Os cinco aplicativos reais foram executados novamente e preservaram a mesma
+distribuição: pygoat 10, dvpwa 1, DVNA 6, NodeGoat 4 e nodejs-goof 2. A suíte
+completa fechou em **1.411 passed, 24 skipped**.
+
+O gate FPR <20% está concluído. O próximo micro-goal é recuperar pelo menos 10
+dos 23 FNs de path traversal, levando a categoria a recall >=90% sem devolver o
+FPR total acima de 20%.

@@ -116,13 +116,13 @@ both agree with the ground truth:
 
 | tool / pinned configuration | status | TP / FP / FN / TN | precision | recall | FPR | score | time | peak RSS |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| GraphCodeMap 0.1.0 | complete | 745 / 203 / 157 / 593 | 78.6% | 82.6% | 25.5% | **+0.571** | 40.83 s | 551 MB |
+| GraphCodeMap 0.1.0 | complete | 745 / 137 / 157 / 659 | 84.5% | 82.6% | 17.2% | **+0.654** | 44.87 s | 588 MB |
 | OpenTaint `dev-7f7da63` + 323 selected flow rules | complete | 819 / 454 / 83 / 342 | 64.3% | 90.8% | 57.0% | **+0.338** | 240.34 s | 5,120 MB |
 | OpenGrep 1.22.0 + repository `perf/r2c-rules/java.yml` (28 rules) | complete | 74 / 64 / 828 / 732 | 53.6% | 8.2% | 8.0% | **+0.002** | 59.13 s | 547 MB |
 | CodeQL | unavailable | - | - | - | - | - | - | - |
 
 GraphCodeMap now leads this seven-category matrix: it finds 74 fewer vulnerable
-cases than OpenTaint, but reports 251 fewer safe cases, is 5.9x faster and uses
+cases than OpenTaint, but reports 317 fewer safe cases, is 5.4x faster and uses
 about one ninth of its peak memory. The OpenGrep row measures that exact pinned
 28-rule fixture, **not OpenGrep's full registry or an equivalently broad Java
 suite**, so it is useful for adapter reproducibility, not a product ranking.
@@ -151,8 +151,15 @@ until it has a dispatch-aware oracle; structural L1 promotion remains enabled.
 
 After the guard, the initial clean-L0 and JDTLS indexes produced identical
 normalized findings. The next precision step re-enabled Java return summaries
-only for call-free, alias-free control flow that the CFG can fold; collection,
+only for call-free, alias-free control flow that the CFG can fold. Round 20
+added a closed abstract domain for locally-created Java lists using only
+`add`, `remove` and `get` with constant indices; arbitrary collection aliasing,
 reflection, dispatch and context-specific sanitizers remain conservative.
 This removed 189 false positives with **zero TP loss**. The same change
 preserved the exact 23 normalized findings across pygoat, dvpwa, DVNA, NodeGoat
 and nodejs-goof before/after their available L1 resolvers.
+
+The constant-list domain removed another 66 false positives while all 65
+equivalent vulnerable list wrappers remained tainted. Total FPR fell from
+25.5% to 17.2%, with TP and recall unchanged. The five real-application scans
+again retained their 10 / 1 / 6 / 4 / 2 finding counts and categories.

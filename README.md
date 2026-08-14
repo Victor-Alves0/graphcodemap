@@ -10,7 +10,7 @@ Symbols, call graph, references, impact, dataflow and taint over any codebase �
 [![CI](https://github.com/Victor-Alves0/graphcodemap/actions/workflows/tests.yml/badge.svg)](https://github.com/Victor-Alves0/graphcodemap/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%E2%80%93%203.12-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1409%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-1411%20passing-brightgreen)](tests/)
 [![Status](https://img.shields.io/badge/status-alpha%20v0.1-orange)](#status)
 
 [Quick start](#quick-start) ·
@@ -153,8 +153,8 @@ Trust is built by being honest about the boundaries:
   structure, not substring matching.
 - ⚠️ **Treat dataflow/taint findings as candidates.** It is *may-taint* — it
   over-approximates on purpose, so a finding is a lead to verify, not a verdict.
-  Measured on the OWASP Benchmark: **65% precision, 74% recall** (score
-  TPR−FPR = +0.29; see [evals/RESULTS.md](evals/RESULTS.md), which records how
+  Measured on the OWASP Benchmark: **84.5% precision, 82.6% recall, 17.2% FPR**
+  (score TPR−FPR = +0.654; see [evals/RESULTS.md](evals/RESULTS.md), which records how
   every number moved and why — including the changes that were measured and
   then *rejected*). That is in the range of mid-tier commercial SAST on the
   benchmark's own published scorecards, and short of the best. The gap that

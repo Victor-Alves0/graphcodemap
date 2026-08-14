@@ -1187,24 +1187,30 @@ class QueryEngine:
                 # realmente usadas no RHS e que retornam constante/sanitizado
                 # possuem ao menos um ReturnFact e continuam elegíveis.
                 summary_safe = True
+                summary_flow = None
                 if flang == "java":
-                    # JDTLS resolves the call target, but Java collection
+                    # JDTLS resolves the call target, but arbitrary collection
                     # aliases, virtual dispatch and context-specific encoders
                     # are not return-flow proofs. The flow engine used to call
                     # all of those "non-propagating" and erased 145 real OWASP
-                    # vulnerabilities. Accept only call-free control flow (or
-                    # a tiny set of pure operations over constants); this still
-                    # covers if/ternary/switch folding without guessing aliasing.
+                    # vulnerabilities. Accept call-free control flow, a tiny
+                    # set of pure operations, or the separately checked local
+                    # List add/remove/get domain with constant indices.
                     pure_constant_calls = {
                         "charAt", "length", "toUpperCase", "toLowerCase",
                         "upper", "lower", "trim", "strip",
                     }
                     summary_safe = all(c.callee in pure_constant_calls
                                        for c in f.calls)
+                    if not summary_safe:
+                        summary_flow = df.analyze_java_constant_list(
+                            f, set(f.params), rules.sanitizers)
+                        summary_safe = summary_flow is not None
                 if (summary_safe and f.params and f.returns
                         and r["name"] not in src_funcs
-                        and not df.analyze(f, set(f.params), rules.sanitizers,
-                                           lang=flang).reaches_return):
+                        and not (summary_flow or df.analyze(
+                            f, set(f.params), rules.sanitizers,
+                            lang=flang)).reaches_return):
                     nao_propaga_fqn.add(r["fqn"])
             eff_sources = rules.sources | src_funcs
             eff_src |= src_funcs               # o motor flow-sensitive também vê

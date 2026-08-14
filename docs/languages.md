@@ -91,11 +91,12 @@ binary) — proving the client generalizes beyond a single executable.
 
 Measured on the OWASP Benchmark Maven checkout (2,766 Java source files), JDTLS
 1.60.0 promoted **12,937** call edges with zero resolver errors. GraphCodeMap
-deliberately does not use those Java promotions to prune taint return flow yet:
-virtual/interface dispatch resolves the call target without proving which
-implementation returns data at runtime. A clean L0 index and the JDTLS index
-produce identical normalized security findings after this guard. Gradle is the
-remaining real-project validation gap.
+uses those Java promotions for return pruning only when the body supplies an
+independent proof: folded local control flow, or a locally-created list using
+`add/remove/get` with constant indices. Virtual/interface dispatch, reflection
+and arbitrary aliases remain conservative because resolving the call target
+does not prove which value returns at runtime. Gradle is the remaining
+real-project validation gap.
 
 ### Activating a resolver
 

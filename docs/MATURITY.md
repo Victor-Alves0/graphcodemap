@@ -46,7 +46,7 @@ Run `codegraph capabilities [language]` for the machine-readable current view.
 | Graph and freshness | Strong incremental core; policy-change cleanup now covered | Multiprocess stress and no known stale-read path |
 | L0 extraction | Broad and well unit-tested | Real call-edge oracles for every Tier-A language |
 | L1 resolution | Broadly wired, unevenly proven | Live integration plus real-repo evidence for Tier A |
-| Dataflow and taint | Broad engine, narrow external evidence | Category-correct benchmark and vulnerable/fixed comparisons |
+| Dataflow and taint | Category-correct OWASP recall 82.6% with FPR 17.2%; external evidence still concentrated in five languages | Preserve FPR <20% while reaching path-traversal recall >=90% and add vulnerable/fixed comparisons |
 | CLI, library and MCP | Main surfaces implemented | Versioned response schemas and parity contract tests |
 | Visualization | Functional; script-breakout regression covered | Large-graph performance budget and browser smoke suite |
 | L3 descriptions | Experimental and optional | Provider-neutral quality/cost evaluation; not a v0.2 blocker |

@@ -21,7 +21,7 @@ Python e JavaScript/TypeScript.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 # Config de extração de fatos por linguagem. As irregularidades das gramáticas
 # ficam AQUI (declarativas); o motor de taint continua compartilhado.
@@ -519,6 +519,11 @@ class CallSite:
     # valor já escapado — e transformá-la em falso positivo.
     arg_sources: dict[int, list[tuple[str, tuple[str, ...]]]] = field(
         default_factory=dict)
+    # Texto curto do argumento quando a extração consegue preservá-lo.
+    # IDs dizem se `list.add(param)` recebe algo sujo; o texto distingue
+    # `list.remove(0)` / `list.get(1)`. Sem ambos, um resumo de retorno teria de
+    # tratar toda coleção como propagadora ou, pior, adivinhar o índice.
+    arg_values: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -557,6 +562,102 @@ class ArgFlow:
 class Flow:
     arg_flows: list[ArgFlow] = field(default_factory=list)
     reaches_return: bool = False
+
+
+_JAVA_LIST_CTOR = re.compile(r"^(?:ArrayList|LinkedList)(?:<.*>)?$")
+_JAVA_INT_LITERAL = re.compile(r"^[+-]?\d+$")
+_JAVA_COLLECTION_SENTINEL = ("__graphcodemap_collection_taint__",)
+
+
+def analyze_java_constant_list(facts: FnFacts, tainted,
+                               sanitizers=frozenset()):
+    """Refina o fluxo de retorno de wrappers Java com listas locais simples.
+
+    O analisador geral é corretamente conservador sobre aliasing: uma chamada
+    `values.add(param)` não altera a variável `values` no ambiente escalar.
+    Isso impede provar que `remove(0); get(1)` devolve o literal seguro, mas
+    também fazia a tentativa ingênua de resumo apagar o caso vulnerável
+    `remove(0); get(0)`.
+
+    Este refinamento só aceita listas criadas localmente e a sequência exata
+    `add`/`remove`/`get` com índices inteiros constantes. Argumento com qualquer
+    identificador é tratado como possivelmente sujo; literal é limpo. Qualquer
+    chamada, receptor ou índice fora desse subconjunto devolve ``None`` e o
+    chamador mantém a superaproximação anterior.
+    """
+    if not facts.calls or facts.regions is None:
+        return None
+
+    local_lists: dict[str, list[bool]] = {}
+    for assignment in facts.assigns:
+        if (assignment.rhs_call
+                and _JAVA_LIST_CTOR.match(assignment.rhs_call)
+                and len(assignment.targets) == 1):
+            target = next(iter(assignment.targets))
+            if len(target) != 1:
+                return None
+            local_lists[target[0]] = []
+    if not local_lists:
+        return None
+
+    # Não resumimos uma função que mistura a lista local com chamadas que o
+    # pequeno domínio abstrato não entende. Falhar fechado aqui protege recall.
+    for call in facts.calls:
+        if call.callee and _JAVA_LIST_CTOR.match(call.callee):
+            continue
+        if not call.qualified or "." not in call.qualified:
+            return None
+        receiver, method = call.qualified.rsplit(".", 1)
+        if receiver not in local_lists or method not in {"add", "remove", "get"}:
+            return None
+
+    cloned_assigns = [replace(a, rhs_ids=set(a.rhs_ids)) for a in facts.assigns]
+    events = []
+    for call in facts.calls:
+        events.append(((call.span or (0, 0))[0], 1, call))
+    for assignment in cloned_assigns:
+        events.append(((assignment.span or (0, 0))[0], 0, assignment))
+    # Chamada antes da atribuição que recebe seu retorno.
+    events.sort(key=lambda event: (event[0], -event[1]))
+
+    for _pos, kind, fact in events:
+        if kind == 0:
+            continue
+        call = fact
+        if call.callee and _JAVA_LIST_CTOR.match(call.callee):
+            continue
+        receiver, method = call.qualified.rsplit(".", 1)
+        state = local_lists[receiver]
+        args = dict(call.args)
+        if method == "add":
+            if 0 not in args:
+                return None
+            # Conservador: variável/expressão desconhecida pode estar suja;
+            # somente argumento sem IDs (literal) é comprovadamente limpo.
+            state.append(bool(args[0]))
+            continue
+        raw_index = call.arg_values.get(0, "").strip()
+        if not _JAVA_INT_LITERAL.match(raw_index):
+            return None
+        index = int(raw_index)
+        if index < 0 or index >= len(state):
+            return None
+        if method == "remove":
+            state.pop(index)
+            continue
+        # `get`: marca a atribuição correspondente somente se o elemento
+        # lido é possivelmente sujo. O CFG existente decide os branches.
+        if state[index]:
+            assignment = next((a for a in cloned_assigns
+                               if a.span and call.span
+                               and a.span[0] <= call.span[0] < a.span[1]), None)
+            if assignment is None:
+                return None
+            assignment.rhs_ids.add(_JAVA_COLLECTION_SENTINEL)
+
+    refined = replace(facts, assigns=cloned_assigns)
+    initial = set(tainted) | {_JAVA_COLLECTION_SENTINEL}
+    return analyze(refined, initial, sanitizers, lang="java")
 
 
 # -- helpers de árvore --------------------------------------------------------
@@ -1306,6 +1407,9 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                 if reads:
                     cs.arg_sources[pos] = reads
                 cs.args.append((pos, ids))
+                value = _const_text(source, arg)
+                if value is not None:
+                    cs.arg_values[pos] = value
                 pos += 1
         facts.calls.append(cs)
 

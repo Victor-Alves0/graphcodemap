@@ -135,3 +135,70 @@ class App {
         assert "execute" in _sinks(graph)
     finally:
         graph.close()
+
+
+def test_certain_java_constant_list_index_can_prove_clean_return(tmp_path):
+    (tmp_path / "App.java").write_text(
+        """
+class App {
+    String throughList(String input) {
+        String output = "also safe";
+        if (input != null) {
+            java.util.List<String> valuesList = new java.util.ArrayList<String>();
+            valuesList.add("safe");
+            valuesList.add(input);
+            valuesList.add("more safe");
+            valuesList.remove(0);
+            output = valuesList.get(1);
+        }
+        return output;
+    }
+    void handle(javax.servlet.http.HttpServletRequest request,
+                java.sql.Statement statement) throws Exception {
+        String input = request.getParameter("x");
+        String output = throughList(input);
+        statement.execute(output);
+    }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    graph = CodeGraph(tmp_path)
+    try:
+        graph.index()
+        assert "execute" in _sinks(graph)
+        _promote_call(graph, "handle", "throughList", 17)
+        graph.query._facts_cache.clear()
+        assert "execute" not in _sinks(graph)
+    finally:
+        graph.close()
+
+
+def test_java_dynamic_list_index_does_not_claim_clean_summary(tmp_path):
+    (tmp_path / "App.java").write_text(
+        """
+class App {
+    String throughList(String input, int selected) {
+        java.util.List<String> valuesList = new java.util.ArrayList<String>();
+        valuesList.add("safe");
+        valuesList.add(input);
+        return valuesList.get(selected);
+    }
+    void handle(javax.servlet.http.HttpServletRequest request,
+                java.sql.Statement statement) throws Exception {
+        String input = request.getParameter("x");
+        String output = throughList(input, 0);
+        statement.execute(output);
+    }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+    graph = CodeGraph(tmp_path)
+    try:
+        graph.index()
+        _promote_call(graph, "handle", "throughList", 11)
+        graph.query._facts_cache.clear()
+        assert "execute" in _sinks(graph)
+    finally:
+        graph.close()
