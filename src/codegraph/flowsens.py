@@ -35,7 +35,8 @@ import re
 from dataclasses import dataclass, field
 
 from .dataflow import (ArgFlow, Flow, _is_tainted,
-                       assign_reads_framework_source, direct_source_args)
+                       assign_reads_framework_source, assign_reads_named_source,
+                       direct_source_args)
 
 # --- node types de controle de fluxo, por família de gramática ---------------
 # `body`: filhos que são CORPOS (executam condicionalmente); o que não é corpo
@@ -151,6 +152,13 @@ class Branch:
     # de compilação; -1 quando nenhum executa; None quando não dá para decidir
     # (o caso normal). Ver `fold_condition`.
     taken: int | None = None
+    # Java containment guards of the form `if (!safe(candidate, base)) return`.
+    # Each pair is (validated path, trusted base path). They apply only after
+    # the rejecting arm, so a sink inside/before the guard remains visible.
+    post_sanitizes: list[
+        tuple[tuple[str, ...], tuple[str, ...], int]
+    ] = field(
+        default_factory=list)
 
 
 @dataclass
@@ -165,6 +173,164 @@ class Seq:
 
 def _ctrl(family: str):
     return _CTRL.get(family)
+
+
+def _unwrap_parenthesized(node):
+    while node is not None and node.type == "parenthesized_expression":
+        kids = node.named_children
+        if len(kids) != 1:
+            return None
+        node = kids[0]
+    return node
+
+
+def _java_value_path(source: bytes, node) -> tuple[str, ...] | None:
+    """Identifier/field path used as a containment candidate or trusted base."""
+    node = _unwrap_parenthesized(node)
+    if node is None:
+        return None
+    if node.type in {"identifier", "type_identifier"}:
+        return (source[node.start_byte:node.end_byte].decode("utf-8", "replace"),)
+    if node.type != "field_access":
+        return None
+    obj = _java_value_path(source, node.child_by_field_name("object"))
+    fld = node.child_by_field_name("field")
+    if obj is None or fld is None:
+        return None
+    return obj + (source[fld.start_byte:fld.end_byte].decode("utf-8", "replace"),)
+
+
+def _java_empty_call_chain(source: bytes, node):
+    """Return (receiver path, methods) for a Java chain of zero-arg calls."""
+    node = _unwrap_parenthesized(node)
+    if node is None:
+        return None
+    if node.type != "method_invocation":
+        path = _java_value_path(source, node)
+        return (path, ()) if path is not None else None
+    args = node.child_by_field_name("arguments")
+    if args is None or args.named_children:
+        return None
+    obj = node.child_by_field_name("object")
+    name = node.child_by_field_name("name")
+    previous = _java_empty_call_chain(source, obj)
+    if previous is None or name is None:
+        return None
+    method = source[name.start_byte:name.end_byte].decode("utf-8", "replace")
+    return previous[0], previous[1] + (method,)
+
+
+def _java_starts_with_call(source: bytes, node):
+    node = _unwrap_parenthesized(node)
+    if node is None or node.type != "method_invocation":
+        return None
+    name = node.child_by_field_name("name")
+    obj = node.child_by_field_name("object")
+    args = node.child_by_field_name("arguments")
+    if name is None or obj is None or args is None:
+        return None
+    if source[name.start_byte:name.end_byte] != b"startsWith":
+        return None
+    values = args.named_children
+    if len(values) != 1:
+        return None
+    return obj, values[0]
+
+
+def _java_path_operand(source: bytes, node):
+    chain = _java_empty_call_chain(source, node)
+    if chain is None:
+        return None
+    path, methods = chain
+    # Path component semantics, not String prefix semantics. `toPath` is
+    # optional for values already declared as Path; normalization is required.
+    allowed = {
+        ("normalize",),
+        ("normalize", "toAbsolutePath"),
+        ("toAbsolutePath", "normalize"),
+        ("toPath", "normalize"),
+        ("toPath", "normalize", "toAbsolutePath"),
+        ("toPath", "toAbsolutePath", "normalize"),
+    }
+    return (path, methods) if methods in allowed else None
+
+
+def _java_canonical_base(source: bytes, node) -> tuple[str, ...] | None:
+    """Base in `canonicalCandidate.startsWith(baseCanonical + separator)`."""
+    node = _unwrap_parenthesized(node)
+    if node is None or node.type != "binary_expression":
+        return None
+    parts = node.named_children
+    if len(parts) != 2:
+        return None
+    between = source[parts[0].end_byte:parts[1].start_byte].strip()
+    if between != b"+":
+        return None
+    separator = source[parts[1].start_byte:parts[1].end_byte].decode(
+        "utf-8", "replace").replace(" ", "")
+    if not (separator.endswith("File.separator")
+            or separator.endswith("File.separatorChar")):
+        return None
+    base_chain = _java_empty_call_chain(source, parts[0])
+    if base_chain is not None and base_chain[1] == ("getCanonicalPath",):
+        return base_chain[0]
+    # Do not infer that an arbitrary clean String variable is canonical.  A
+    # proof would require tracking the defining expression and every later
+    # reassignment; accepting `candidate.getCanonicalPath().startsWith(base +
+    # separator)` here could suppress a real issue when `base` contains `..`,
+    # is relative, or was computed by a non-canonical helper.
+    return None
+
+
+def _java_rejecting_path_guard(source: bytes, if_node):
+    """Recognize a narrow negated containment check, returning candidate/base."""
+    condition = _unwrap_parenthesized(if_node.child_by_field_name("condition"))
+    if condition is None or condition.type != "unary_expression":
+        return None
+    raw = source[condition.start_byte:condition.end_byte].lstrip()
+    kids = condition.named_children
+    if not raw.startswith(b"!") or len(kids) != 1:
+        return None
+    checked = _java_starts_with_call(source, kids[0])
+    if checked is None:
+        return None
+    candidate_expr, base_expr = checked
+
+    candidate_path = _java_path_operand(source, candidate_expr)
+    base_path = _java_path_operand(source, base_expr)
+    if candidate_path is not None and base_path is not None:
+        # Both operands must use the same Path normalization shape. This keeps
+        # `normalize`/`startsWith` in unrelated expressions from becoming a
+        # global sanitizer.
+        if candidate_path[1] == base_path[1]:
+            return candidate_path[0], base_path[0]
+        return None
+
+    canonical = _java_empty_call_chain(source, candidate_expr)
+    if canonical is None or canonical[1] != ("getCanonicalPath",):
+        return None
+    canonical_base = _java_canonical_base(source, base_expr)
+    if canonical_base is None:
+        return None
+    return canonical[0], canonical_base
+
+
+def _definitely_terminates(node) -> bool:
+    """Conservative Java rejection-arm termination proof."""
+    if node is None:
+        return False
+    if node.type in {"return_statement", "throw_statement"}:
+        return True
+    if node.type == "if_statement":
+        consequence = node.child_by_field_name("consequence")
+        alternative = node.child_by_field_name("alternative")
+        return (alternative is not None
+                and _definitely_terminates(consequence)
+                and _definitely_terminates(alternative))
+    if node.type == "block":
+        return any(_definitely_terminates(child)
+                   for child in node.named_children)
+    return False
 
 
 # --- condição decidível em tempo de compilação -------------------------------
@@ -414,8 +580,17 @@ def build_regions(body_node, key: str, source: bytes | None = None,
                 else:
                     escolhido = _arm_taken(child, cfg, source, consts,
                                            len(bodies))
+                post_sanitizes = []
+                if (key == "java" and t == "if_statement"
+                        and child.child_by_field_name("alternative") is None):
+                    consequence = child.child_by_field_name("consequence")
+                    guard = (_java_rejecting_path_guard(source, child)
+                             if source is not None else None)
+                    if guard is not None and _definitely_terminates(consequence):
+                        post_sanitizes.append((*guard, child.start_byte))
                 seq.items.append(Branch(arms, has_else=tem_else,
-                                        taken=escolhido))
+                                        taken=escolhido,
+                                        post_sanitizes=post_sanitizes))
         else:
             seq.items.append(Span(child.start_byte, child.end_byte))
     return seq
@@ -542,7 +717,7 @@ class _Eval:
         # a própria semente da varredura: `x = input()` tem RHS sem ids, então
         # cairia no kill — o bug que a bateria de recall pegou.
         from_source = not sanitized and (
-            (a.rhs_call is not None and a.rhs_call in self.sources)
+            assign_reads_named_source(a, self.sources)
             # fonte de FRAMEWORK: `x = request.POST.get(..)` / `x = req.query.q`
             or assign_reads_framework_source(a, self.sanitizers))
         rhs_hit = (not sanitized) and any(_is_tainted(p, env) for p in a.rhs_ids)
@@ -563,11 +738,85 @@ class _Eval:
             if hit:
                 self.flow.arg_flows.append(
                     ArgFlow(c.callee, idx, c.line, ".".join(sorted(hit)[0]),
-                            c.qualified, direto.get(idx)))
+                            c.qualified, direto.get(idx), c.span))
             elif idx in direto:
                 self.flow.arg_flows.append(
                     ArgFlow(c.callee, idx, c.line, direto[idx], c.qualified,
-                            direto[idx]))
+                            direto[idx], c.span))
+
+    def _clear_validated_file_constructors(
+            self, candidate: tuple[str, ...], guard_start: int) -> None:
+        """Retract only the exact non-I/O File construction proven contained.
+
+        ``File`` is a deliberate surrogate sink until receiver-to-call taint is
+        available.  A later dominating containment guard makes that surrogate
+        safe, but only if the constructed value did not escape or get used
+        before validation.  Real I/O sinks are never retracted here.
+        """
+        safe_spans: set[tuple[int, int]] = set()
+        for assignment in self.assigns:
+            span = assignment.span
+            if (span is None or span[1] > guard_start
+                    or assignment.targets != {candidate}
+                    or assignment.rhs_call != "File"):
+                continue
+            constructors = [
+                call for call in self.calls
+                if call.callee == "File" and call.span is not None
+                and span[0] <= call.span[0] < call.span[1] <= span[1]
+            ]
+            if not constructors:
+                continue
+            # `File candidate = wrap(new File(raw))` has a File call inside
+            # the initializer, but that object escaped to `wrap`; it is not
+            # the value validated later.  `rhs_call == File` proves the outer
+            # expression is a constructor, and the widest File span is that
+            # top-level constructor.  Nested constructors remain findings.
+            constructors = [max(
+                constructors,
+                key=lambda call: call.span[1] - call.span[0],
+            )]
+
+            # Any use between construction and validation may have observed
+            # the unvalidated path.  Calls on the candidate receiver count as
+            # uses even when the extractor records no explicit argument.
+            escaped = any(
+                later.span is not None
+                and span[1] <= later.span[0] < guard_start
+                and candidate not in later.targets
+                and any(_is_tainted(path, {candidate})
+                        for path in later.rhs_ids)
+                for later in self.assigns
+            )
+            escaped = escaped or any(
+                call.span is not None
+                and span[1] <= call.span[0] < guard_start
+                and (
+                    any(any(_is_tainted(path, {candidate}) for path in paths)
+                        for _index, paths in call.args)
+                    or (call.qualified is not None
+                        and (call.qualified == ".".join(candidate)
+                             or call.qualified.startswith(
+                                 ".".join(candidate) + ".")))
+                )
+                for call in self.calls
+            )
+            escaped = escaped or any(
+                returned.span is not None
+                and span[1] <= returned.span[0] < guard_start
+                and any(_is_tainted(path, {candidate})
+                        for path in returned.ids)
+                for returned in self.returns
+            )
+            if not escaped:
+                safe_spans.update(call.span for call in constructors)
+
+        if safe_spans:
+            self.flow.arg_flows = [
+                arg_flow for arg_flow in self.flow.arg_flows
+                if not (arg_flow.callee == "File"
+                        and arg_flow.span in safe_spans)
+            ]
 
     def _record_return(self, r, env: set) -> None:
         if r.top_call is not None and r.top_call in self.sanitizers:
@@ -622,9 +871,17 @@ class _Eval:
                 if region.taken < 0:
                     return set(env)                       # nenhum braço executa
                 return self.run(region.arms[region.taken], set(env), record)
+            incoming = set(env)
             out = set() if region.has_else else set(env)   # sem else: pode pular
             for arm in region.arms:
                 out |= self.run(arm, set(env), record)
+            for candidate, base, guard_start in region.post_sanitizes:
+                # A user-controlled base makes containment meaningless. Check
+                # the environment entering the guard, before the rejecting arm.
+                if not _is_tainted(base, incoming):
+                    self._clear_validated_file_constructors(
+                        candidate, guard_start)
+                    out = _kill(out, {candidate})
             return out
         if isinstance(region, Loop):
             # 0..N iterações: o ambiente de entrada entra na união; itera até

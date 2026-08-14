@@ -6,6 +6,25 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ## [Unreleased]
 
+### Added / Changed — consolidação de segurança e entrega
+
+- **Holdout independente NIST Juliet CWE-23: recall 27,0% → 51,4%, mantendo
+  precisão 100% e FPR 0%.** Fontes Java de leitura são reconhecidas pelo tipo
+  declarado do receptor; métodos de domínio homônimos continuam limpos.
+- **Comparação oficial reproduzível com CodeQL 2.26.2.** As suites Java
+  `default` e `security-extended` foram medidas no mesmo OWASP e em uma base
+  Juliet compilada manualmente, com versões, checksums e limitações publicados
+  em `docs/SECURITY_BENCHMARK.md`.
+- **Pares reais vulnerável/corrigido para Java.** OpenRefine, FitNesse e
+  openHAB/CometVisu agora têm commits e oráculos pinados; misses e alertas que
+  sobrevivem ao patch são registrados em vez de descartados.
+- **Gate de release completo.** Ruff, mypy progressivo, branch coverage >=75%,
+  Linux/Windows em Python 3.10–3.12, build/twine e smoke do wheel instalado em
+  ambiente limpo passam a bloquear publicação.
+- **Handshake LSP assíncrono estabilizado.** O warmup prefere uma referência
+  qualificada cross-file, evitando declarar `rust-analyzer` pronto após resolver
+  apenas uma chamada local.
+
 ### Added / Changed — precisão do taint (fase "estado da arte")
 
 Ciclo dirigido por uma análise dos concorrentes (Joern, Semgrep/Opengrep,

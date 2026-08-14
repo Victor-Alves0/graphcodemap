@@ -148,6 +148,20 @@ def default_rules() -> TaintRules:
 # melhor dizer isso do que fingir cobertura.
 _CURATED: dict[str, dict[str, set[str]]] = {
     "java": {
+        "sources": {
+            # Type-qualified on purpose: these standard Java I/O APIs return
+            # external text, while application domain objects may also expose
+            # an unrelated `readLine` method.
+            "BufferedReader.readLine",
+            "Console.readLine",
+            "DataInputStream.readLine",
+            "LineNumberReader.readLine",
+            "RandomAccessFile.readLine",
+            # Qualified on purpose: arbitrary domain objects commonly expose
+            # `getProperty`, but JVM system properties are process-controlled
+            # input and can influence path construction.
+            "System.getProperty",
+        },
         "sinks": {
             # java.io.File não realiza I/O sozinho, mas materializa o caminho
             # controlado que APIs como exists/createNewFile consomem pelo

@@ -222,3 +222,31 @@ def test_lsp_warmup_nao_envenena_o_memo(monkeypatch, tmp_path):
     assert r._ready and len(calls) == 3
     # só o resultado ÚTIL sobrevive no memo (o vazio foi descartado)
     assert r._defcache[("main.php", 1, 0)]
+
+
+def test_lsp_warmup_prefere_chamada_qualificada_cross_file(monkeypatch,
+                                                           tmp_path):
+    """Uma chamada local não deve sinalizar prontidão antes do índice inteiro."""
+    from codegraph.l1 import lsp_base
+
+    monkeypatch.setattr(lsp_base.time, "sleep", lambda _s: None)
+    r = object.__new__(lsp_base.LspResolver)
+    r.root = tmp_path
+    r.ready_timeout = 1.0
+    r._defcache = {}
+    r._lines = {"main.rs": ["helper();", "calc::compute(2);"]}
+    r._ready = False
+    calls = []
+
+    def fake_definition(rel, line0, col):
+        calls.append((rel, line0, col))
+        return [((tmp_path / "calc.rs").as_uri(), 0)]
+
+    r._definition = fake_definition
+    r._warmup("main.rs", [
+        {"line": 1, "col": 0, "dst_name": "helper"},
+        {"line": 2, "col": 0, "dst_name": "calc::compute"},
+    ])
+
+    assert r._ready
+    assert calls == [("main.rs", 1, 6)]

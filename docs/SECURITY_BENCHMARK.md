@@ -126,15 +126,23 @@ both agree with the ground truth:
 | GraphCodeMap 0.1.0 | complete | 868 / 92 / 34 / 704 | 90.4% | 96.2% | 11.6% | **+0.847** | 43.59 s | 576 MB |
 | OpenTaint `dev-7f7da63` + 323 selected flow rules | complete | 819 / 454 / 83 / 342 | 64.3% | 90.8% | 57.0% | **+0.338** | 240.34 s | 5,120 MB |
 | OpenGrep 1.22.0 + repository `perf/r2c-rules/java.yml` (28 rules) | complete | 74 / 64 / 828 / 732 | 53.6% | 8.2% | 8.0% | **+0.002** | 59.13 s | 547 MB |
-| CodeQL | unavailable | - | - | - | - | - | - | - |
+| CodeQL CLI 2.26.2 / `java-queries` 1.11.7 `default` (80 queries) | complete | 776 / 292 / 126 / 504 | 72.7% | 86.0% | 36.7% | **+0.494** | - | - |
+| CodeQL CLI 2.26.2 / `java-queries` 1.11.7 `security-extended` (124 queries) | complete | 902 / 471 / 0 / 325 | 65.7% | 100% | 59.2% | **+0.408** | - | - |
 
 GraphCodeMap now leads this seven-category matrix: it finds 49 more vulnerable
 cases than OpenTaint, reports 362 fewer safe cases, is 5.5x faster and uses
 about one ninth of its peak memory. The OpenGrep row measures that exact pinned
 28-rule fixture, **not OpenGrep's full registry or an equivalently broad Java
 suite**, so it is useful for adapter reproducibility, not a product ranking.
-CodeQL was not installed and is explicitly recorded as `unavailable`; no score
-was fabricated.
+
+The CodeQL rows use the official query suites and an explicit mapping from
+query IDs to the benchmark categories. The `default` suite covers six of the
+seven scored categories and has no trust-boundary query in this mapping;
+`security-extended` covers all seven, reaches maximum recall, and also reports
+substantially more safe cases. These rows compare detection on this pinned
+matrix. They do **not** establish that GraphCodeMap is a better overall product
+than CodeQL, whose language coverage, framework models, query ecosystem and
+operational integrations are outside this experiment.
 
 The run also exposed type information lost by GraphCodeMap's name-only catalog.
 `String.getBytes`, `MessageDigest.update` and `String.valueOf` had inherited
@@ -190,9 +198,48 @@ The pinned ZIP SHA-256 is
 
 | tool / corpus | TP / FP / FN / TN | precision | recall | FPR | score |
 |---|---:|---:|---:|---:|---:|
-| GraphCodeMap 0.1.0 / Juliet CWE-23 | 120 / 0 / 324 / 444 | 100% | 27.0% | 0% | +0.270 |
+| GraphCodeMap 0.1.0 / Juliet CWE-23 | 228 / 0 / 216 / 444 | 100% | 51.4% | 0% | +0.514 |
+| CodeQL `default` / manual database | 222 / 6 / 222 / 438 | 97.37% | 50.0% | 1.35% | +0.486 |
+| CodeQL `security-extended` / manual database | 222 / 6 / 222 / 438 | 97.37% | 50.0% | 1.35% | +0.486 |
 
-L0 and JDTLS produced the same findings. Local variants 21, 22, 42 and 61 are
-fully detected; interprocedural variants 41, 45, 51–54, 66–75 and 81 are 0/12.
-This holdout is the next recall gate and prevents the strong OWASP result from
-being presented as universal Java coverage.
+GraphCodeMap crosses the original recall gate after adding type-aware Java
+sources and preserving the concrete bad/good class label used by Juliet's
+abstract `action` dispatch. Type qualification is intentionally fail-closed:
+standard input readers such as `BufferedReader.readLine` are sources, while an
+unrelated domain object's same-named method is not.
+
+The CodeQL database was built manually from 732 source files and 744 compiled
+classes. Both official suites produced the same score, and the finding
+signatures were identical to the earlier no-build database. The shared corpus,
+fixed manifest and file+bad/good endpoint scoring make the rows comparable;
+the small difference does not imply whole-product superiority in either
+direction.
+
+## Real vulnerable/fixed Java holdout
+
+Three published Java vulnerabilities were scanned at both the vulnerable and
+fixed revisions with isolated L0 databases. This is a deliberately small
+behavioral holdout: the vulnerable revision tests discovery, while disappearance
+at the fixed revision tests whether the engine understands the security guard.
+
+| pair | vulnerable flow | baseline cleared | current cleared | current outcome |
+|---|---:|---:|---:|---|
+| OpenRefine CVE-2024-49760 | yes | no | no | trusted base cannot be proved from inherited dependency state |
+| FitNesse CVE-2024-42499 | no | no | no | missed across request/helper/instance-field transport |
+| openHAB CVE-2024-42468 | yes | no | **yes** | **3 vulnerable matches → 0 fixed** |
+| **aggregate** | **2 / 3** | **0 / 3** | **1 / 3** | **one patch distinguished without benchmark regression** |
+
+Round 24 recognizes narrow, rejecting Java path-containment guards using
+normalized `Path.startsWith` or canonical paths plus `File.separator`.
+The base must be untainted and the rejecting arm must definitely terminate;
+text-prefix checks, use before validation, aliases, nested constructors and
+unproved canonical bases fail closed. This clears the openHAB patch while the
+vulnerable revision retains all three oracle matches. OpenRefine remains open:
+its base comes from a map field inherited from a dependency, so L0 cannot prove
+that a tainted lookup key does not taint the selected module path. FitNesse
+still requires nested-return, cross-method instance-field and call-order flow.
+
+The guard change is neutral on both labeled gates: OWASP remains
+868 / 92 / 34 / 704 and Juliet remains 228 / 0 / 216 / 444. The distinction is
+therefore evidence of general patch sensitivity, not a benchmark-specific
+trade-off.

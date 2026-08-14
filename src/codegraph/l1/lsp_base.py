@@ -256,10 +256,18 @@ class LspResolver:
 
     def _warmup(self, rel: str, edges) -> None:
         """Espera o servidor ficar pronto (indexação assíncrona) consultando a
-        primeira aresta até responder ou estourar ready_timeout."""
+        aresta mais representativa até responder ou estourar ready_timeout.
+
+        Uma chamada local pode ficar resolvível antes de o servidor terminar de
+        indexar o workspace. Preferir um callee qualificado (``pkg::fn``,
+        ``pkg.fn`` ou ``obj->fn``) evita declarar o servidor pronto cedo demais
+        e perder justamente as referências cross-file que o L1 deve promover.
+        """
         if not edges:
             return
-        e = edges[0]
+        e = next((edge for edge in edges
+                  if any(sep in (edge["dst_name"] or "")
+                         for sep in ("::", ".", "->"))), edges[0])
         col = self._query_col(rel, e["line"], e["col"], e["dst_name"])
         deadline = time.time() + self.ready_timeout
         while time.time() < deadline:

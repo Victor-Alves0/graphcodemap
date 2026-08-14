@@ -51,8 +51,9 @@ claim equal depth across all 46. See [Product Maturity](MATURITY.md).
 
 ### G3 — Harden the product surface
 
-- [ ] Add Ruff, coverage thresholds and progressive typing to CI.
-- [ ] Make package/release validation depend on the complete quality gate.
+- [x] Add Ruff, branch-coverage thresholds and progressive typing to CI.
+- [x] Make package/release validation depend on the complete quality gate,
+      including Linux/Windows on Python 3.10–3.12 and a clean wheel smoke test.
 - [ ] Version and contract-test CLI, library and MCP response schemas.
 - [ ] Split large query/dataflow modules only after behavior is characterized.
 
@@ -94,9 +95,11 @@ recall e o FPR total ficou abaixo de 12%.
 
 O holdout independente NIST Juliet CWE-23 impede transformar isso em uma
 declaração universal: nele o GraphCodeMap teve precisão 100% e FPR 0%, mas
-recall de apenas **27,0%**. O objetivo imediato agora é elevar esse recall para
->=50% sem FPR acima de 5%, atacando fontes e variantes interprocedurais, não
-continuar ajustando o corpus OWASP. Veja [Security Benchmark](SECURITY_BENCHMARK.md).
+recall de **51,4%**. O primeiro gate externo (recall >=50%, FPR <=5%) foi
+atingido por modelagem de fontes Java qualificada por tipo, sem regra específica
+para nomes do corpus. O próximo gate é transporte interprocedural e
+sensibilidade ao patch em pares reais, não continuar ajustando o corpus OWASP.
+Veja [Security Benchmark](SECURITY_BENCHMARK.md).
 
 Em aplicações vulneráveis REAIS (não gabarito sintético):
 
@@ -126,8 +129,8 @@ O líder em score tem **57,7% de FPR** — mais da metade do código seguro
 acusado. Ninguém revisa um relatório assim; o score alto não se traduz em
 ferramenta usável.
 
-> **Os gates OWASP de recall e FPR foram atingidos. O próximo gate é externo:
-> Juliet CWE-23 com recall >=50% e FPR <=5%.**
+> **Os gates OWASP e o primeiro gate Juliet foram atingidos. O próximo gate é
+> externo: distinguir revisões vulneráveis e corrigidas em projetos reais.**
 
 Ressalva da comparação: os placares cobrem 11 categorias e nós pontuamos 7.
 Nossa medição agora exige arquivo **e categoria**, mas ainda não é comparação
@@ -160,8 +163,9 @@ domínios fechados de List/Map local com índice/chave constante.
 | aumentar taxa de promoção em Python/JS | em investigação |
 
 Path traversal passou de 46% para **100% de recall**. O micro-goal de FPR <20%
-foi superado em 11,6%, com 868 TPs totais. A próxima medida de recall vem do
-Juliet CWE-23, onde ainda há 324 FNs.
+foi superado em 11,6%, com 868 TPs totais. No Juliet CWE-23 ainda há 216 FNs,
+concentrados em argumentos/campos entre métodos, containers, serialização e
+dispatch abstrato/virtual.
 
 ### 2. Causas de falso positivo ainda abertas
 

@@ -7,7 +7,6 @@ a consulta; arquivo sumiu → sai do índice; tudo anotado no envelope.
 
 from __future__ import annotations
 
-import os
 import re
 import time
 from dataclasses import dataclass, field

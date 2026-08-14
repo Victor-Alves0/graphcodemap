@@ -46,12 +46,12 @@ Run `codegraph capabilities [language]` for the machine-readable current view.
 | Graph and freshness | Strong incremental core; policy-change cleanup now covered | Multiprocess stress and no known stale-read path |
 | L0 extraction | Broad and well unit-tested | Real call-edge oracles for every Tier-A language |
 | L1 resolution | Broadly wired, unevenly proven | Live integration plus real-repo evidence for Tier A |
-| Dataflow and taint | OWASP recall 96.2% with FPR 11.6%; Juliet CWE-23 holdout recall 27.0% with FPR 0%; external evidence still concentrated in five languages | Raise independent Juliet recall to >=50% with FPR <=5% and add vulnerable/fixed real-project comparisons |
+| Dataflow and taint | OWASP recall 96.2% with FPR 11.6%; Juliet CWE-23 holdout recall 51.4% with FPR 0%; three pinned Java vulnerable/fixed pairs expose limited patch sensitivity | Model interprocedural fields/containers/dispatch and make fixed revisions clear their vulnerable oracle |
 | CLI, library and MCP | Main surfaces implemented | Versioned response schemas and parity contract tests |
 | Visualization | Functional; script-breakout regression covered | Large-graph performance budget and browser smoke suite |
 | L3 descriptions | Experimental and optional | Provider-neutral quality/cost evaluation; not a v0.2 blocker |
-| Delivery | Large test suite, limited quality gates | Lint, progressive typing, coverage and release/package checks in CI |
-| Competitive evaluation | Category-correct OWASP runs now compare GraphCodeMap/OpenTaint/OpenGrep on one commit; CodeQL and equivalent-width suites remain incomplete | Same commits, categories and complete equivalent suites across Tier A |
+| Delivery | Ruff, progressive mypy, branch coverage >=75%, a six-platform test matrix and built-wheel smoke checks gate releases | Run the complete gate on the release branch and version the public response schemas |
+| Competitive evaluation | Category-correct OWASP compares pinned GraphCodeMap/OpenTaint/OpenGrep and both official CodeQL Java suites; Juliet uses a manually compiled, validated CodeQL database | Add independent labeled corpora and equivalent official suites for the remaining Tier-A languages |
 
 ## Rule for adding scope
 

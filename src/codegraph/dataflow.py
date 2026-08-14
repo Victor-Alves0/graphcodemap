@@ -228,6 +228,25 @@ def is_framework_source_call(qualified: str | None) -> bool:
     return qualified is not None and qualified in FRAMEWORK_SOURCE_CALLS
 
 
+def assign_reads_named_source(a, sources=frozenset()) -> bool:
+    """Assignment RHS is a configured source, simple or receiver-qualified.
+
+    Exact qualified names let catalogs model APIs such as `System.getProperty`.
+    When extraction knows the receiver's declared type, type-qualified entries
+    such as `BufferedReader.readLine` avoid treating a same-named domain method
+    as external input.
+    """
+    typed = (f"{a.rhs_receiver_type}.{a.rhs_call}"
+             if (getattr(a, "rhs_receiver_type", None) is not None
+                 and getattr(a, "rhs_call", None) is not None)
+             else None)
+    return ((getattr(a, "rhs_call", None) is not None
+             and a.rhs_call in sources)
+            or (getattr(a, "rhs_qualified", None) is not None
+                and a.rhs_qualified in sources)
+            or (typed is not None and typed in sources))
+
+
 def assign_reads_framework_source(a, sanitizers=frozenset()) -> bool:
     """Esta atribuição nasce de uma fonte de framework, por chamada ou acesso.
 
@@ -501,6 +520,10 @@ class Assign:
     # Rails). Decidido na extração, que é o único ponto onde a linguagem é
     # conhecida sem espalhá-la por todo o motor.
     rhs_framework_source: bool = False
+    # Declared type of a call receiver on the RHS, when syntax alone can
+    # resolve it. Java uses this to distinguish standard input readers from
+    # unrelated domain objects exposing the same method name.
+    rhs_receiver_type: str | None = None
 
 
 @dataclass
@@ -560,6 +583,11 @@ class ArgFlow:
     # Quem reporta usa isto como ORIGEM: a origem é aqui mesmo, não uma
     # atribuição anterior que não existe.
     source: str | None = None
+    # Exact source span lets the flow-sensitive engine retract a non-I/O
+    # surrogate such as `new File(tainted)` only when that exact constructed
+    # value is subsequently proven contained.  A line number is insufficient:
+    # Java permits multiple independent expressions on one physical line.
+    span: tuple[int, int] | None = None
 
 
 @dataclass
@@ -981,6 +1009,22 @@ def _rhs_qualified(source: bytes, node, call_types) -> str | None:
         return None
     meth = _text(source, fn).rsplit(".", 1)[-1].split("(", 1)[0].strip()
     return f"{recv}.{meth}" if meth and meth != recv else None
+
+
+def _rhs_receiver_type(source: bytes, node, call_types,
+                       declared_types: dict[str, str]) -> str | None:
+    """Resolve the declared type of a simple receiver without a type solver."""
+    if node is None or node.type not in call_types:
+        return None
+    obj = node.child_by_field_name("object")
+    if obj is None:
+        return None
+    receiver = _text(source, obj).strip()
+    if re.fullmatch(r"[A-Za-z_$][\w$]*", receiver):
+        return declared_types.get(receiver)
+    if re.fullmatch(r"(?:this|super)\.[A-Za-z_$][\w$]*", receiver):
+        return declared_types.get(receiver.rsplit(".", 1)[-1])
+    return None
 
 
 def _receiver_last(source: bytes, call_node) -> str | None:
@@ -1500,6 +1544,69 @@ def _body_of(fn):
     return None
 
 
+def _java_declared_types(source: bytes, fn, body, stop) -> dict[str, str]:
+    """Collect unambiguous Java receiver types visible in a function.
+
+    This is deliberately lexical and fail-closed: if a name is declared with
+    multiple types (shadowing), it is omitted instead of guessing. It covers
+    parameters, locals, try-with-resources and enhanced-for bindings, which are
+    all represented with explicit types by tree-sitter-java.
+    """
+    candidates: dict[str, set[str]] = {}
+
+    def normalized(node) -> str | None:
+        if node is None:
+            return None
+        raw = _text(source, node).strip().split("<", 1)[0].strip()
+        raw = raw.replace("[]", "").strip()
+        match = re.search(r"([A-Za-z_$][\w$]*)$", raw)
+        return match.group(1) if match else None
+
+    def add(name_node, type_node):
+        if name_node is None:
+            return
+        name = _text(source, name_node).strip()
+        typ = normalized(type_node)
+        if re.fullmatch(r"[A-Za-z_$][\w$]*", name) and typ:
+            candidates.setdefault(name, set()).add(typ)
+
+    params = fn.child_by_field_name("parameters")
+    if params is not None:
+        for param in params.named_children:
+            add(param.child_by_field_name("name"),
+                param.child_by_field_name("type"))
+
+    # Include direct fields of the enclosing Java type. `_rhs_receiver_type`
+    # accepts `this.reader`, and a local shadow with a different type makes the
+    # name ambiguous below rather than silently selecting either declaration.
+    class_body = fn.parent
+    while class_body is not None and class_body.type != "class_body":
+        class_body = class_body.parent
+    if class_body is not None:
+        for declaration in class_body.named_children:
+            if declaration.type != "field_declaration":
+                continue
+            typ = declaration.child_by_field_name("type")
+            for child in declaration.named_children:
+                if child.type == "variable_declarator":
+                    add(child.child_by_field_name("name"), typ)
+
+    declarations: list = []
+    _walk(body, {"local_variable_declaration", "resource",
+                 "enhanced_for_statement"}, stop, declarations)
+    for declaration in declarations:
+        typ = declaration.child_by_field_name("type")
+        if declaration.type == "local_variable_declaration":
+            for child in declaration.named_children:
+                if child.type == "variable_declarator":
+                    add(child.child_by_field_name("name"), typ)
+        else:
+            add(declaration.child_by_field_name("name"), typ)
+
+    return {name: next(iter(types)) for name, types in candidates.items()
+            if len(types) == 1}
+
+
 def _facts_generic(source, fn, lang) -> FnFacts:
     # fontes que só são fontes NESTA linguagem (`params` do Rails)
     nuas = lang_bare_sources(lang)
@@ -1511,6 +1618,8 @@ def _facts_generic(source, fn, lang) -> FnFacts:
     if body is None:
         return facts
     stop = _scope_stop(lang)
+    declared_types = (_java_declared_types(source, fn, body, stop)
+                      if lang == "java" else {})
 
     # atribuições
     assign_types: set[str] = set()
@@ -1566,7 +1675,9 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                                     _const_text(source, rhs_node),
                                     _ternary(source, rhs_node,
                                              lambda n: _gen_colher(source, n, idset)),
-                                    any(len(q) == 1 and q[0] in nuas for q in rids)))
+                                    any(len(q) == 1 and q[0] in nuas for q in rids),
+                                    _rhs_receiver_type(source, rhs_node, calls_t,
+                                                       declared_types)))
 
     # Iteration is also a data-flow assignment: in `for (T item : values)`,
     # every value observed through `item` came from `values`.  Tree-sitter
@@ -1601,6 +1712,8 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                 _ternary(source, value_node,
                          lambda n: _gen_colher(source, n, idset)),
                 any(len(q) == 1 and q[0] in nuas for q in rids),
+                _rhs_receiver_type(source, value_node, calls_t,
+                                   declared_types),
             ))
         facts.assigns.extend(loop_assigns)
 
@@ -1844,11 +1957,11 @@ def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset(),
                 via = ".".join(sorted(hit)[0])
                 flow.arg_flows.append(
                     ArgFlow(c.callee, idx, c.line, via, c.qualified,
-                            direto.get(idx)))
+                            direto.get(idx), c.span))
             elif idx in direto:
                 flow.arg_flows.append(
                     ArgFlow(c.callee, idx, c.line, direto[idx], c.qualified,
-                            direto[idx]))
+                            direto[idx], c.span))
     for r in facts.returns:
         if r.top_call is not None and r.top_call in sanitizers:
             continue
@@ -1862,7 +1975,8 @@ def source_vars(facts: FnFacts, sources, sanitizers=frozenset()) -> set:
     """Caminhos cujo valor nasce de uma chamada a uma fonte (input não-confiável)."""
     out: set = set()
     for a in facts.assigns:
-        if (a.rhs_call is not None and a.rhs_call in sources) or                 assign_reads_framework_source(a, sanitizers):
+        if (assign_reads_named_source(a, sources)
+                or assign_reads_framework_source(a, sanitizers)):
             out |= a.targets
     return out
 
@@ -1873,8 +1987,9 @@ def source_sites(facts: FnFacts, sources, sanitizers=frozenset()) -> list[tuple]
     out = []
     for a in facts.assigns:
         rotulo = None
-        if a.rhs_call is not None and a.rhs_call in sources:
-            rotulo = a.rhs_call
+        if assign_reads_named_source(a, sources):
+            rotulo = (a.rhs_qualified if a.rhs_qualified in sources
+                      else a.rhs_call)
         elif assign_reads_framework_source(a, sanitizers):
             rotulo = a.rhs_qualified or next(
                 (".".join(p) for p in sorted(a.rhs_ids)

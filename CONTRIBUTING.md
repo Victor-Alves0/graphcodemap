@@ -25,6 +25,21 @@ Run the suite:
 pytest -q --timeout=180
 ```
 
+Run the same production quality gates used by CI and releases:
+
+```bash
+python -m ruff check src
+python -m mypy
+python -m coverage run -m pytest -q --timeout=180
+python -m coverage report
+python -m build
+python -m twine check dist/*
+```
+
+Install them with `pip install -e ".[dev,quality,mcp,l1]"`. Coverage is
+branch-aware and currently fails below 75%; typing is intentionally progressive
+and its checked module list lives in `pyproject.toml`.
+
 CI runs the same suite on a matrix of **Linux + Windows × Python 3.10/3.11/3.12**.
 Tests that need an external language server (L1/LSP) skip themselves when the
 server isn't installed, so a green local run without every toolchain is expected.

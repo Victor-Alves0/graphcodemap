@@ -90,3 +90,14 @@ def test_partial_report_is_ineligible_and_main_exits_two(
 def test_empty_manifest_fails(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="no Juliet CWE-23 cases"):
         julietbench.score(_java_root(tmp_path, with_case=False), _report())
+
+
+def test_variant_81_uses_concrete_class_label_for_abstract_action(
+        tmp_path: Path) -> None:
+    endpoint = {
+        "path": "testcases/CWE23_Relative_Path_Traversal/Case_81_bad.java",
+        "line": 20,
+        "symbol": "example.Case_81_bad.action",
+    }
+
+    assert julietbench._endpoint_kind(_java_root(tmp_path), endpoint) == "bad"

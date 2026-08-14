@@ -1,0 +1,65 @@
+{
+  "schema_version": "1.0",
+  "engine_commit": "4a930075ac0aa6dde109146c280510b602355647",
+  "method": "GraphCodeMap L0, isolated database per revision, max_findings=100000",
+  "cases": [
+    {
+      "id": "openrefine-cve-2024-49760",
+      "cve": "CVE-2024-49760",
+      "advisory": "https://github.com/OpenRefine/OpenRefine/security/advisories/GHSA-qfwq-6jh6-8xx4",
+      "repository": "https://github.com/OpenRefine/OpenRefine.git",
+      "fix": "https://github.com/OpenRefine/OpenRefine/commit/24d084052dc55426fe460f2a17524fd18d28b20c",
+      "vulnerable_commit": "97c196953660f71589c9720326382a32beadc2b5",
+      "fixed_commit": "24d084052dc55426fe460f2a17524fd18d28b20c",
+      "scan_subdir": ".",
+      "expected_category": "path-traversal",
+      "match": {
+        "source_path_suffix": "main/src/com/google/refine/commands/lang/LoadLanguageCommand.java",
+        "source_label": "getParameter()",
+        "sink_path_suffix": "main/src/com/google/refine/commands/lang/LoadLanguageCommand.java"
+      },
+      "vulnerable_report": "openrefine-vuln-l0.json",
+      "fixed_report": "openrefine-fixed-l0.json"
+    },
+    {
+      "id": "fitnesse-cve-2024-42499",
+      "cve": "CVE-2024-42499",
+      "advisory": "https://github.com/advisories/GHSA-q297-5ff8-hc92",
+      "repository": "https://github.com/unclebob/fitnesse.git",
+      "fix": "https://github.com/unclebob/fitnesse/commit/850c599e5177d6f877af063374086f3e36b4b956",
+      "vulnerable_commit": "9d80cf6a7c6b7f099cf61892023ea04d0bfc8f49",
+      "fixed_commit": "850c599e5177d6f877af063374086f3e36b4b956",
+      "scan_subdir": ".",
+      "expected_category": "path-traversal",
+      "match": {
+        "source_path_suffix": "src/fitnesse/responders/testHistory/HistoryComparerResponder.java",
+        "source_symbol_contains": ".HistoryComparerResponder.composeFileName",
+        "sink_path_suffix": "src/fitnesse/responders/testHistory/HistoryComparerResponder.java",
+        "sink_label": "File",
+        "sink_symbol_contains": ".HistoryComparerResponder.filesExist"
+      },
+      "vulnerable_report": "fit-vuln-l0.json",
+      "fixed_report": "fit-fixed-l0.json"
+    },
+    {
+      "id": "openhab-cve-2024-42468",
+      "cve": "CVE-2024-42468",
+      "advisory": "https://github.com/openhab/openhab-webui/security/advisories/GHSA-pcwp-26pw-j98w",
+      "repository": "https://github.com/openhab/openhab-webui.git",
+      "fix": "https://github.com/openhab/openhab-webui/commit/630e8525835c698cf58856aa43782d92b18087f2",
+      "vulnerable_commit": "091d0edc06862bb40a70d74a2d607d1366ce134d",
+      "fixed_commit": "630e8525835c698cf58856aa43782d92b18087f2",
+      "scan_subdir": "bundles/org.openhab.ui.cometvisu",
+      "expected_category": "path-traversal",
+      "match": {
+        "source_path_suffix": "src/main/java/org/openhab/ui/cometvisu/internal/servlet/CometVisuServlet.java",
+        "source_label": "getPathInfo()",
+        "source_symbol_contains": ".getRequestedFile",
+        "sink_path_suffix": "src/main/java/org/openhab/ui/cometvisu/internal/servlet/CometVisuServlet.java",
+        "sink_label": "File"
+      },
+      "vulnerable_report": "openhab-vuln-l0.json",
+      "fixed_report": "openhab-fixed-l0.json"
+    }
+  ]
+}

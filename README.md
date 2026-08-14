@@ -155,12 +155,12 @@ Trust is built by being honest about the boundaries:
   over-approximates on purpose, so a finding is a lead to verify, not a verdict.
   Measured on the OWASP Benchmark: **90.4% precision, 96.2% recall, 11.6% FPR**
   (score TPR−FPR = +0.847). The independent NIST Juliet CWE-23 holdout is much
-  harder: **100% precision but only 27.0% recall**, exposing the remaining
-  interprocedural/source-modeling gap. See [evals/RESULTS.md](evals/RESULTS.md), which records how
+  harder: **100% precision and 51.4% recall**, exposing the remaining
+  interprocedural transport gap. See [evals/RESULTS.md](evals/RESULTS.md), which records how
   every number moved and why — including the changes that were measured and
-  then *rejected*). That is in the range of mid-tier commercial SAST on the
+  then *rejected*. That is in the range of mid-tier commercial SAST on the
   benchmark's own published scorecards, and short of the best. The gap that
-  matters is the false-positive rate, and the plan for it is in
+  matters now is interprocedural transport and patch sensitivity, and the plan is in
   [docs/ROADMAP.md](docs/ROADMAP.md).
 
 Full, quantified limitations and benchmark methodology: **[FAQ & Limitations](docs/faq.md)**

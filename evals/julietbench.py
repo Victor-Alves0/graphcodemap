@@ -110,7 +110,17 @@ def _endpoint_kind(java_root: Path, endpoint: dict) -> str:
             _source_path(java_root, endpoint.get("path") or ""),
             int(endpoint.get("line") or 1),
         )
-    return _flow_kind(method)
+    kind = _flow_kind(method)
+    if kind != "unknown":
+        return kind
+    # Juliet variant 81 dispatches through an abstract method named `action`;
+    # its concrete class suffix carries the bad/good label instead.
+    stem = Path(endpoint.get("path") or "").stem.lower()
+    if "_bad" in stem:
+        return "bad"
+    if "_good" in stem:
+        return "good"
+    return "unknown"
 
 
 def _case_key(path: str) -> tuple[str, str]:

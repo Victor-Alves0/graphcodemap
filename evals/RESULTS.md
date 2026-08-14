@@ -1420,14 +1420,19 @@ Mesmo checkout `f51bf36b8891`, 1.698 casos nas sete categorias de fluxo:
 | GraphCodeMap 0.1.0 | complete | 696 | 364 | 206 | 432 | 65,7% | 77,2% | 45,7% | **+0,314** | 43,29 s | 551 MB |
 | OpenTaint `dev-7f7da63`, 323 regras de fluxo | complete | 819 | 454 | 83 | 342 | 64,3% | 90,8% | 57,0% | **+0,338** | 240,34 s | 5.120 MB |
 | OpenGrep 1.22.0, fixture Java de 28 regras | complete | 74 | 64 | 828 | 732 | 53,6% | 8,2% | 8,0% | **+0,002** | 59,13 s | 547 MB |
-| CodeQL | unavailable | - | - | - | - | - | - | - | - | - | - |
+| CodeQL CLI 2.26.2 / `java-queries` 1.11.7 `default` (80 queries) | complete | 776 | 292 | 126 | 504 | 72,7% | 86,0% | 36,7% | **+0,494** | - | - |
+| CodeQL CLI 2.26.2 / `java-queries` 1.11.7 `security-extended` (124 queries) | complete | 902 | 471 | 0 | 325 | 65,7% | 100% | 59,2% | **+0,408** | - | - |
 
 OpenTaint vence o score por +0,023 e encontra 123 vulnerabilidades a mais, ao
 custo de 90 falsos positivos adicionais, 5,6x o tempo e 9,3x o pico de
 memória. GraphCodeMap não é o líder ainda. A linha OpenGrep vale somente para
 o ruleset local de 28 regras usado: ela valida o adaptador e a reprodutibilidade,
-não representa todo o ecossistema de regras OpenGrep. CodeQL não estava
-instalado e foi registrado como `unavailable`, sem número inventado.
+não representa todo o ecossistema de regras OpenGrep. As linhas CodeQL foram
+preenchidas depois com as suites oficiais no mesmo alvo fixado e um mapeamento
+explícito de query ID para categoria: `default` cobre seis das sete categorias,
+sem trust-boundary, enquanto `security-extended` cobre 7/7 e maximiza recall ao
+custo de mais ruído. A comparação mede esta matriz, não a superioridade total
+de produto sobre CodeQL.
 
 ### GraphCodeMap por categoria
 
@@ -1698,13 +1703,88 @@ pontua os 444 companions `good()` como negativos.
 
 | corpus | TP | FP | FN | TN | precisão | recall | FPR | score |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Juliet CWE-23 | 120 | 0 | 324 | 444 | **100%** | **27,0%** | **0%** | +0,270 |
+| GraphCodeMap / Juliet CWE-23 | 228 | 0 | 216 | 444 | **100%** | **51,4%** | **0%** | +0,514 |
+| CodeQL `default` / DB manual | 222 | 6 | 222 | 438 | 97,37% | 50,0% | 1,35% | +0,486 |
+| CodeQL `security-extended` / DB manual | 222 | 6 | 222 | 438 | 97,37% | 50,0% | 1,35% | +0,486 |
 
-L0 e JDTLS produziram os mesmos 240 traces, todos `bad`→`bad`, e nenhum fluxo
-`good`. Variantes 21/22/42/61 ficaram 12/12; 41/45/51–54/66–75/81 ficaram
-0/12. O resultado forte no OWASP portanto não é tratado como cobertura Java
-universal: o próximo gate é Juliet recall >=50% mantendo FPR <=5%.
+O resultado GraphCodeMap atualizado cruza o gate de recall >=50% mantendo FPR
+zero. As suites CodeQL foram executadas sobre uma base manual com 732 fontes e
+744 classes compiladas; ambas produziram os mesmos números e assinaturas
+idênticas às da base anterior `no-build`. Manifesto, arquivos e classificação
+dos endpoints `bad`/`good` são compartilhados. A proximidade não é usada para
+alegar vitória total de produto em nenhuma direção.
 
 Os cinco aplicativos reais não-Java preservaram os mesmos 23 achados e
 categorias: pygoat 10, dvpwa 1, DVNA 6, NodeGoat 4 e nodejs-goof 2. A suíte
 completa fechou em **1.432 passed, 24 skipped**.
+
+---
+
+# Rodada 23 — fontes Java por tipo e holdouts externos (2026-08-14)
+
+O ganho no Juliet veio de fontes reais de entrada que estavam ausentes, não de
+regras específicas para nomes de testcases. O extrator agora preserva o tipo
+declarado do receptor para parâmetros, variáveis locais, resources,
+enhanced-for e campos Java não ambíguos. Assim,
+`BufferedReader.readLine`, `Console.readLine`, `DataInputStream.readLine`,
+`LineNumberReader.readLine` e `RandomAccessFile.readLine` são fontes somente
+quando o receptor tem o tipo esperado; um método de domínio chamado `readLine`
+continua limpo. `System.getProperty` exige a qualificação explícita.
+
+O scorer também passou a classificar o dispatch abstrato `action` da variante
+81 pelo nome da classe concreta `_bad`/`_good`. Isso corrige a atribuição do
+endpoint sem transformar a fixture em fonte ou sink.
+
+| holdout Juliet CWE-23 | TP | FP | FN | TN | precisão | recall | FPR | score |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| GraphCodeMap | 228 | 0 | 216 | 444 | **100%** | **51,4%** | **0%** | **+0,514** |
+| CodeQL `default`, DB manual | 222 | 6 | 222 | 438 | 97,37% | 50,0% | 1,35% | +0,486 |
+| CodeQL `security-extended`, DB manual | 222 | 6 | 222 | 438 | 97,37% | 50,0% | 1,35% | +0,486 |
+
+Como segundo holdout, três CVEs Java foram selecionados em pares vulnerável/corrigido
+e executados com bancos L0 isolados:
+
+| par real | vulnerabilidade detectada | patch eliminou o fluxo | baseline |
+|---|---:|---:|---|
+| OpenRefine CVE-2024-49760 | sim | não | containment normalizado não modelado |
+| FitNesse CVE-2024-42499 | não | não | fluxo por maps, fields e helpers perdido |
+| openHAB CVE-2024-42468 | sim | não | containment canônico não modelado |
+| **agregado** | **2/3** | **0/3** | **1 miss; 2 patches indistinguíveis** |
+
+Essa linha de base é evidência de descoberta, mas ainda não de sensibilidade a
+patch. Resultados dos guards de contenção em desenvolvimento ficam fora desta
+rodada até a suíte completa e os benchmarks confirmarem que eles não escondem
+fluxos vulneráveis.
+
+---
+
+# Rodada 24 — guards de contenção e qualidade de release (2026-08-14)
+
+O motor agora reconhece apenas guards Java de path traversal com prova local e
+fail-closed: `Path.normalize()/toAbsolutePath().startsWith(...)` ou
+`getCanonicalPath().startsWith(base.getCanonicalPath() + File.separator)`, em
+um `if` negado cujo braço de rejeição termina. Base contaminada, prefixo textual,
+uso antes da validação, alias, helper/construtor aninhado e base canônica não
+comprovada continuam reportados.
+
+| par real | matches vulnerável | matches corrigido | resultado atual |
+|---|---:|---:|---|
+| openHAB CVE-2024-42468 | 3 | **0** | patch distinguido |
+| OpenRefine CVE-2024-49760 | 2 | 3 | base herdada não comprovável em L0 |
+| FitNesse CVE-2024-42499 | 0 | 0 | transporte interprocedural ainda ausente |
+
+No openHAB, os findings totais caíram de 45 para 26 na versão corrigida. O
+OpenRefine não foi forçado a passar: `_modulesByName` vem de uma superclasse em
+dependência externa, e afirmar que o lookup devolve um módulo confiável sem
+solver de tipos seria introduzir falso negativo. O FitNesse permanece como
+caracterização explícita de seis gaps `xfail`, não como sucesso artificial.
+
+Os gates não se moveram: OWASP ficou em **868 TP / 92 FP / 34 FN / 704 TN**
+(score **+0,847**) e Juliet em **228 / 0 / 216 / 444**. A suíte completa fechou
+em **1.470 passed, 24 skipped, 6 xfailed**.
+
+A entrega também ganhou Ruff, mypy progressivo, branch coverage mínima de 75%,
+matriz Linux/Windows em Python 3.10–3.12, build/twine e smoke do wheel instalado
+em ambiente limpo. O warmup LSP passou a esperar preferencialmente por uma
+referência qualificada cross-file; o teste real do `rust-analyzer`, antes
+intermitente, passou cinco execuções consecutivas após a correção.

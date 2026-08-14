@@ -1,0 +1,107 @@
+{
+  "schema_version": "1.0",
+  "engine_commit": "4a930075ac0aa6dde109146c280510b602355647",
+  "run_date": "2026-08-14",
+  "configuration": {
+    "resolver": "L0",
+    "isolated_database_per_revision": true,
+    "max_findings": 100000,
+    "note": "A full-repository OpenRefine run with JDTLS exceeded 300 seconds and was terminated; all scored runs use the same reproducible L0 configuration."
+  },
+  "aggregate": {
+    "vulnerable_flows_detected": 2,
+    "vulnerable_flows_total": 3,
+    "fixed_flows_cleared_after_detection": 0,
+    "detected_but_not_cleared": 2,
+    "missed": 1
+  },
+  "cases": [
+    {
+      "id": "openrefine-cve-2024-49760",
+      "outcome": "detected-but-not-cleared",
+      "vulnerable": {
+        "oracle_matches": 2,
+        "findings": 97,
+        "categories": {
+          "code-injection": 1,
+          "path-traversal": 19,
+          "sql-injection": 1,
+          "unknown": 68,
+          "unsafe-deserialization": 2,
+          "xpath-injection": 6
+        },
+        "duration_s": 159.679,
+        "peak_rss_mb": 399.43
+      },
+      "fixed": {
+        "oracle_matches": 3,
+        "findings": 98,
+        "categories": {
+          "code-injection": 1,
+          "path-traversal": 20,
+          "sql-injection": 1,
+          "unknown": 68,
+          "unsafe-deserialization": 2,
+          "xpath-injection": 6
+        },
+        "duration_s": 152.264,
+        "peak_rss_mb": 398.06
+      },
+      "assessment": "The vulnerable request parameter to File/FileInputStream flow is found. The normalized startsWith containment check is not modeled, and the fix adds one extra File candidate."
+    },
+    {
+      "id": "fitnesse-cve-2024-42499",
+      "outcome": "missed",
+      "vulnerable": {
+        "oracle_matches": 0,
+        "findings": 19,
+        "categories": {
+          "path-traversal": 9,
+          "unknown": 9,
+          "unsafe-deserialization": 1
+        },
+        "duration_s": 149.378,
+        "peak_rss_mb": 322.51
+      },
+      "fixed": {
+        "oracle_matches": 0,
+        "findings": 19,
+        "categories": {
+          "path-traversal": 9,
+          "unknown": 9,
+          "unsafe-deserialization": 1
+        },
+        "duration_s": 140.556,
+        "peak_rss_mb": 323.65
+      },
+      "assessment": "The flow crosses Request.getMap/getResource, instance fields and helper methods before new File(...). Those source and heap dependencies are not recovered."
+    },
+    {
+      "id": "openhab-cve-2024-42468",
+      "outcome": "detected-but-not-cleared",
+      "vulnerable": {
+        "oracle_matches": 3,
+        "findings": 45,
+        "categories": {
+          "path-traversal": 12,
+          "unknown": 32,
+          "xss": 1
+        },
+        "duration_s": 3.996,
+        "peak_rss_mb": 72.04
+      },
+      "fixed": {
+        "oracle_matches": 3,
+        "findings": 45,
+        "categories": {
+          "path-traversal": 12,
+          "unknown": 32,
+          "xss": 1
+        },
+        "duration_s": 2.043,
+        "peak_rss_mb": 69.32
+      },
+      "assessment": "The CodeQL-discovered getPathInfo to File flow is found. Canonical-path containment guards do not clear the finding."
+    }
+  ]
+}

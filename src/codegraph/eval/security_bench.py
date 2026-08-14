@@ -384,7 +384,7 @@ def compare_reports(left: dict, right: dict) -> dict:
         out = set()
         for finding in report.get("findings", []):
             sink = finding["sink"]
-            key = (sink["path"], finding["category"])
+            key: tuple[object, ...] = (sink["path"], finding["category"])
             if exact:
                 key += (sink.get("line"),)
             out.add(key)
@@ -424,6 +424,7 @@ def build_report(*, tool: dict, root: str | Path, findings: list[dict],
                  command: list[str] | None = None, warnings: list[str] | None = None,
                  errors: list[str] | None = None, extra: dict | None = None) -> dict:
     target_git = git_metadata(root)
+    normalized_findings = deduplicate(findings)
     report = {
         "schema_version": SCHEMA_VERSION,
         "tool": tool,
@@ -442,12 +443,12 @@ def build_report(*, tool: dict, root: str | Path, findings: list[dict],
             "platform": sys.platform,
             "python": sys.version.split()[0],
         },
-        "findings": deduplicate(findings),
+        "findings": normalized_findings,
         "warnings": list(warnings or []),
         "errors": list(errors or []),
         "extra": extra or {},
     }
-    report["summary"] = _summary(report["findings"])
+    report["summary"] = _summary(normalized_findings)
     validate_report(report)
     return report
 
@@ -622,7 +623,7 @@ def _terminate_process_tree(pid: int) -> None:
             pass
     for target in targets:
         try:
-            os.kill(target, signal.SIGKILL)
+            os.kill(target, getattr(signal, "SIGKILL", signal.SIGTERM))
         except (OSError, ProcessLookupError):
             continue
 
