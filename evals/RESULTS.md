@@ -1237,8 +1237,9 @@ precisão baixa faz a ferramenta ser ignorada.
 
 ## Onde estamos frente aos placares oficiais
 
-Números publicados no próprio repositório do Benchmark
-(`scorecard/OWASP_Benchmark_Home.html`), portanto do gabarito deles, não nossos:
+Números publicados no artefato oficial
+`scorecard/OWASP_Benchmark_Home.html` do checkout externo pinado do Benchmark;
+o corpus não é vendorizado aqui. Portanto são do gabarito deles, não nossos:
 
 | ferramenta | TPR | FPR | score |
 |---|---|---|---|
@@ -1835,3 +1836,113 @@ O gate final fechou em **1.501 passed, 24 skipped, 3 xfailed**, Ruff e mypy
 limpos, cobertura branch-aware total de **81%**, além de wheel/sdist aprovados
 por `twine check`. O resultado reproduzível dos seis scans está em
 `evals/java-real-pairs-round25-results.json`, com hash SHA-256 de cada relatório.
+
+---
+
+# Rodada 26 — contratos Java ponta a ponta e HeapSummary (2026-08-14)
+
+A rodada não foi dirigida a um caso do benchmark. Cinco auditorias paralelas
+partiram dos contratos do extrator L0, promoção L1/JDTLS, unidade de função,
+fluxo sensível e incrementalidade até o relatório normalizado. Reproduções
+adversariais viraram contratos antes da correção.
+
+No L0, overloads ambíguos agora falham fechados e receivers locais com nome em
+maiúscula não são fabricados como chamadas estáticas. No L1, posições são
+convertidas corretamente entre bytes UTF-8 do tree-sitter e unidades UTF-16 do
+LSP; seleção de definição preserva coluna, respostas/configuração e deadlines
+têm contrato, e falhas de discovery/spawn ficam isoladas. O cache de fatos e o
+lookup de função passaram a usar linha **e coluna**, impedindo duas unidades na
+mesma linha de compartilharem facts.
+
+Na incrementalidade, caminhos vindos de diff/query são contidos na raiz,
+symlinks externos não entram, `mtime_ns` substitui segundos, queries não vazias
+descobrem arquivos novos e proveniência L1 é invalidada antes da re-resolução
+L0. Rename/delete preserva o impacto do snapshot antigo sem devolver uma aresta
+`certain` que deixou de ser semanticamente válida.
+
+O primeiro HeapSummary Java exporta efeitos dirty/clean de campos do mesmo
+receiver. A contenção é propositalmente conservadora:
+
+- kill virtual exige conjunto de despacho fechado comprovado;
+- alias de `this` ou escape para mutator bloqueia kills;
+- escrita em subcampo marca a raiz dirty;
+- fan-out une todos os efeitos dirty e só preserva kill comum comprovado;
+- fontes qualificadas aninhadas diretamente no sink continuam respeitando
+  sanitizer;
+- lambdas não invocadas são unidades deferred e não executam por acidente no
+  método envolvente.
+
+Também foi introduzido um catálogo declarativo de papéis de argumentos de sink.
+Para Java, `Runtime.exec(command, envp, dir)` considera os índices `{0,1}`:
+comando e ambiente continuam sendo risco, mas `File dir` não é command
+injection. A origem `new File(source)` continua aparecendo como path traversal.
+No OWASP isso removeu exatamente 36 FP de cmdi, sem alterar TP ou FN. O literal
+`System.getProperty("user.dir")` passou a ser tratado como configuração confiável;
+chaves dinâmicas e outros literais continuam fontes.
+
+## Gates externos finais
+
+| gate | TP | FP | FN | TN | precisão | recall | FPR | score |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| OWASP Benchmark v1.2 | 868 | 92 | 34 | 704 | 90,4% | 96,2% | 11,6% | +0,847 |
+| NIST Juliet Java 1.3 CWE-23 | 308 | 0 | 136 | 444 | 100% | 69,4% | 0% | +0,694 |
+
+O relatório OWASP final tem **1.942 findings** e **378 wrong-category**. O
+resultado pontuado volta exatamente ao gate 868/92/34/704 depois do refinamento
+semântico; o ganho é remover explicações redundantes/incorretas, não ajustar o
+gabarito. O full run com refine levou **1.549,856 s**, pico de **1.680,26 MB**
+na árvore de processos e promoveu **8.838** arestas em 2.770 arquivos, com zero
+erro, usando JDTLS 1.60.0 e Oracle JDK 21.0.11. O rescore final no mesmo banco,
+sem repetir refine, levou **73,258 s** e **640,51 MB**.
+As duas regras finais são query-only: o rescore reutiliza exatamente o mesmo
+banco/grafo construído pelo refine. Não existe nesta rodada uma única invocação
+que combine custo end-to-end e métricas finais; por isso
+1.549,856 s / 1.680,26 MB é publicado apenas como fase refine-inclusive, e
+73,258 s / 640,51 MB como rescore final. Wall time end-to-end final combinado
+não foi medido.
+
+No holdout Juliet, 242 → **308 TP** recupera transporte interprocedural sem
+adicionar FP; precisão permanece 100% e recall sobe de 54,5% para 69,4%. Essa
+linha é independente do OWASP e continua expondo 136 FNs.
+
+Nos pares reais, as três revisões vulneráveis permanecem detectadas:
+
+| par | vulnerável → corrigido | resultado Round 26 |
+|---|---:|---|
+| FitNesse CVE-2024-42499 | 2 → 0 | patch distinguido pelo HeapSummary |
+| openHAB CVE-2024-42468 | 3 → 0 | patch continua distinguido |
+| OpenRefine CVE-2024-49760 | 2 → 3 | permanece aberto; base confiável herdada não é provada em L0 |
+| **agregado** | **3/3 detectadas; 2/3 corrigidas limpas** | sem promover OpenRefine artificialmente |
+
+## Reprodutibilidade e gate local
+
+O [manifest incluído/versionado nesta rodada](round26-external-gates-manifest.json)
+será adicionado com o commit e preserva os valores
+necessários para reproduzir e auditar o snapshot; eles também são transcritos
+aqui: commit-fonte
+`da5b1610f15bb39ea4f13c0853a67fe105bbd83a`, diff de `src` SHA-256
+`48361e2eaaad50748a4a697dee677a5d7264b538124e2d2f4367d018b0a9490f` e
+arquivo JDTLS SHA-256
+`e94c303d8198f977930803582738771fd18c52c5492878410bf222b1aa81ef1d`.
+Os hashes finais são:
+
+| artefato | SHA-256 |
+|---|---|
+| OWASP report | `d5bc5ee056a350fb17efdc901ba04a8a403a04c19a11092f7d3c1fc98496f111` |
+| OWASP score | `146b279755db707d9a7d1f33683215bf09dae3a8a911a07029613ef9dc9d71e1` |
+| Juliet report | `1a9206f37fca08eb9857a7d56a4538664a950b79795fd4ab905c8740c0cd2730` |
+| Juliet score | `4f013deaea6566f2099fbe016cf44aa7bc1e03cd2750e9d74f43aebf20196d5b` |
+
+O gate completo fechou em **158,60 s**, com **1.576 passed, 25 skipped,
+1 xfailed**, **82% de cobertura total branch-aware**, Ruff e diff-check verdes.
+O único `xfail` estrito caracteriza a lacuna global de
+`System.setProperty("user.dir", valorTainted)` no próprio processo.
+
+## Dívida residual
+
+Os próximos micro-goals medidos são OpenRefine, lambdas Java realmente
+invocadas, fan-out mais largo e fechamento de hierarquias de tipo. Os
+**34 FN / 92 FP** restantes no OWASP e os 136 FN do Juliet continuam publicados.
+Esta rodada melhora o resultado nesta matriz oficial e nos holdouts fixados; não
+estabelece superioridade global sobre CodeQL, cujo conjunto de linguagens,
+frameworks, queries e integrações operacionais é mais amplo que o experimento.

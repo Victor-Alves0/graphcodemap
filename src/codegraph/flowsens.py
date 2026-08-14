@@ -34,9 +34,10 @@ import ast
 import re
 from dataclasses import dataclass, field
 
-from .dataflow import (ArgFlow, Flow, ReceiverFlow, _is_tainted,
+from .dataflow import (ArgFlow, Flow, ReceiverEffect, ReceiverFlow, _is_tainted,
                        assign_reads_framework_source, assign_reads_named_source,
-                       direct_source_args, instance_field_name)
+                       direct_named_source_args, direct_source_args,
+                       instance_field_name)
 
 # --- node types de controle de fluxo, por família de gramática ---------------
 # `body`: filhos que são CORPOS (executam condicionalmente); o que não é corpo
@@ -159,6 +160,11 @@ class Branch:
         tuple[tuple[str, ...], tuple[str, ...], int]
     ] = field(
         default_factory=list)
+    # Positive containment checks sanitize only their accepted arm.  This is
+    # deliberately arm-local: the rejected/fall-through path stays tainted.
+    arm_sanitizes: list[
+        tuple[int, tuple[str, ...], tuple[str, ...]]
+    ] = field(default_factory=list)
 
 
 @dataclass
@@ -313,6 +319,119 @@ def _java_rejecting_path_guard(source: bytes, if_node):
     if canonical_base is None:
         return None
     return canonical[0], canonical_base
+
+
+def _java_prior_initializer(source: bytes, node, name: str):
+    """Unique initializer of ``name`` before ``node`` in the same method.
+
+    Ambiguous reassignment or a definition hidden behind control flow is not a
+    proof.  The conservative uniqueness rule is sufficient for canonical-path
+    validation helpers while keeping the summary fail-closed.
+    """
+    scope = node
+    while scope is not None and scope.type not in {
+            "method_declaration", "constructor_declaration"}:
+        scope = scope.parent
+    if scope is None:
+        return None
+    found = []
+
+    def visit(current):
+        if current.start_byte >= node.start_byte:
+            return
+        if current is not scope and current.type in {
+                "method_declaration", "constructor_declaration",
+                "class_declaration", "lambda_expression"}:
+            return
+        if current.type == "variable_declarator":
+            target = current.child_by_field_name("name")
+            value = current.child_by_field_name("value")
+            if (target is not None and value is not None
+                    and source[target.start_byte:target.end_byte].decode(
+                        "utf-8", "replace") == name):
+                found.append(value)
+        elif current.type == "assignment_expression":
+            target = current.child_by_field_name("left")
+            value = current.child_by_field_name("right")
+            if (target is not None and value is not None
+                    and _java_value_path(source, target) == (name,)):
+                found.append(value)
+        for child in current.named_children:
+            visit(child)
+
+    visit(scope)
+    return found[0] if len(found) == 1 else None
+
+
+def _java_resolve_expr(source: bytes, if_node, expression):
+    path = _java_value_path(source, expression)
+    if path is None or len(path) != 1:
+        return expression
+    return _java_prior_initializer(source, if_node, path[0]) or expression
+
+
+def _java_canonical_candidate(source: bytes, if_node, expression):
+    expression = _java_resolve_expr(source, if_node, expression)
+    chain = _java_empty_call_chain(source, expression)
+    if chain is None:
+        return None
+    path, methods = chain
+    if methods in {("getCanonicalPath",),
+                   ("toFile", "getCanonicalPath")}:
+        return path
+    return None
+
+
+def _java_canonical_base_value(source: bytes, if_node, expression):
+    expression = _java_resolve_expr(source, if_node, expression)
+    expression = _unwrap_parenthesized(expression)
+    if expression is None or expression.type != "binary_expression":
+        return None
+    parts = expression.named_children
+    if len(parts) != 2:
+        return None
+    if source[parts[0].end_byte:parts[1].start_byte].strip() != b"+":
+        return None
+    separator = source[parts[1].start_byte:parts[1].end_byte].decode(
+        "utf-8", "replace").replace(" ", "")
+    if not (separator.endswith("File.separator")
+            or separator.endswith("File.separatorChar")):
+        return None
+    canonical_call = _unwrap_parenthesized(parts[0])
+    if canonical_call is None or canonical_call.type != "method_invocation":
+        return None
+    name = canonical_call.child_by_field_name("name")
+    args = canonical_call.child_by_field_name("arguments")
+    receiver = canonical_call.child_by_field_name("object")
+    if (name is None or args is None or receiver is None
+            or args.named_children
+            or source[name.start_byte:name.end_byte] != b"getCanonicalPath"):
+        return None
+    receiver = _unwrap_parenthesized(receiver)
+    if receiver is not None and receiver.type == "object_creation_expression":
+        ctor_type = receiver.child_by_field_name("type")
+        ctor_args = receiver.child_by_field_name("arguments")
+        if (ctor_type is None or ctor_args is None
+                or not source[ctor_type.start_byte:ctor_type.end_byte].decode(
+                    "utf-8", "replace").endswith("File")
+                or len(ctor_args.named_children) != 1):
+            return None
+        return _java_value_path(source, ctor_args.named_children[0])
+    return _java_value_path(source, receiver)
+
+
+def _java_accepting_path_guard(source: bytes, if_node):
+    """Narrow positive canonical containment proof for the accepted arm."""
+    condition = _unwrap_parenthesized(if_node.child_by_field_name("condition"))
+    checked = _java_starts_with_call(source, condition)
+    if checked is None:
+        return None
+    candidate_expr, base_expr = checked
+    candidate = _java_canonical_candidate(source, if_node, candidate_expr)
+    base = _java_canonical_base_value(source, if_node, base_expr)
+    if candidate is None or base is None or candidate == base:
+        return None
+    return candidate, base
 
 
 def _definitely_terminates(node) -> bool:
@@ -581,6 +700,7 @@ def build_regions(body_node, key: str, source: bytes | None = None,
                     escolhido = _arm_taken(child, cfg, source, consts,
                                            len(bodies))
                 post_sanitizes = []
+                arm_sanitizes = []
                 if (key == "java" and t == "if_statement"
                         and child.child_by_field_name("alternative") is None):
                     consequence = child.child_by_field_name("consequence")
@@ -588,9 +708,15 @@ def build_regions(body_node, key: str, source: bytes | None = None,
                              if source is not None else None)
                     if guard is not None and _definitely_terminates(consequence):
                         post_sanitizes.append((*guard, child.start_byte))
+                if key == "java" and t == "if_statement":
+                    accepting = (_java_accepting_path_guard(source, child)
+                                 if source is not None else None)
+                    if accepting is not None:
+                        arm_sanitizes.append((0, *accepting))
                 seq.items.append(Branch(arms, has_else=tem_else,
                                         taken=escolhido,
-                                        post_sanitizes=post_sanitizes))
+                                        post_sanitizes=post_sanitizes,
+                                        arm_sanitizes=arm_sanitizes))
         else:
             seq.items.append(Span(child.start_byte, child.end_byte))
     return seq
@@ -693,13 +819,17 @@ class _Eval:
     """Interpreta a CFG estruturada propagando o ambiente sujo."""
 
     def __init__(self, facts, sanitizers, sinks_out: Flow, sources=frozenset(),
-                 nonprop=frozenset(), source_spans=frozenset()):
+                 nonprop=frozenset(), source_spans=frozenset(),
+                 receiver_effects=None, trusted_source_literals=()):
         self.sanitizers = sanitizers
         self.sources = sources
-        # LINHAS cuja chamada foi resolvida SEMANTICAMENTE (L1) e cujo alvo
-        # comprovadamente não devolve o argumento recebido
+        self.trusted_source_literals = trusted_source_literals
+        # SPANS cuja chamada foi resolvida SEMANTICAMENTE (L1) e cujo alvo
+        # comprovadamente não devolve o argumento recebido.  Linha não basta:
+        # Java permite várias atribuições independentes no mesmo statement.
         self.nonprop = nonprop
         self.source_spans = source_spans
+        self.receiver_effects = receiver_effects or {}
         self.flow = sinks_out
         self.facts = facts
         # todos os fatos ordenados por posição, para o casamento por span
@@ -709,33 +839,68 @@ class _Eval:
 
     # -- transferências --
 
+    def _field_aliases(self, field: str) -> set[tuple[str, ...]]:
+        aliases: set[tuple[str, ...]] = {("this", field)}
+        if field not in self.facts.local_names:
+            aliases.add((field,))
+        return aliases
+
+    def _expanded_targets(self, targets) -> set[tuple[str, ...]]:
+        """Targets for dirty generation: subfields conservatively taint root."""
+        expanded: set[tuple[str, ...]] = set()
+        for target in targets:
+            field = instance_field_name(self.facts, target)
+            expanded |= self._field_aliases(field) if field else {target}
+        return expanded
+
+    def _kill_targets(self, targets) -> set[tuple[str, ...]]:
+        """Targets a clean assignment definitely overwrites.
+
+        Assigning ``this.root.subfield`` cannot clean the whole ``root`` even
+        though a dirty write to that subfield taints the root in our summary
+        domain.  Only a direct root assignment may kill both field aliases.
+        """
+        killed: set[tuple[str, ...]] = set()
+        for target in targets:
+            field = instance_field_name(self.facts, target)
+            direct_root = field is not None and (
+                target == ("this", field) or target == (field,))
+            killed |= self._field_aliases(field) if direct_root else {target}
+        return killed
+
     def _apply_assign(self, a, env: set) -> set:
         # `x = f(sujo)` só suja `x` se `f` DEVOLVER o que recebeu. A pergunta
         # só é feita quando o L1 resolveu a chamada: por NOME o alvo pode ser
         # outro, e matar sujeira do alvo errado apaga vulnerabilidade real.
         sanitized = ((a.rhs_call is not None and a.rhs_call in self.sanitizers)
-                     or a.line in self.nonprop)
+                     or a.span in self.nonprop)
         # uma FONTE gera sujeira no ponto do programa. Sem isto o motor mataria
         # a própria semente da varredura: `x = input()` tem RHS sem ids, então
         # cairia no kill — o bug que a bateria de recall pegou.
         from_source = not sanitized and (
-            assign_reads_named_source(a, self.sources, self.sanitizers)
+            assign_reads_named_source(
+                a, self.sources, self.sanitizers,
+                self.trusted_source_literals)
             # fonte de FRAMEWORK: `x = request.POST.get(..)` / `x = req.query.q`
             or assign_reads_framework_source(a, self.sanitizers)
             or a.span in self.source_spans)
+        targets = self._expanded_targets(a.targets)
         rhs_hit = (not sanitized) and any(_is_tainted(p, env) for p in a.rhs_ids)
-        aug_hit = a.is_aug and any(_is_tainted(t, env) for t in a.targets)
+        aug_hit = a.is_aug and any(_is_tainted(t, env) for t in targets)
         if from_source or rhs_hit or aug_hit:
-            return env | set(a.targets)                 # gen
+            return env | targets                        # gen
         if a.is_aug:
             return env                                  # `x += limpo` não limpa x
-        return _kill(env, a.targets)                    # kill: alvo vira limpo
+        return _kill(env, self._kill_targets(a.targets))  # definite clean only
 
     def _record_call(self, c, env: set) -> None:
         # leitura de requisição escrita DENTRO do argumento: suja no ponto da
         # chamada, sem depender do ambiente — não há variável para o ambiente
         # carregar. É a mesma ideia do `from_source` no assign.
         direto = dict(direct_source_args(c, self.sanitizers))
+        direto.update(dict(direct_named_source_args(
+            c, self.sources, self.sanitizers,
+            self.trusted_source_literals)))
         for idx, ids in c.args:
             hit = [p for p in ids if _is_tainted(p, env)]
             if hit:
@@ -754,6 +919,31 @@ class _Eval:
             if fields:
                 self.flow.receiver_flows.append(ReceiverFlow(
                     c.callee, c.line, fields, c.qualified, c.span))
+
+    def _apply_receiver_effect(self, c, env: set) -> set:
+        effect: ReceiverEffect | None = self.receiver_effects.get(c.span)
+        if effect is None:
+            return env
+        incoming = set(env)
+        overwritten = set().union(*(
+            self._field_aliases(field) for field in effect.overwrites
+        )) if effect.overwrites else set()
+        env = _kill(env, overwritten)
+        dirty = set(effect.always_dirty)
+        direct = dict(direct_source_args(c, self.sanitizers))
+        direct.update(dict(direct_named_source_args(
+            c, self.sources, self.sanitizers,
+            self.trusted_source_literals)))
+        arg_dirty = {
+            index for index, paths in c.args
+            if index in direct or any(_is_tainted(path, incoming) for path in paths)
+        }
+        for field_name, indexes in effect.from_params:
+            if indexes & arg_dirty:
+                dirty.add(field_name)
+        for field_name in dirty:
+            env |= self._field_aliases(field_name)
+        return env
 
     def _clear_validated_file_constructors(
             self, candidate: tuple[str, ...], base: tuple[str, ...],
@@ -876,6 +1066,7 @@ class _Eval:
             elif kind == 1:
                 if record:
                     self._record_call(fact, env)
+                env = self._apply_receiver_effect(fact, env)
             else:
                 if record:
                     self._record_return(fact, env)
@@ -897,8 +1088,19 @@ class _Eval:
                 return self.run(region.arms[region.taken], set(env), record)
             incoming = set(env)
             out = set() if region.has_else else set(env)   # sem else: pode pular
-            for arm in region.arms:
-                out |= self.run(arm, set(env), record)
+            arm_sanitizes = {
+                index: (candidate, base)
+                for index, candidate, base in region.arm_sanitizes
+            }
+            for index, arm in enumerate(region.arms):
+                arm_env = set(env)
+                if index in arm_sanitizes:
+                    candidate, base = arm_sanitizes[index]
+                    if not _is_tainted(base, env):
+                        arm_env = _kill(arm_env, {candidate})
+                        if _is_tainted(candidate, env):
+                            self.flow.proven_sanitized_return = True
+                out |= self.run(arm, arm_env, record)
             for candidate, base, guard_start in region.post_sanitizes:
                 # A user-controlled base makes containment meaningless. Check
                 # the environment entering the guard, before the rejecting arm.
@@ -923,7 +1125,8 @@ class _Eval:
 
 
 def analyze_flow(facts, tainted_init, sanitizers=frozenset(), sources=frozenset(),
-                 nonprop=frozenset(), source_spans=frozenset()):
+                 nonprop=frozenset(), source_spans=frozenset(),
+                 receiver_effects=None, trusted_source_literals=()):
     """Versão flow-sensitive de `dataflow.analyze_facts`.
 
     Usa `facts.regions`, a CFG estruturada montada na EXTRAÇÃO (estrutura pura
@@ -942,8 +1145,9 @@ def analyze_flow(facts, tainted_init, sanitizers=frozenset(), sources=frozenset(
         return None                      # extractor ainda não popula spans
     env = {p if isinstance(p, tuple) else (p,) for p in tainted_init}
     flow = Flow()
-    ev = _Eval(facts, sanitizers, flow, sources, nonprop, source_spans)
-    ev.run(regions, env)
+    ev = _Eval(facts, sanitizers, flow, sources, nonprop, source_spans,
+               receiver_effects, trusted_source_literals)
+    flow.exit_taint = frozenset(ev.run(regions, env))
     # dedupe: o fixpoint de laço pode registrar o mesmo arg_flow 2x
     seen, uniq = set(), []
     for af in flow.arg_flows:
@@ -954,9 +1158,10 @@ def analyze_flow(facts, tainted_init, sanitizers=frozenset(), sources=frozenset(
     flow.arg_flows = uniq
     seen_receiver, receiver_uniq = set(), []
     for receiver_flow in flow.receiver_flows:
-        key = (receiver_flow.callee, receiver_flow.line, receiver_flow.fields)
-        if key not in seen_receiver:
-            seen_receiver.add(key)
+        receiver_key = (receiver_flow.callee, receiver_flow.line,
+                        receiver_flow.fields)
+        if receiver_key not in seen_receiver:
+            seen_receiver.add(receiver_key)
             receiver_uniq.append(receiver_flow)
     flow.receiver_flows = receiver_uniq
     return flow

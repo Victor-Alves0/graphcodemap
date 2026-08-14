@@ -13,7 +13,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
 
 
 def retry_on_locked(fn, tries: int = 6, base_delay: float = 0.05):
@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS files (
   language     TEXT,
   content_hash TEXT NOT NULL,
   size         INTEGER,
-  mtime        INTEGER,
+  mtime        INTEGER, -- nanosegundos desde epoch (stat.st_mtime_ns)
   parse_status TEXT NOT NULL DEFAULT 'ok'
                CHECK(parse_status IN ('ok','partial','failed')),
   indexed_at   INTEGER NOT NULL

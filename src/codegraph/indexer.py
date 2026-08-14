@@ -98,7 +98,7 @@ STYLE_DEF_KINDS = ("css_class", "html_id")
 
 # Versão da lógica de extração/resolução: mudou → força re-index completo,
 # mesmo com content-hashes iguais (o índice é derivado de código+extractor).
-INDEXER_VERSION = "33"
+INDEXER_VERSION = "34"
 
 DEFAULT_IGNORES = [
     ".git/", ".codegraph/", "__pycache__/", ".venv/", "venv/", "node_modules/",
@@ -141,6 +141,35 @@ def _file_ignore_spec(lines: list[str]) -> pathspec.PathSpec:
 
 def _norm_scope(s: str) -> str:
     return s.strip().replace("\\", "/").strip("/")
+
+
+def _repo_rel(root: Path, value: str | Path) -> str:
+    """Normaliza um caminho e prova que ele pertence fisicamente ao repo.
+
+    A primeira checagem barra ``..``/absolutos externos lexicalmente; a segunda
+    roda depois de ``resolve`` para barrar symlinks e junctions que apontem para
+    fora. Links são rejeitados mesmo quando apontam para dentro: além de evitar
+    aliases/duplicatas no índice, mantém ``files.path`` como identidade estável.
+    """
+    raw = Path(value)
+    candidate = raw if raw.is_absolute() else root / raw
+    lexical = Path(os.path.abspath(candidate))
+    try:
+        rel = lexical.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"caminho fora da raiz do repositório: {value}") from exc
+    if rel == Path("."):
+        raise ValueError("esperado caminho de arquivo, recebida a raiz do repositório")
+    resolved = lexical.resolve(strict=False)
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(
+            f"caminho resolve para fora da raiz do repositório: {value}"
+        ) from exc
+    if resolved != lexical:
+        raise ValueError(f"links simbólicos/junctions não são indexáveis: {value}")
+    return rel.as_posix()
 
 
 def in_scope(rel: str, scopes: list[str] | None) -> bool:
@@ -193,7 +222,10 @@ def iter_source_files(root: Path, spec: pathspec.PathSpec | None = None,
         for p in it:
             if not p.is_file():
                 continue
-            rel = p.relative_to(root).as_posix()
+            try:
+                rel = _repo_rel(root, p)
+            except ValueError:
+                continue
             if spec.match_file(rel) or language_for(rel) is None:
                 continue
             yield rel
@@ -203,7 +235,7 @@ def scan_source_stats(root: Path,
                       spec: pathspec.PathSpec | None = None,
                       scopes: list[str] | None = None,
                       excludes: list[str] | None = None) -> dict[str, tuple[int, int]]:
-    """``{rel: (size, int(mtime))}`` de todos os arquivos-fonte, via ``os.scandir``.
+    """``{rel: (size, mtime_ns)}`` de todos os arquivos-fonte, via ``os.scandir``.
 
     size/mtime vêm da leitura do diretório (no Windows, sem syscall extra por
     arquivo) — ~60x mais rápido que ``stat()`` individual em repos grandes. Usado
@@ -242,7 +274,7 @@ def scan_source_stats(root: Path,
                         if language_for(rel) is None or file_spec.match_file(rel):
                             continue
                         st = e.stat()
-                        out[rel] = (st.st_size, int(st.st_mtime))
+                        out[rel] = (st.st_size, st.st_mtime_ns)
                 except OSError:
                     continue
     return out
@@ -365,6 +397,8 @@ class Indexer:
         scopes = get_index_scopes(self.conn)
         if scope is not None:
             ns = _norm_scope(scope)
+            if ns:
+                ns = _repo_rel(self.root, ns)
             if ns and ns not in scopes:
                 scopes = sorted(scopes + [ns])
             self.conn.execute(
@@ -436,6 +470,7 @@ class Indexer:
         Popula `self.last_changes` com os símbolos que entraram/saíram/mudaram
         de assinatura — a menos que já haja uma passada maior coletando (ex.:
         index_repo), caso em que contribui para ela."""
+        rel = _repo_rel(self.root, rel)
         own = self._changes is None
         if own:
             self._changes = ChangeSet()
@@ -457,7 +492,7 @@ class Indexer:
             _, row, st = prep
             self.conn.execute(
                 "UPDATE files SET mtime=?, size=? WHERE id=?",
-                (int(st.st_mtime), st.st_size, row["id"]))
+                (st.st_mtime_ns, st.st_size, row["id"]))
             self.conn.commit()
             return False
         cur = self.conn.cursor()
@@ -514,7 +549,7 @@ class Indexer:
                 elif prep[0] == "unchanged":
                     _, frow, st = prep
                     cur.execute("UPDATE files SET mtime=?, size=? WHERE id=?",
-                                (int(st.st_mtime), st.st_size, frow["id"]))
+                                (st.st_mtime_ns, st.st_size, frow["id"]))
                     cur.execute("RELEASE f")
                 else:
                     self._write_parsed(cur, rel, prep)
@@ -594,7 +629,7 @@ class Indexer:
                         elif tag == "unchanged":
                             _, r, st, h = res
                             cur.execute("UPDATE files SET mtime=?, size=? WHERE path=?",
-                                        (int(st.st_mtime), st.st_size, r))
+                                        (st.st_mtime_ns, st.st_size, r))
                             cur.execute("RELEASE f")
                         elif tag == "changed":
                             _, r, st, h, lang, syms, refs, status = res
@@ -688,17 +723,18 @@ class Indexer:
                 "DELETE FROM symbols_fts WHERE symbol_id IN "
                 "(SELECT id FROM symbols WHERE file_id=?)", (file_id,))
             cur.execute("DELETE FROM edges WHERE file_id=?", (file_id,))
+            self._invalidate_inbound_sites(cur, file_id)
             cur.execute("DELETE FROM symbols WHERE file_id=?", (file_id,))
             cur.execute(
                 "UPDATE files SET language=?, content_hash=?, size=?, mtime=?, "
                 "parse_status=?, indexed_at=? WHERE id=?",
-                (lang, h, st.st_size, int(st.st_mtime), status,
+                (lang, h, st.st_size, st.st_mtime_ns, status,
                  int(time.time()), file_id))
         else:
             cur.execute(
                 "INSERT INTO files(path, language, content_hash, size, mtime, "
                 "parse_status, indexed_at) VALUES(?,?,?,?,?,?,?)",
-                (rel, lang, h, st.st_size, int(st.st_mtime), status,
+                (rel, lang, h, st.st_size, st.st_mtime_ns, status,
                  int(time.time())))
             file_id = cur.lastrowid
 
@@ -717,7 +753,11 @@ class Indexer:
                     track.remove(fqn)
 
         ordinals: dict[tuple[str, str], int] = {}
-        fqn_to_uid: dict[str, str] = {}
+        # FQN não é identidade: overloads e declarações homônimas válidas têm o
+        # mesmo FQN e são distinguidos pelo ordinal do UID. Manter todos evita
+        # colapsar parent_id e ownership de refs no primeiro overload.
+        fqn_to_syms: dict[str, list[tuple[Sym, str]]] = {}
+        uid_by_sym: dict[int, str] = {}
         all_uids: set[str] = set()
         sym_rows: list = []
         fts_rows: list = []
@@ -725,7 +765,8 @@ class Indexer:
             ordinal = ordinals.get((s.fqn, s.kind), 0)
             ordinals[(s.fqn, s.kind)] = ordinal + 1
             uid = symbol_uid(rel, s.fqn, s.kind, ordinal)
-            fqn_to_uid.setdefault(s.fqn, uid)
+            fqn_to_syms.setdefault(s.fqn, []).append((s, uid))
+            uid_by_sym[id(s)] = uid
             all_uids.add(uid)
             sym_rows.append((uid, file_id, s.kind, s.name, s.fqn, s.signature,
                              s.doc, s.start_line, s.start_col, s.end_line,
@@ -746,16 +787,56 @@ class Indexer:
                     "source_hash, model, generated_at) VALUES(?,?,?,?,?,?)",
                     (d["symbol_id"], d["scope"], d["content"],
                      d["source_hash"], d["model"], d["generated_at"]))
-        parent_updates = [(fqn_to_uid[s.parent_fqn], fqn_to_uid[s.fqn])
+        def _contains(parent: Sym, child: Sym) -> bool:
+            start = (parent.start_line, parent.start_col)
+            end = (parent.end_line, parent.end_col)
+            cstart = (child.start_line, child.start_col)
+            cend = (child.end_line, child.end_col)
+            return start <= cstart and cend <= end
+
+        def _span_size(s: Sym) -> tuple[int, int]:
+            return (s.end_line - s.start_line,
+                    s.end_col - s.start_col if s.end_line == s.start_line else s.end_col)
+
+        def _parent_uid(child: Sym) -> str | None:
+            if not child.parent_fqn:
+                return None
+            candidates = fqn_to_syms.get(child.parent_fqn, ())
+            containing = [(s, uid) for s, uid in candidates
+                          if s is not child and _contains(s, child)]
+            if containing:
+                return min(containing, key=lambda item: _span_size(item[0]))[1]
+            # Compatibilidade com extractors cujo parent sintético não contém o
+            # span do filho; só é seguro cair no legado se o FQN for único.
+            return candidates[0][1] if len(candidates) == 1 else None
+
+        parent_updates = [(parent_uid, uid_by_sym[id(s)])
                           for s in syms
-                          if s.parent_fqn and s.parent_fqn in fqn_to_uid]
+                          if (parent_uid := _parent_uid(s)) is not None]
         if parent_updates:
             cur.executemany("UPDATE symbols SET parent_id=? WHERE id=?",
                             parent_updates)
+
+        def _ref_src_uid(ref) -> str | None:
+            if not ref.src_fqn:
+                return None
+            candidates = fqn_to_syms.get(ref.src_fqn, ())
+            if len(candidates) == 1:
+                return candidates[0][1]
+            point = (ref.line, ref.col)
+            containing = [item for item in candidates
+                          if ((item[0].start_line, item[0].start_col) <= point
+                              <= (item[0].end_line, item[0].end_col))]
+            if containing:
+                return min(containing, key=lambda item: _span_size(item[0]))[1]
+            # Não atribui ambiguamente ao primeiro overload: src=NULL expressa
+            # honestamente que o L0 não conseguiu provar o owner.
+            return None
+
         seen_refs: set[tuple] = set()
         edge_rows: list = []
         for r in refs:
-            src_id = fqn_to_uid.get(r.src_fqn) if r.src_fqn else None
+            src_id = _ref_src_uid(r)
             # refs idênticas no mesmo site são redundantes; deduplicar aqui
             # garante ≤1 aresta resolvida por site (casando com o índice único)
             key = (r.kind, src_id, r.dst_name, r.line, r.col)
@@ -769,7 +850,48 @@ class Indexer:
                 "confidence, resolver) VALUES(?,?,NULL,?,?,?,?,'possible','l0')",
                 edge_rows)
 
+    def _invalidate_inbound_sites(self, cur, target_file_id: int) -> None:
+        """Remove prova semântica de callsites cujo alvo vai desaparecer.
+
+        Um site L1 pode ter vários clones (overloads/fan-out). Invalidar apenas
+        o clone que apontava ao símbolo removido deixaria os irmãos alegando
+        uma resolução semântica que já não descreve o programa atual. Por isso
+        o site inteiro é colapsado em uma única aresta dangling ``possible/l0``;
+        ``resolve_edges`` pode reconstruir candidatos heurísticos depois.
+
+        Tudo roda na mesma transação que apaga os símbolos, portanto nenhum
+        leitor observa ``certain/l1`` com alvo ausente.
+        """
+        sites = cur.execute(
+            "SELECT DISTINCT e.kind, e.src, e.dst_name, e.file_id, e.line, e.col "
+            "FROM edges e WHERE e.dst IN "
+            "(SELECT id FROM symbols WHERE file_id=?) AND e.file_id<>?",
+            (target_file_id, target_file_id),
+        ).fetchall()
+        for site in sites:
+            args = (
+                site["kind"], site["src"], site["dst_name"], site["file_id"],
+                site["line"], site["col"],
+            )
+            ids = [row["id"] for row in cur.execute(
+                "SELECT id FROM edges WHERE kind=? AND src IS ? AND dst_name=? "
+                "AND file_id=? AND line IS ? AND col IS ? ORDER BY id", args
+            ).fetchall()]
+            if not ids:
+                continue
+            keep = ids[0]
+            cur.execute(
+                "UPDATE edges SET dst=NULL, confidence='possible', resolver='l0' "
+                "WHERE id=?", (keep,)
+            )
+            if len(ids) > 1:
+                placeholders = ",".join("?" * (len(ids) - 1))
+                cur.execute(
+                    f"DELETE FROM edges WHERE id IN ({placeholders})", ids[1:]
+                )
+
     def remove_file(self, rel: str) -> None:
+        rel = _repo_rel(self.root, rel)
         retry_on_locked(lambda: self._remove_file(rel))
 
     def _remove_file(self, rel: str) -> None:
@@ -784,6 +906,7 @@ class Indexer:
         self.conn.execute(
             "DELETE FROM symbols_fts WHERE symbol_id IN "
             "(SELECT id FROM symbols WHERE file_id=?)", (row["id"],))
+        self._invalidate_inbound_sites(self.conn, row["id"])
         self.conn.execute("DELETE FROM files WHERE id=?", (row["id"],))
         rank.mark_dirty(self.conn)
         community.mark_dirty(self.conn)
@@ -856,16 +979,43 @@ class Indexer:
                     return sid
             return None
 
-        def _dedup_cap(rows) -> list:
-            # candidatos distintos por fqn (decl+def de C/C++ = 1 candidato),
-            # parando em MAX+1 para detectar ambiguidade (>MAX) sem varrer tudo
+        def _dedup_cap(rows, *, by_symbol: bool = False) -> list:
+            # Por padrão, candidatos distintos por FQN (decl+def de C/C++ = 1
+            # candidato). Em chamadas Java, overloads compartilham FQN mas são
+            # símbolos semanticamente distintos: deduplicar por id preserva o
+            # fan-out fail-closed. Para em MAX+1 para detectar ambiguidade.
             out: dict[str, object] = {}
             for c in rows:
-                if c["fqn"] not in out:
-                    out[c["fqn"]] = c
+                key = c["id"] if by_symbol else c["fqn"]
+                if key not in out:
+                    out[key] = c
                     if len(out) > MAX_CANDIDATES:
                         break
             return list(out.values())
+
+        def _java_canonical_match(candidate, guess: str) -> bool:
+            """Casa nome Java canônico com o FQN path-based do índice.
+
+            `src/main/java/a/b/Widget.java` produz o símbolo interno
+            `src.main.java.a.b.Widget.Widget.run`; Java, porém, referencia
+            `a.b.Widget.run`. O scope começa repetindo o basename do arquivo.
+            Removemos só essa duplicação comprovada e testamos os sufixos do
+            source-root, sem adivinhar pacote ou aceitar classe homônima.
+            """
+            path = path_of.get(candidate["file_id"], "")
+            if not path.endswith(".java"):
+                return False
+            path_parts = path[:-5].split("/")
+            module = ".".join(path_parts)
+            fqn = candidate["fqn"]
+            if not fqn.startswith(module + "."):
+                return False
+            scope = fqn[len(module) + 1:].split(".")
+            if not scope or scope[0] != path_parts[-1]:
+                return False
+            canonical_tail = scope[1:]
+            return any(".".join(path_parts[i:] + canonical_tail) == guess
+                       for i in range(len(path_parts)))
 
         # decisões coletadas no loop e escritas em lote no fim (executemany):
         # nenhum lookup depende de uma escrita, então diferir é seguro.
@@ -907,16 +1057,33 @@ class Indexer:
             elif "." in guess:
                 # guess qualificado (via import/escopo): match por fqn exato/sufixo
                 seg, suffix = guess.rsplit(".", 1)[-1], "." + guess
+                kinds = (CALLABLE_KINDS if e["kind"] == "calls"
+                         else class_kinds if e["kind"] == "inherits" else None)
+                lang = lang_of.get(e["file_id"])
+                java_call = lang == "java" and e["kind"] == "calls"
                 cands = _dedup_cap(
-                    c for c in by_name.get(seg, ())
-                    if c["fqn"] == guess or c["fqn"].endswith(suffix))
+                    (c for c in by_name.get(seg, ())
+                     if (kinds is None or c["kind"] in kinds)
+                     and (kinds is None or c["language"] == lang)
+                     and (c["fqn"] == guess or c["fqn"].endswith(suffix))),
+                    by_symbol=java_call)
+                if (not cands and lang == "java"
+                        and e["kind"] in ("calls", "inherits")):
+                    java_kinds = (CALLABLE_KINDS if e["kind"] == "calls"
+                                  else class_kinds)
+                    cands = _dedup_cap(
+                        (c for c in by_name.get(seg, ())
+                         if c["kind"] in java_kinds and c["language"] == "java"
+                         and _java_canonical_match(c, guess)),
+                        by_symbol=java_call)
             elif e["kind"] in ("calls", "inherits"):
                 # nome puro (receptor desconhecido): por nome + kind + MESMA língua
                 kinds = CALLABLE_KINDS if e["kind"] == "calls" else class_kinds
                 lang = lang_of.get(e["file_id"])
                 cands = _dedup_cap(
-                    c for c in by_name.get(guess, ())
-                    if c["kind"] in kinds and c["language"] == lang)
+                    (c for c in by_name.get(guess, ())
+                     if c["kind"] in kinds and c["language"] == lang),
+                    by_symbol=lang == "java" and e["kind"] == "calls")
             else:
                 continue
             if not cands or len(cands) > MAX_CANDIDATES:

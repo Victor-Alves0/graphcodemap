@@ -1,9 +1,8 @@
 """Executable characterization of the FitNesse CVE-2024-42499 miss.
 
 The reduced chain is deliberately split into independent primitives.  Passing
-tests document capabilities that already exist; strict xfails are the exact
-gaps an implementation must close without teaching the engine to recognize one
-benchmark-shaped fixture.
+tests document independently reusable capabilities without teaching the engine
+to recognize one benchmark-shaped fixture.
 
 Run as an executable report with::
 
@@ -14,16 +13,14 @@ shortest route is ``Request.getResource()`` inside ``composeFileName``'s return
 expression, assigned to an instance field and consumed by ``filesExist``.  A
 second, longer route starts at ``Request.getMap()`` and crosses key iteration
 and more instance fields.  Map propagation and the sink are already supported.
-Receiver-qualified source classification and nested return-source promotion
-are covered here together with their precision guards.  Cross-method instance-
-field flow remains the independently characterized next primitive.
+Receiver-qualified source classification, nested return-source promotion,
+cross-method receiver fields and canonical-containment return summaries are
+covered here together with their precision guards.
 """
 
 from __future__ import annotations
 
 import json
-
-import pytest
 
 from codegraph import CodeGraph
 
@@ -466,13 +463,6 @@ def handle(request):
         graph.close()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "missing primitive: taint written to an instance field in one method is "
-        "not visible when another method reads that field"
-    ),
-)
 def test_instance_field_taint_crosses_method_boundaries(tmp_path):
     findings = _file_findings(
         tmp_path,
@@ -490,6 +480,86 @@ def test_instance_field_taint_crosses_method_boundaries(tmp_path):
 
             void handle(javax.servlet.http.HttpServletRequest request) {
                 capture(request);
+                consume();
+            }
+        }
+        """,
+    )
+    assert findings
+
+
+def test_fitnesse_canonical_containment_return_cleans_composed_field(tmp_path):
+    findings = _file_findings(
+        tmp_path,
+        """
+        interface Request {
+            String getResource();
+        }
+
+        class App {
+            private String filePath;
+            private java.io.File root;
+
+            String composeFileName(Request request, String fileName) {
+                try {
+                    String basePath = root.getPath();
+                    String absoluteBase = new java.io.File(basePath)
+                        .getCanonicalPath() + java.io.File.separator;
+                    java.nio.file.Path candidate = java.nio.file.Path.of(
+                        basePath, request.getResource(), fileName);
+                    String absoluteFile = candidate.toFile().getCanonicalPath();
+                    if (absoluteFile.startsWith(absoluteBase)) {
+                        return candidate.toString();
+                    }
+                } catch (java.io.IOException ignored) {
+                }
+                return "";
+            }
+
+            boolean filesExist() {
+                return new java.io.File(this.filePath).exists();
+            }
+
+            void handle(Request request) {
+                this.filePath = composeFileName(request, "history.xml");
+                filesExist();
+            }
+        }
+        """,
+        sources=("Request.getResource",),
+    )
+    assert not findings
+
+
+def test_canonical_containment_with_tainted_base_is_not_a_return_sanitizer(
+        tmp_path):
+    findings = _file_findings(
+        tmp_path,
+        """
+        class App {
+            private String filePath;
+
+            String compose(String basePath, String input) throws Exception {
+                String absoluteBase = new java.io.File(basePath)
+                    .getCanonicalPath() + java.io.File.separator;
+                java.nio.file.Path candidate = java.nio.file.Path.of(
+                    basePath, input);
+                String absoluteFile = candidate.toFile().getCanonicalPath();
+                if (absoluteFile.startsWith(absoluteBase)) {
+                    return candidate.toString();
+                }
+                return "";
+            }
+
+            void consume() {
+                new java.io.File(this.filePath);
+            }
+
+            void handle(javax.servlet.http.HttpServletRequest request)
+                    throws Exception {
+                String base = request.getParameter("base");
+                String input = request.getParameter("path");
+                this.filePath = compose(base, input);
                 consume();
             }
         }

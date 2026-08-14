@@ -89,8 +89,9 @@ Java's `jdtls` is notable as the first **launcher-based** server (it runs on the
 JVM via an Eclipse launcher, `java -jar <equinox-launcher> …`, not a bare `PATH`
 binary) — proving the client generalizes beyond a single executable.
 
-Measured on the OWASP Benchmark Maven checkout (2,766 Java source files), JDTLS
-1.60.0 promoted **12,937** call edges with zero resolver errors. GraphCodeMap
+Measured in the Round 26 OWASP Maven snapshot (2,770 indexed files), JDTLS
+1.60.0 on Oracle JDK 21.0.11 promoted **8,838** call edges with zero resolver
+errors. GraphCodeMap
 uses those Java promotions for return pruning only when the body supplies an
 independent proof: folded local control flow, or locally-created List/Map
 operations with constant indices/keys. Enhanced-for now propagates iterable
@@ -98,11 +99,13 @@ taint to its element. Alias, escape, dynamic key, uncertain branch/loop,
 virtual/interface dispatch and reflection remain conservative.
 
 The independent Juliet Java 1.3 CWE-23 holdout measures 100% precision and
-54.5% recall. Round 25 added concrete constructor-wrapper resolution and
-sanitizer-aware nested sources without changing the OWASP gate or adding
-corpus-specific source/sink names. Deeper interprocedural variants remain the
-next Java gap; Gradle remains the build-system validation follow-up after the
-real Maven/JDTLS run.
+69.4% recall (308 / 0 / 136 / 444), up from 54.5% in Round 25 without adding an
+FP. Round 26 tightened L0 overload/receiver ownership, L1 line+column identity
+and encoding conversion, incremental L1 provenance, and receiver heap effects.
+It also defers uninvoked lambdas and restricts virtual kills to proven closed
+dispatch. Invoked lambdas, wider fan-out/type hierarchies and global
+`System.setProperty` state remain explicit gaps; Gradle remains the build-system
+validation follow-up after the real Maven/JDTLS run.
 
 ### Activating a resolver
 

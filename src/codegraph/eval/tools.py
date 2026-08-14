@@ -75,7 +75,14 @@ class BaselineTools:
     def read_file(self, path: str, start_line: int = 1,
                   end_line: int | None = None) -> str:
         rel = path.replace("\\", "/").strip("/")
-        target = self.root / rel
+        # Esta função é exposta diretamente ao agente avaliado.  Não confie no
+        # caminho vindo da chamada de tool: ``root / "../secret"`` continuaria
+        # sendo um Path válido e permitiria ler fora do repositório.
+        target = (self.root / rel).resolve()
+        try:
+            target.relative_to(self.root)
+        except ValueError:
+            return f"arquivo não encontrado: {rel}"
         if not target.is_file():
             return f"arquivo não encontrado: {rel}"
         lines = target.read_text(encoding="utf-8", errors="replace").splitlines()

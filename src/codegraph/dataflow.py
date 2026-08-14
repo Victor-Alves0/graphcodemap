@@ -237,7 +237,23 @@ def is_framework_source_call(qualified: str | None, paths=()) -> bool:
             and any(is_framework_source_path(path) for path in paths))
 
 
-def _nested_named_source(call, sources, sanitizers=frozenset()) -> str | None:
+def _source_literal_is_trusted(call, label: str,
+                               trusted_source_literals=()) -> bool:
+    """Whether a named source has an explicitly trusted literal argument.
+
+    The policy is deliberately exact in all three dimensions: source name,
+    argument index and decoded string literal.  A dynamic expression is never
+    trusted, and an unqualified homonym cannot inherit a qualified API rule.
+    """
+    actual = dict(getattr(call, "arg_literals", ()))
+    return any(
+        source == label and actual.get(index) in literals
+        for source, index, literals in trusted_source_literals
+    )
+
+
+def _nested_named_source(call, sources, sanitizers=frozenset(),
+                         trusted_source_literals=()) -> str | None:
     """Return the exact configured source nested in a call, if unsanitized."""
     typed = (f"{call.receiver_type}.{call.callee}"
              if call.receiver_type else None)
@@ -245,13 +261,17 @@ def _nested_named_source(call, sources, sanitizers=frozenset()) -> str | None:
              else call.qualified if call.qualified in sources
              else call.callee if call.callee in sources
              else None)
-    if label is None or any(guard in sanitizers for guard in call.guards):
+    if (label is None
+            or any(guard in sanitizers for guard in call.guards)
+            or _source_literal_is_trusted(
+                call, label, trusted_source_literals)):
         return None
     return label
 
 
 def assign_reads_named_source(a, sources=frozenset(),
-                              sanitizers=frozenset()) -> bool:
+                              sanitizers=frozenset(),
+                              trusted_source_literals=()) -> bool:
     """Assignment RHS is a configured source, simple or receiver-qualified.
 
     Exact qualified names let catalogs model APIs such as `System.getProperty`.
@@ -259,6 +279,15 @@ def assign_reads_named_source(a, sources=frozenset(),
     such as `BufferedReader.readLine` avoid treating a same-named domain method
     as external input.
     """
+    nested = getattr(a, "nested_calls", ())
+    if nested:
+        return any(_nested_named_source(
+            call, sources, sanitizers, trusted_source_literals) is not None
+                   for call in nested)
+
+    # Legacy extractors do not retain nested calls. Preserve their previous
+    # behaviour; they cannot satisfy a literal-trust rule because they carry no
+    # argument literal proof.
     typed = (f"{a.rhs_receiver_type}.{a.rhs_call}"
              if (getattr(a, "rhs_receiver_type", None) is not None
                  and getattr(a, "rhs_call", None) is not None)
@@ -268,9 +297,7 @@ def assign_reads_named_source(a, sources=frozenset(),
              and a.rhs_call not in sanitizers)
             or (getattr(a, "rhs_qualified", None) is not None
                 and a.rhs_qualified in sources)
-            or (typed is not None and typed in sources)
-            or any(_nested_named_source(call, sources, sanitizers) is not None
-                   for call in getattr(a, "nested_calls", ())))
+            or (typed is not None and typed in sources))
 
 
 def assign_reads_framework_source(a, sanitizers=frozenset()) -> bool:
@@ -338,6 +365,18 @@ def direct_source_args(c, sanitizers=frozenset()):
             yield idx, limpas[0]
 
 
+def direct_named_source_args(c, sources, sanitizers=frozenset(),
+                             trusted_source_literals=()):
+    """Configured named sources written directly inside call arguments."""
+    for idx, calls in c.arg_calls.items():
+        for call in calls:
+            label = _nested_named_source(
+                call, sources, sanitizers, trusted_source_literals)
+            if label is not None:
+                yield idx, label
+                break
+
+
 def uses_flow_sensitive(facts, lang: str | None) -> bool:
     """O motor FLOW-SENSITIVE roda mesmo para estes fatos?
 
@@ -349,7 +388,8 @@ def uses_flow_sensitive(facts, lang: str | None) -> bool:
 
 
 def analyze(facts, tainted, sanitizers=frozenset(), lang: str | None = None,
-            sources=frozenset(), nonprop=frozenset(), source_spans=frozenset()):
+            sources=frozenset(), nonprop=frozenset(), source_spans=frozenset(),
+            receiver_effects=None, trusted_source_literals=()):
     """Ponto único de entrada do motor de taint.
 
     Usa o motor FLOW-SENSITIVE quando a linguagem suporta e os fatos têm CFG;
@@ -360,10 +400,12 @@ def analyze(facts, tainted, sanitizers=frozenset(), lang: str | None = None,
         from .flowsens import analyze_flow
 
         flow = analyze_flow(facts, tainted, sanitizers, sources, nonprop,
-                            source_spans)
+                            source_spans, receiver_effects,
+                            trusted_source_literals)
         if flow is not None:
             return flow
-    return analyze_facts(facts, tainted, sanitizers, nonprop, source_spans)
+    return analyze_facts(facts, tainted, sanitizers, nonprop, source_spans,
+                         sources, trusted_source_literals)
 
 
 def _build_regions(body_node, family: str, source=None, assigns=None):
@@ -392,6 +434,25 @@ def _const_text(source: bytes, node) -> str | None:
     if len(t) > 120 or not t or not _TALVEZ_CONST.match(t):
         return None
     return t
+
+
+def _string_literal_value(source: bytes, node) -> str | None:
+    """Decode the conservative subset needed by literal-sensitive API rules.
+
+    Trust is never inferred from a non-literal expression.  Plain quoted
+    strings are enough for the initial policy; escapes deliberately remain
+    unmatched instead of risking a permissive decoder disagreement between
+    supported languages.
+    """
+    if node is None or node.type not in {
+        "string", "string_literal", "interpreted_string_literal",
+    }:
+        return None
+    text = _text(source, node).strip()
+    if (len(text) < 2 or text[0] not in {'"', "'"}
+            or text[-1] != text[0] or "\\" in text[1:-1]):
+        return None
+    return text[1:-1]
 
 
 def _py_colher_de(source):
@@ -508,7 +569,16 @@ def _scope_stop(lang: str) -> set[str]:
         return _JS_FUNCS
     if fam == "clj":
         return set()
-    return GEN[lang]["func"] | {"lambda_literal", "lambda"}
+    deferred = {"lambda_literal", "lambda"}
+    if lang == "java":
+        # A Java lambda is constructed now and runs later.  Until lambdas are
+        # indexed as their own callable flow units, inlining their writes or
+        # sinks into the enclosing method is temporally wrong: a deferred clean
+        # can hide a live sink and an uninvoked sink becomes a false positive.
+        # Excluding the whole unit is an explicit conservative containment; a
+        # future lambda call-graph model should replace it, not remove it.
+        deferred.add("lambda_expression")
+    return GEN[lang]["func"] | deferred
 
 
 def supported(lang: str) -> bool:
@@ -583,6 +653,9 @@ class CallSite:
     # `list.remove(0)` / `list.get(1)`. Sem ambos, um resumo de retorno teria de
     # tratar toda coleção como propagadora ou, pior, adivinhar o índice.
     arg_values: dict[int, str] = field(default_factory=dict)
+    # Configured calls nested in each argument.  Receiver summaries need the
+    # exact nesting/sanitizer ancestry for `capture(request.getX())`.
+    arg_calls: dict[int, list[NestedCall]] = field(default_factory=dict)
     # Java receiver identity used by the first heap-sensitive boundary.  Only
     # literal/implicit ``this`` is safe to transport instance-field state.
     receiver_kind: str = "unknown"
@@ -601,6 +674,9 @@ class NestedCall:
     qualified: str | None = None
     receiver_type: str | None = None
     guards: tuple[str, ...] = ()
+    # Exact decoded string literals by argument index. Expressions and escaped
+    # literals stay absent, so a trust policy is fail-closed.
+    arg_literals: tuple[tuple[int, str], ...] = ()
 
 
 @dataclass
@@ -655,11 +731,59 @@ class ReceiverFlow:
     span: tuple[int, int] | None = None
 
 
+@dataclass(frozen=True)
+class ReceiverEffect:
+    """Fail-closed summary of a same-``this`` call's field writes.
+
+    ``overwrites`` are definitely assigned on every exit.  Generators are
+    separated into unconditional/source writes and parameter dependencies so
+    the caller can apply the effect at the exact call site using its current
+    environment.  Fields absent from all three sets are preserved.
+    """
+    overwrites: frozenset[str] = frozenset()
+    always_dirty: frozenset[str] = frozenset()
+    from_params: tuple[tuple[str, frozenset[int]], ...] = ()
+
+
+def merge_receiver_effects(effects) -> ReceiverEffect:
+    """Join possible receiver targets without turning may-effects into kills.
+
+    A dirty write from any possible target is observable, so generators use
+    union.  A clean overwrite is safe only when every possible target proves
+    it, so kills use intersection.
+    """
+    effects = list(effects)
+    if not effects:
+        return ReceiverEffect()
+    overwrites = set(effects[0].overwrites)
+    always_dirty: set[str] = set()
+    dependencies: dict[str, set[int]] = {}
+    for effect in effects:
+        overwrites &= set(effect.overwrites)
+        always_dirty |= set(effect.always_dirty)
+        for field_name, indexes in effect.from_params:
+            dependencies.setdefault(field_name, set()).update(indexes)
+    return ReceiverEffect(
+        overwrites=frozenset(overwrites),
+        always_dirty=frozenset(always_dirty),
+        from_params=tuple(
+            (field_name, frozenset(indexes))
+            for field_name, indexes in sorted(dependencies.items())
+        ),
+    )
+
+
 @dataclass
 class Flow:
     arg_flows: list[ArgFlow] = field(default_factory=list)
     receiver_flows: list[ReceiverFlow] = field(default_factory=list)
     reaches_return: bool = False
+    # Internal post-state used to derive composable receiver summaries.
+    exit_taint: frozenset[tuple[str, ...]] = frozenset()
+    # At least one tainted return was discharged by a structural containment
+    # proof.  Together with ``not reaches_return`` this is a return sanitizer
+    # summary, rather than a generic "method happens to return a constant".
+    proven_sanitized_return: bool = False
 
 
 _JAVA_LIST_CTOR = re.compile(r"^(?:ArrayList|LinkedList)(?:<.*>)?$")
@@ -675,7 +799,8 @@ _JAVA_COLLECTION_SENTINEL = ("__graphcodemap_collection_taint__",)
 def analyze_java_constant_collections(
         facts: FnFacts, tainted, sanitizers=frozenset(), sources=frozenset(),
         nonprop=frozenset(), source_spans=frozenset(), *,
-        allow_unrelated_calls: bool = False):
+        allow_unrelated_calls: bool = False, receiver_effects=None,
+        trusted_source_literals=()):
     """Refina Java com listas e mapas locais de operações determinísticas.
 
     O analisador escalar é conservador sobre aliasing: `map.put(key, value)`
@@ -931,7 +1056,9 @@ def analyze_java_constant_collections(
                       returns=cloned_returns)
     initial = set(tainted) | {_JAVA_COLLECTION_SENTINEL}
     return analyze(refined, initial, sanitizers, lang="java", sources=sources,
-                   nonprop=nonprop, source_spans=source_spans)
+                   nonprop=nonprop, source_spans=source_spans,
+                   receiver_effects=receiver_effects,
+                   trusted_source_literals=trusted_source_literals)
 
 
 def analyze_java_constant_list(facts: FnFacts, tainted,
@@ -1033,15 +1160,25 @@ def _is_tainted(path, tainted) -> bool:
     return False
 
 
-def find_function_node(root, start_line: int, lang: str):
+def find_function_node(root, start_line: int, lang: str,
+                       start_col: int | None = None):
+    """Find one callable by its persisted tree-sitter start position.
+
+    Generated/compact source can declare multiple functions on one physical
+    line.  With a column, require the exact position.  Legacy line-only callers
+    remain supported only when the line identifies exactly one callable.
+    """
     types = _func_types(lang)
     stack = [root]
+    matches = []
     while stack:
         n = stack.pop()
         if n.type in types and n.start_point[0] + 1 == start_line:
-            return n
+            if start_col is not None and n.start_point[1] == start_col:
+                return n
+            matches.append(n)
         stack.extend(reversed(n.named_children))
-    return None
+    return matches[0] if start_col is None and len(matches) == 1 else None
 
 
 def _callee_name(source: bytes, fn, family: str) -> str:
@@ -1151,11 +1288,23 @@ def _nested_calls(source: bytes, node, call_types, idset,
     child_guards = guards
     if node.type in call_types:
         callee = _callee_of(source, node, idset)
+        args = _args_of(node)
+        literals: list[tuple[int, str]] = []
+        if args is not None:
+            index = 0
+            for arg in args.named_children:
+                if arg.type == "comment":
+                    continue
+                literal = _string_literal_value(source, arg)
+                if literal is not None:
+                    literals.append((index, literal))
+                index += 1
         out.append(NestedCall(
             callee,
             _rhs_qualified(source, node, call_types),
             _rhs_receiver_type(source, node, call_types, declared_types),
             tuple(guards),
+            tuple(literals),
         ))
         child_guards = guards + (callee,)
     for child in node.named_children:
@@ -1848,16 +1997,104 @@ def _java_instance_scope(source: bytes, fn, body, stop):
 
 
 def instance_field_name(facts: FnFacts, path) -> str | None:
-    """Canonical field name for an access proven to refer to ``this``."""
+    """Root field for an access proven to refer to ``this``.
+
+    Heap summaries currently store root fields, not arbitrary access paths.
+    Writing ``this.holder.path`` therefore dirties ``holder`` conservatively;
+    this is a sound loss of precision and preserves later reads of any subpath.
+    """
     if not isinstance(path, tuple):
         return None
-    if (len(path) == 2 and path[0] == "this"
+    if (len(path) >= 2 and path[0] == "this"
             and path[1] in facts.instance_fields):
         return path[1]
-    if (len(path) == 1 and path[0] in facts.instance_fields
+    if (len(path) >= 1 and path[0] in facts.instance_fields
             and path[0] not in facts.local_names):
         return path[0]
     return None
+
+
+def java_receiver_may_escape(facts: FnFacts) -> bool:
+    """Syntactic evidence that a callee can mutate ``this`` through an alias.
+
+    The current access-path domain does not retain alias identity.  Exporting
+    a clean kill after ``Alias a = this`` or ``mutate(this)`` would therefore
+    be unsound.  Refuse kills while still exporting monotone dirty effects.
+    """
+    for assignment in facts.assigns:
+        value = (assignment.rhs_const or "").strip()
+        if value == "this" or value.startswith("(this"):
+            return True
+    for call in facts.calls:
+        if any(value.strip().strip("()") == "this"
+               for value in call.arg_values.values()):
+            return True
+    return False
+
+
+def summarize_java_receiver_effect(
+        facts: FnFacts, sanitizers=frozenset(), sources=frozenset(),
+        nonprop=frozenset(), source_spans=frozenset(), receiver_effects=None,
+        allow_overwrites: bool = True, trusted_source_literals=(),
+) -> ReceiverEffect:
+    """Derive a parametric same-``this`` field effect from normal exits.
+
+    Multiple abstract executions distinguish unconditional/source dirtiness,
+    parameter dependencies and definite overwrites.  Branch union and loop
+    zero-iteration semantics come from the shared flow-sensitive evaluator.
+    Return-bearing methods do not export kills yet: the structured CFG records
+    return observations but does not prune statements after an early return,
+    so claiming a definite clean there would not be fail-closed.
+    """
+    if facts.regions is None or not facts.instance_fields:
+        return ReceiverEffect()
+
+    def aliases(field: str) -> set[tuple[str, ...]]:
+        out: set[tuple[str, ...]] = {("this", field)}
+        if field not in facts.local_names:
+            out.add((field,))
+        return out
+
+    def dirty_fields(flow: Flow) -> set[str]:
+        return {
+            field for field in facts.instance_fields
+            if any(_is_tainted(path, set(flow.exit_taint))
+                   for path in aliases(field))
+        }
+
+    kwargs = {
+        "sanitizers": sanitizers,
+        "lang": "java",
+        "sources": sources,
+        "nonprop": nonprop,
+        "source_spans": source_spans,
+        "receiver_effects": receiver_effects,
+        "trusted_source_literals": trusted_source_literals,
+    }
+    baseline = dirty_fields(analyze(facts, set(), **kwargs))
+    dependencies: dict[str, set[int]] = {
+        field: set() for field in facts.instance_fields
+    }
+    for index, param in enumerate(facts.params):
+        reached = dirty_fields(analyze(facts, {param}, **kwargs)) - baseline
+        for field_name in reached:
+            dependencies[field_name].add(index)
+
+    overwritten = set()
+    if allow_overwrites and not facts.returns:
+        for field in facts.instance_fields:
+            final = dirty_fields(analyze(facts, aliases(field), **kwargs))
+            if field not in final:
+                overwritten.add(field)
+
+    return ReceiverEffect(
+        overwrites=frozenset(overwritten),
+        always_dirty=frozenset(baseline),
+        from_params=tuple(
+            (field, frozenset(indexes))
+            for field, indexes in sorted(dependencies.items()) if indexes
+        ),
+    )
 
 
 def _facts_generic(source, fn, lang) -> FnFacts:
@@ -2004,6 +2241,10 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                     lambda s, n: _callee_of(s, n, idset), bare=nuas)
                 if reads:
                     cs.arg_sources[pos] = reads
+                nested = _nested_calls(source, arg, calls_t, idset,
+                                       declared_types)
+                if nested:
+                    cs.arg_calls[pos] = nested
                 cs.args.append((pos, ids))
                 value = _const_text(source, arg)
                 if value is not None:
@@ -2197,7 +2438,8 @@ def extract_facts(source: bytes, fn_node, lang: str) -> FnFacts:
 # -- motor de taint (compartilhado) -------------------------------------------
 
 def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset(),
-                  nonprop=frozenset(), source_spans=frozenset()) -> Flow:
+                  nonprop=frozenset(), source_spans=frozenset(),
+                  sources=frozenset(), trusted_source_literals=()) -> Flow:
     """Fixpoint may-taint FIELD-SENSITIVE. O conjunto sujo guarda *caminhos de
     acesso* (tuplas); ler um caminho está sujo se ele ou qualquer prefixo seu
     estiver sujo (`_is_tainted`). `tainted_init` deve conter caminhos — um nome
@@ -2208,11 +2450,13 @@ def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset(),
         changed = False
         for a in facts.assigns:
             if ((a.rhs_call is not None and a.rhs_call in sanitizers)
-                    or a.line in nonprop):
+                    or a.span in nonprop):
                 continue  # sanitizado, ou chamada que não devolve o argumento
             rhs_hit = any(_is_tainted(p, tainted) for p in a.rhs_ids)
             aug_hit = a.is_aug and any(_is_tainted(t, tainted) for t in a.targets)
-            if rhs_hit or aug_hit or a.span in source_spans:
+            named_source = assign_reads_named_source(
+                a, sources, sanitizers, trusted_source_literals)
+            if rhs_hit or aug_hit or named_source or a.span in source_spans:
                 for t in a.targets:
                     if t not in tainted:
                         tainted.add(t)
@@ -2220,6 +2464,8 @@ def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset(),
     flow = Flow()
     for c in facts.calls:
         direto = dict(direct_source_args(c, sanitizers))
+        direto.update(dict(direct_named_source_args(
+            c, sources, sanitizers, trusted_source_literals)))
         for idx, ids in c.args:
             hit = [p for p in ids if _is_tainted(p, tainted)]
             if hit:
@@ -2241,11 +2487,12 @@ def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset(),
 
 
 def source_vars(facts: FnFacts, sources, sanitizers=frozenset(),
-                source_spans=frozenset()) -> set:
+                source_spans=frozenset(), trusted_source_literals=()) -> set:
     """Caminhos cujo valor nasce de uma chamada a uma fonte (input não-confiável)."""
     out: set = set()
     for a in facts.assigns:
-        if (assign_reads_named_source(a, sources, sanitizers)
+        if (assign_reads_named_source(
+                a, sources, sanitizers, trusted_source_literals)
                 or assign_reads_framework_source(a, sanitizers)
                 or a.span in source_spans):
             out |= a.targets
@@ -2253,31 +2500,39 @@ def source_vars(facts: FnFacts, sources, sanitizers=frozenset(),
 
 
 def return_reads_named_source(returned: ReturnExpr, sources,
-                              sanitizers=frozenset()) -> bool:
+                              sanitizers=frozenset(),
+                              trusted_source_literals=()) -> bool:
     """Whether a return expression contains a configured, unsanitized source."""
-    for call in returned.nested_calls:
-        typed = (f"{call.receiver_type}.{call.callee}"
-                 if call.receiver_type else None)
-        if (call.callee in sources or call.qualified in sources
-                or typed in sources):
-            if not any(guard in sanitizers for guard in call.guards):
-                return True
-    return False
+    if returned.nested_calls:
+        return any(_nested_named_source(
+            call, sources, sanitizers, trusted_source_literals) is not None
+                   for call in returned.nested_calls)
+    # Legacy fact extractors retain only the top callee and cannot prove a
+    # trusted literal. Keep their conservative behaviour.
+    return (returned.top_call in sources
+            and returned.top_call not in sanitizers)
 
 
 def source_sites(facts: FnFacts, sources, sanitizers=frozenset(),
-                 source_spans=frozenset()) -> list[tuple]:
+                 source_spans=frozenset(), trusted_source_literals=()) -> list[tuple]:
     """(caminho, linha, fonte) para cada atribuição a partir de uma fonte.
     O caminho é uma tupla (semente para o motor); renderize com '.'.join()."""
     out = []
     for a in facts.assigns:
         rotulo = None
-        if assign_reads_named_source(a, sources, sanitizers):
-            rotulo = (a.rhs_qualified if a.rhs_qualified in sources
-                      else next((label for call in a.nested_calls
-                                 if (label := _nested_named_source(
-                                     call, sources, sanitizers)) is not None),
-                                a.rhs_call))
+        if assign_reads_named_source(
+                a, sources, sanitizers, trusted_source_literals):
+            rotulo = next((
+                label for call in a.nested_calls
+                if (label := _nested_named_source(
+                    call, sources, sanitizers,
+                    trusted_source_literals)) is not None
+            ), None)
+            if rotulo is None:  # extractor legado sem ``nested_calls``
+                typed = (f"{a.rhs_receiver_type}.{a.rhs_call}"
+                         if a.rhs_receiver_type and a.rhs_call else None)
+                rotulo = (a.rhs_qualified if a.rhs_qualified in sources
+                          else typed if typed in sources else a.rhs_call)
         elif assign_reads_framework_source(a, sanitizers):
             rotulo = a.rhs_qualified or next(
                 (".".join(p) for p in sorted(a.rhs_ids)

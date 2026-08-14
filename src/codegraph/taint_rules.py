@@ -76,7 +76,9 @@ _SANITIZERS = {
 # de 26% para 3%; a régua por linguagem existe por causa dessa medição.
 _BARE_SINKS = {"open", "exec"}
 
-# Sinks em que SÓ O PRIMEIRO ARGUMENTO é perigoso.
+# Papéis semânticos dos argumentos de sinks. A chave pode ser global
+# (``execute``) ou específica por linguagem (``java:exec``), e o valor lista
+# os índices que realmente carregam o conteúdo interpretado pelo sink.
 #
 # `cur.execute(q, params)` com `q` literal e placeholders é a forma SEGURA de
 # consultar — o dado do usuário vai em `params` justamente para não ser
@@ -87,18 +89,49 @@ _BARE_SINKS = {"open", "exec"}
 # Mesma ideia para template: em `render_template_string(tpl, **ctx)` o sink é o
 # TEMPLATE; passar dado do usuário como contexto é o uso correto.
 #
-# Os modelos do CodeQL trazem esse índice em cada linha (`Argument[0]`); nós o
-# descartamos na importação porque o motor ainda não o usava. Aqui está o
-# começo do uso — por enquanto só onde o ganho foi medido.
-_ARG0_ONLY = {
+# Os modelos do CodeQL trazem esse índice em cada linha (`Argument[0]`). Este
+# catálogo preserva essa dimensão em vez de reduzir toda chamada ao nome do
+# método. Índice desconhecido (kwargs ou extração incompleta) continua
+# fail-closed e não é descartado.
+_SINK_ARG_INDEXES: dict[str, frozenset[int]] = {
     # SQL: o argumento 0 é a consulta, o resto é ligação de parâmetros
-    "execute", "executemany", "executescript", "executeQuery", "executeUpdate",
-    "executeLargeUpdate", "addBatch", "batchUpdate", "queryForObject",
-    "queryForList", "queryForMap", "queryForRowSet", "queryForInt",
-    "queryForLong", "prepareStatement", "prepareCall", "query",
+    **{name: frozenset({0}) for name in {
+        "execute", "executemany", "executescript", "executeQuery",
+        "executeUpdate", "executeLargeUpdate", "addBatch", "batchUpdate",
+        "queryForObject", "queryForList", "queryForMap", "queryForRowSet",
+        "queryForInt", "queryForLong", "prepareStatement", "prepareCall",
+        "query",
+    }},
     # template
-    "render_template_string",
+    "render_template_string": frozenset({0}),
+    # Runtime.exec(command, envp, dir): command and process environment can
+    # control execution (PATH, loaders and runtime flags); working directory
+    # cannot. File(dir) remains independently visible to the path model.
+    "java:exec": frozenset({0, 1}),
 }
+
+
+# Literais que identificam uma âncora de configuração confiável, e não dados
+# fornecidos pelo usuário. A regra continua específica da API e do argumento:
+# não transforma ``System.getProperty`` inteiro em sanitizer, nem confia numa
+# chave calculada dinamicamente. ``user.dir`` é o diretório de trabalho da JVM;
+# tratá-lo como input web fez o caminho interno de ``Runtime.exec(..., dir)``
+# parecer tanto command injection quanto path traversal.
+_TRUSTED_SOURCE_LITERAL_ARGS: dict[tuple[str, int], frozenset[str]] = {
+    ("System.getProperty", 0): frozenset({"user.dir"}),
+}
+
+
+def _frozen_sink_arg_indexes() -> tuple[tuple[str, frozenset[int]], ...]:
+    return tuple(sorted(_SINK_ARG_INDEXES.items()))
+
+
+def _frozen_trusted_source_literals(
+) -> tuple[tuple[str, int, frozenset[str]], ...]:
+    return tuple(sorted(
+        (source, index, literals)
+        for (source, index), literals in _TRUSTED_SOURCE_LITERAL_ARGS.items()
+    ))
 
 
 @dataclass(frozen=True)
@@ -107,33 +140,51 @@ class TaintRules:
     sinks: frozenset[str]
     sanitizers: frozenset[str]
     bare_sinks: frozenset[str] = frozenset()
-    arg0_only: frozenset[str] = frozenset()
+    sink_arg_indexes: tuple[tuple[str, frozenset[int]], ...] = ()
+    trusted_source_literals: tuple[
+        tuple[str, int, frozenset[str]], ...
+    ] = ()
 
     def is_sink(self, callee: str, qualified: str | None,
-                arg_index: int | None = None) -> bool:
+                arg_index: int | None = None,
+                language: str | None = None) -> bool:
         """A chamada é um sink? Casa pelo `receptor.método` OU pelo nome nu.
 
         Um nome em `bare_sinks` só casa SEM receptor: é o que separa
         `open(caminho)` de `Image.open(arquivo)`.
 
-        Um nome em `arg0_only` só casa no PRIMEIRO argumento: em
-        `execute(consulta, params)` o dado do usuário em `params` é a defesa,
-        não a falha. `arg_index` negativo é kwarg — posição desconhecida, então
-        continua valendo, que é o lado seguro."""
+        ``sink_arg_indexes`` declara os argumentos semanticamente perigosos:
+        em ``execute(consulta, params)`` o dado do usuário em ``params`` é a
+        defesa, não a falha; em Java ``exec(command, envp, dir)`` considera
+        ``command`` e ``envp``, mas não o diretório de trabalho. ``arg_index``
+        negativo é kwarg ou posição desconhecida, então continua valendo, que
+        é o lado seguro."""
         if callee in self.bare_sinks:
             casou = qualified is None
         else:
             casou = ((qualified is not None and qualified in self.sinks)
                      or callee in self.sinks)
-        if casou and arg_index is not None and arg_index > 0 \
-                and callee in self.arg0_only:
-            return False
+        if casou and arg_index is not None and arg_index >= 0:
+            by_sink = dict(self.sink_arg_indexes)
+            keys: list[str] = []
+            if language:
+                lang = language.lower()
+                if qualified is not None:
+                    keys.append(f"{lang}:{qualified}")
+                keys.append(f"{lang}:{callee}")
+            if qualified is not None:
+                keys.append(qualified)
+            keys.append(callee)
+            allowed = next((by_sink[key] for key in keys if key in by_sink), None)
+            if allowed is not None and arg_index not in allowed:
+                return False
         return casou
 
 
 def default_rules() -> TaintRules:
     return TaintRules(frozenset(_SOURCES), frozenset(_SINKS), frozenset(_SANITIZERS),
-                      frozenset(_BARE_SINKS), frozenset(_ARG0_ONLY))
+                      frozenset(_BARE_SINKS), _frozen_sink_arg_indexes(),
+                      _frozen_trusted_source_literals())
 
 
 # Suplemento CURADO À MÃO, por linguagem. Complementa o catálogo gerado com
@@ -364,7 +415,8 @@ def catalog_for(languages) -> TaintRules:
         from .taint_catalog import CATALOG
     except ImportError:                       # catálogo é opcional
         return TaintRules(frozenset(src), frozenset(snk), frozenset(san),
-                          frozenset(bare), frozenset(_ARG0_ONLY))
+                          frozenset(bare), _frozen_sink_arg_indexes(),
+                          _frozen_trusted_source_literals())
     try:
         from .taint_catalog_codeql import CATALOG_CODEQL
     except ImportError:                       # também opcional
@@ -390,7 +442,8 @@ def catalog_for(languages) -> TaintRules:
     # execução de comando é pior que acusar um homônimo.
     bare -= snk
     return TaintRules(frozenset(src), frozenset(snk), frozenset(san),
-                      frozenset(bare), frozenset(_ARG0_ONLY))
+                      frozenset(bare), _frozen_sink_arg_indexes(),
+                      _frozen_trusted_source_literals())
 
 
 def load_rules(root: Path, languages=None) -> TaintRules:
@@ -415,4 +468,5 @@ def load_rules(root: Path, languages=None) -> TaintRules:
         # arquivo existe UMA lista de sinks, e a distinção é detalhe interno.
         bare -= set(rem.get("sinks", [])) | set(rem.get("bare_sinks", []))
     return TaintRules(frozenset(src), frozenset(snk), frozenset(san),
-                      frozenset(bare), frozenset(base.arg0_only))
+                      frozenset(bare), base.sink_arg_indexes,
+                      base.trusted_source_literals)

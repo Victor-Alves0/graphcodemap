@@ -38,10 +38,50 @@ _EOF = object()  # sentinela: stream do servidor fechou/quebrou
 
 
 def _uri_to_path(uri: str) -> Path | None:
+    """Converte somente ``file:`` URI, decodificando escapes uma única vez.
+
+    A conversão padrão do Windows não reconhece ``c%3A`` como drive antes de
+    decodificar. Decodificamos explicitamente uma única vez e não aplicamos um
+    segundo conversor (que transformaria um nome literal ``%20`` em espaço).
+    O netloc também participa para preservar caminhos UNC.
+    """
     try:
-        return Path(url2pathname(unquote(urlparse(uri).path)))
+        parsed = urlparse(uri)
+        if parsed.scheme.lower() != "file":
+            return None
+        netloc = "" if parsed.netloc.lower() == "localhost" else parsed.netloc
+        raw = f"//{netloc}{parsed.path}" if netloc else parsed.path
+        decoded = unquote(raw)
+        # url2pathname reconhece /C:/ e UNC, mas também faz unquote. Escapar os
+        # percentuais já decodificados impede a segunda decodificação.
+        return Path(url2pathname(decoded.replace("%", "%25")))
     except Exception:
         return None
+
+
+def _lsp_character(text: str, py_index: int) -> int:
+    """Índice Python → unidade UTF-16 usada pelo LSP."""
+    return len(text[:max(0, py_index)].encode("utf-16-le")) // 2
+
+
+def _py_index_from_byte_col(text: str, byte_col: int) -> int:
+    """Coluna UTF-8 do tree-sitter → índice Python, tolerando corte inválido."""
+    raw = text.encode("utf-8")[:max(0, byte_col)]
+    return len(raw.decode("utf-8", errors="ignore"))
+
+
+def _byte_col_from_lsp(text: str, character: int) -> int:
+    """Unidade UTF-16 do LSP → coluna UTF-8 persistida no índice."""
+    used = 0
+    py_index = 0
+    for py_index, char in enumerate(text):
+        width = len(char.encode("utf-16-le")) // 2
+        if used + width > character:
+            break
+        used += width
+    else:
+        return len(text.encode("utf-8"))
+    return len(text[:py_index].encode("utf-8"))
 
 
 class LspResolver:
@@ -161,13 +201,14 @@ class LspResolver:
         except Exception:
             self._q.put(_EOF)
 
-    def _read(self) -> dict | None:
+    def _read(self, timeout: float | None = None) -> dict | None:
         """Próxima mensagem, com timeout de I/O. None = EOF ou servidor travou."""
+        wait = self.io_timeout if timeout is None else max(0.0, timeout)
         try:
-            msg = self._q.get(timeout=self.io_timeout)
+            msg = self._q.get(timeout=wait)
         except queue.Empty:
             log.warning("%s: sem resposta em %.0fs — matando servidor LSP",
-                        self.cmd_name, self.io_timeout)
+                        self.cmd_name, wait)
             self._kill()
             return None
         return None if msg is _EOF else msg
@@ -187,14 +228,44 @@ class LspResolver:
         rid = self._seq
         self._write({"jsonrpc": "2.0", "id": rid, "method": method,
                      "params": params})
+        # Limite TOTAL: notificações de progresso não podem manter viva para
+        # sempre uma requisição cuja resposta nunca chega.
+        deadline = time.monotonic() + self.io_timeout
         for _ in range(timeout_msgs):
-            msg = self._read()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._kill()
+                return None
+            msg = self._read(remaining)
             if msg is None:
                 return None
             if msg.get("id") == rid and "method" not in msg:
                 return msg.get("result")
-            if "id" in msg and "method" in msg:  # req server→client → responde vazio
-                self._write({"jsonrpc": "2.0", "id": msg["id"], "result": None})
+            if "id" in msg and "method" in msg:
+                self._write({"jsonrpc": "2.0", "id": msg["id"],
+                             "result": self._server_request_result(msg)})
+        return None
+
+    def _server_request_result(self, msg: dict):
+        """Resposta mínima correta às requisições usuais servidor→cliente."""
+        method = msg.get("method")
+        params = msg.get("params") or {}
+        if method == "workspace/workspaceFolders":
+            return [{"uri": self.project_root.as_uri(),
+                     "name": self.project_root.name}]
+        if method == "workspace/configuration":
+            settings = (self.init_options or {}).get("settings", {})
+            out = []
+            for item in params.get("items", []):
+                value = settings
+                section = item.get("section") if isinstance(item, dict) else None
+                for part in (section or "").split("."):
+                    if part:
+                        value = value.get(part) if isinstance(value, dict) else None
+                out.append(value)
+            return out
+        # registerCapability, workDoneProgress/create e showMessageRequest
+        # aceitam resposta nula no cliente sem UI.
         return None
 
     def _notify(self, method: str, params) -> None:
@@ -207,11 +278,17 @@ class LspResolver:
                 "rootUri": self.project_root.as_uri(),
                 "workspaceFolders": [{"uri": self.project_root.as_uri(),
                                       "name": self.project_root.name}],
-                "capabilities": {"textDocument": {"definition": {}}},
+                "capabilities": {
+                    "textDocument": {"definition": {}},
+                    "workspace": {"configuration": True,
+                                  "workspaceFolders": True},
+                },
             }
             if self.init_options is not None:
                 params["initializationOptions"] = self.init_options
-            self._request("initialize", params)
+            result = self._request("initialize", params)
+            if not isinstance(result, dict) or self._dead:
+                return False
             self._notify("initialized", {})
             return True
         except Exception:
@@ -230,11 +307,11 @@ class LspResolver:
     def _open(self, rel: str) -> None:
         if rel in self._opened:
             return
-        self._opened.add(rel)
         try:
             text = (self.root / rel).read_text(encoding="utf-8", errors="replace")
         except OSError:
             return
+        self._opened.add(rel)
         self._lines[rel] = text.splitlines()
         self._notify("textDocument/didOpen", {"textDocument": {
             "uri": (self.root / rel).as_uri(), "languageId": self.language_id,
@@ -246,13 +323,18 @@ class LspResolver:
         resolve a função na posição de `compute`. Neutro p/ chamadas simples."""
         seg = (dst_name or "").replace("::", ".").replace("->", ".").split(".")[-1].strip()
         lines = self._lines.get(rel)
-        if not seg or not lines or not (1 <= line1 <= len(lines)):
+        if not lines or not (1 <= line1 <= len(lines)):
             return col
         src = lines[line1 - 1]
-        idx = src.find(seg, max(0, col))
+        start = _py_index_from_byte_col(src, col)
+        if not seg:
+            return _lsp_character(src, start)
+        idx = src.find(seg, start)
         if idx < 0:
             idx = src.find(seg)
-        return idx if idx >= 0 else col
+        if idx >= 0:
+            return _lsp_character(src, idx)
+        return _lsp_character(src, start)
 
     def _warmup(self, rel: str, edges) -> None:
         """Espera o servidor ficar pronto (indexação assíncrona) consultando a
@@ -297,12 +379,31 @@ class LspResolver:
         out = []
         for loc in locs:
             uri = loc.get("uri") or loc.get("targetUri")
-            rng = (loc.get("range") or loc.get("targetSelectionRange")
+            rng = (loc.get("targetSelectionRange") or loc.get("range")
                    or loc.get("targetRange"))
             if uri and rng:
-                out.append((uri, rng["start"]["line"]))
+                start = rng["start"]
+                out.append((uri, start["line"], start.get("character", 0)))
         self._defcache[key] = out
         return out
+
+    def _definition_byte_col(self, drel: str, line0: int,
+                             char0: int) -> int | None:
+        cache = getattr(self, "_target_lines", None)
+        if cache is None:
+            cache = self._target_lines = {}
+        if drel not in cache:
+            try:
+                cache[drel] = (self.root / drel).read_text(
+                    encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                cache[drel] = []
+        lines = cache[drel]
+        if not (0 <= line0 < len(lines)):
+            # Fallback seguro: target_symbol volta ao casamento apenas por
+            # linha, equivalente ao contrato anterior, se o arquivo sumiu.
+            return None
+        return _byte_col_from_lsp(lines[line0], char0)
 
     def refine_file(self, conn: sqlite3.Connection, root: Path,
                     rel: str, file_id: int) -> int:
@@ -310,7 +411,8 @@ class LspResolver:
             return 0
         edges = conn.execute(
             "SELECT id, line, col, dst_name FROM edges "
-            "WHERE file_id=? AND kind='calls' AND resolver='l0' AND col IS NOT NULL",
+            "WHERE file_id=? AND kind='calls' AND resolver='l0' AND col IS NOT NULL "
+            "ORDER BY line, col, id",
             (file_id,)).fetchall()
         if not edges:
             return 0
@@ -330,7 +432,7 @@ class LspResolver:
             # cada definição no repo vira um alvo; promote.apply decide certain
             # (1 alvo) vs fan-out inferred (2..MAX).
             targets = []
-            for uri, line0 in locs:
+            for uri, line0, char0 in locs:
                 dpath = _uri_to_path(uri)
                 if dpath is None:
                     continue
@@ -338,7 +440,8 @@ class LspResolver:
                     drel = dpath.resolve().relative_to(self.root).as_posix()
                 except ValueError:
                     continue  # definição fora do repo (stdlib/módulo externo)
-                sid = promote.target_symbol(conn, drel, line0 + 1)
+                dcol = self._definition_byte_col(drel, line0, char0)
+                sid = promote.target_symbol(conn, drel, line0 + 1, dcol)
                 if sid is not None:
                     targets.append(sid)
             promoted += promote.apply(conn, file_id, e, targets)

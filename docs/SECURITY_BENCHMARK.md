@@ -123,15 +123,23 @@ both agree with the ground truth:
 
 | tool / pinned configuration | status | TP / FP / FN / TN | precision | recall | FPR | score | time | peak RSS |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| GraphCodeMap 0.1.0 | complete | 868 / 92 / 34 / 704 | 90.4% | 96.2% | 11.6% | **+0.847** | 43.59 s | 576 MB |
+| GraphCodeMap 0.1.0 (Round 26 final warm rescore¹) | complete | 868 / 92 / 34 / 704 | 90.4% | 96.2% | 11.6% | **+0.847** | 73.258 s | 640.51 MB |
 | OpenTaint `dev-7f7da63` + 323 selected flow rules | complete | 819 / 454 / 83 / 342 | 64.3% | 90.8% | 57.0% | **+0.338** | 240.34 s | 5,120 MB |
 | OpenGrep 1.22.0 + repository `perf/r2c-rules/java.yml` (28 rules) | complete | 74 / 64 / 828 / 732 | 53.6% | 8.2% | 8.0% | **+0.002** | 59.13 s | 547 MB |
 | CodeQL CLI 2.26.2 / `java-queries` 1.11.7 `default` (80 queries) | complete | 776 / 292 / 126 / 504 | 72.7% | 86.0% | 36.7% | **+0.494** | - | - |
 | CodeQL CLI 2.26.2 / `java-queries` 1.11.7 `security-extended` (124 queries) | complete | 902 / 471 / 0 / 325 | 65.7% | 100% | 59.2% | **+0.408** | - | - |
 
-GraphCodeMap now leads this seven-category matrix: it finds 49 more vulnerable
-cases than OpenTaint, reports 362 fewer safe cases, is 5.5x faster and uses
-about one ninth of its peak memory. The OpenGrep row measures that exact pinned
+¹ The final time/RSS is a warm rescore. The refine-inclusive phase built the
+same database/graph in 1,549.856 s / 1,680.26 MB before two query-only rule
+changes; the final 868 / 92 / 34 / 704 was then measured by rescoring it in
+73.258 s / 640.51 MB. Final combined end-to-end wall time was not measured, so
+the precursor cost is not presented as final-run performance.
+
+On this pinned seven-category matrix, GraphCodeMap finds 49 more vulnerable
+cases than OpenTaint and reports 362 fewer safe cases. Runtime and memory rows
+are configuration-specific; GraphCodeMap's row is explicitly a warm rescore,
+not end-to-end performance. These are not direct whole-product comparisons.
+The OpenGrep row measures that exact pinned
 28-rule fixture, **not OpenGrep's full registry or an equivalently broad Java
 suite**, so it is useful for adapter reproducibility, not a product ranking.
 
@@ -157,12 +165,14 @@ findings.
 
 ## Java semantic A/B
 
-JDTLS 1.60.0 was run against the same Maven checkout and promoted 12,937 call
-edges with zero resolver errors. The first taint pass incorrectly used
+JDTLS 1.60.0 on Oracle JDK 21.0.11 was run against the same Maven checkout and
+promoted 8,838 call edges with zero resolver errors in the Round 26 snapshot.
+The first taint pass in the earlier semantic A/B incorrectly used
 "certain call target" as if it also meant "certain return flow": recall fell
 to 57.9%. Java interface dispatch, receiver state and field flow make that
-implication unsound. Return-summary pruning is therefore disabled for Java
-until it has a dispatch-aware oracle; structural L1 promotion remains enabled.
+implication unsound. Target-only return pruning remains disabled for Java;
+structurally proven local/receiver summaries and structural L1 promotion remain
+enabled.
 
 After the guard, the initial clean-L0 and JDTLS indexes produced identical
 normalized findings. The next precision step re-enabled Java return summaries
@@ -187,6 +197,40 @@ these changes reached 868 TP / 92 FP / 34 FN / 704 TN; path traversal reached
 133/133 vulnerable cases. Two extra adversarial tests ensure a conditional or
 loop-only safe List overwrite cannot be linearized into a false proof.
 
+## Round 26 verified Java gate
+
+Round 26 reran the complete Java gate after hardening L0 overload ownership and
+receiver typing, L1 UTF-8/UTF-16 spans and same-line symbol identity,
+nanosecond incremental freshness and L1 provenance invalidation, and Java
+receiver heap summaries. Heap kills now require closed dispatch and no
+receiver alias/escape; dirty subfields and ambiguous fan-out are unioned
+conservatively. Uninvoked lambdas are deferred instead of being inlined into
+their enclosing method.
+
+The full OWASP semantic run scanned 2,770 files, promoted 8,838 edges and
+reported zero resolver errors. It took 1,549.856 s with a 1,680.26 MB peak
+process-tree RSS. After adding semantic argument roles for
+`Runtime.exec(command, envp, dir)` and treating the literal
+`System.getProperty("user.dir")` as trusted, the existing database was rescored
+without another refine: 1,942 findings, 378 wrong-category findings, 73.258 s
+and 640.51 MB. The scored result remained 868 / 92 / 34 / 704. In particular,
+the working-directory role removed 36 command-injection false positives while
+preserving command/environment flows and all TP/FN counts.
+
+The reproducibility details are included/versioned in Round 26 in the
+[Round 26 external-gates manifest](../evals/round26-external-gates-manifest.json)
+and mirrored here. The manifest records source commit
+`da5b1610f15bb39ea4f13c0853a67fe105bbd83a`, source-diff SHA-256
+`48361e2eaaad50748a4a697dee677a5d7264b538124e2d2f4367d018b0a9490f`,
+JDTLS archive SHA-256
+`e94c303d8198f977930803582738771fd18c52c5492878410bf222b1aa81ef1d`,
+final OWASP report SHA-256
+`d5bc5ee056a350fb17efdc901ba04a8a403a04c19a11092f7d3c1fc98496f111`
+and score SHA-256
+`146b279755db707d9a7d1f33683215bf09dae3a8a911a07029613ef9dc9d71e1`.
+The local quality gate closed in 158.60 s at 1,576 passed, 25 skipped and one
+strict expected failure, with 82% total branch-aware coverage.
+
 ## Independent Java holdout
 
 NIST SARD [Juliet Java 1.3 suite #111](https://samate.nist.gov/SARD/test-suites/111)
@@ -198,18 +242,23 @@ The pinned ZIP SHA-256 is
 
 | tool / corpus | TP / FP / FN / TN | precision | recall | FPR | score |
 |---|---:|---:|---:|---:|---:|
-| GraphCodeMap 0.1.0 / Juliet CWE-23 | 242 / 0 / 202 / 444 | 100% | 54.5% | 0% | +0.545 |
+| GraphCodeMap 0.1.0 / Juliet CWE-23 (Round 26) | 308 / 0 / 136 / 444 | 100% | 69.4% | 0% | +0.694 |
 | CodeQL `default` / manual database | 222 / 6 / 222 / 438 | 97.37% | 50.0% | 1.35% | +0.486 |
 | CodeQL `security-extended` / manual database | 222 / 6 / 222 / 438 | 97.37% | 50.0% | 1.35% | +0.486 |
 
 GraphCodeMap crosses the original recall gate after adding type-aware Java
-sources, concrete `new Type().wrapper()` resolution and sanitizer-aware sources
-nested inside assignments. Type qualification is intentionally fail-closed:
+sources, concrete `new Type().wrapper()` resolution, sanitizer-aware sources
+nested inside assignments and Round 26 heap/interprocedural transport. Recall
+rose from 54.5% (242 TP) to 69.4% (308 TP) without an FP. Type qualification is
+intentionally fail-closed:
 standard input readers such as `BufferedReader.readLine` are sources, while an
 unrelated domain object's same-named method is not. The remaining
 `PropertiesFile` family is not promoted merely because another class has a
 homonymous source wrapper.
 
+The Round 26 Juliet report and score SHA-256 values are respectively
+`1a9206f37fca08eb9857a7d56a4538664a950b79795fd4ab905c8740c0cd2730`
+and `4f013deaea6566f2099fbe016cf44aa7bc1e03cd2750e9d74f43aebf20196d5b`.
 The CodeQL database was built manually from 732 source files and 744 compiled
 classes. Both official suites produced the same score, and the finding
 signatures were identical to the earlier no-build database. The shared corpus,
@@ -226,10 +275,10 @@ at the fixed revision tests whether the engine understands the security guard.
 
 | pair | vulnerable flow | baseline cleared | current cleared | current outcome |
 |---|---:|---:|---:|---|
-| OpenRefine CVE-2024-49760 | yes | no | no | trusted base cannot be proved from inherited dependency state |
-| FitNesse CVE-2024-42499 | **yes** | no | no | 2 vulnerable matches; canonical guard in helper still survives fixed |
+| OpenRefine CVE-2024-49760 | yes | no | no | 2 vulnerable matches → 3 fixed; trusted inherited module base is still unproved |
+| FitNesse CVE-2024-42499 | **yes** | no | **yes** | **2 vulnerable matches → 0 fixed** after receiver heap summaries |
 | openHAB CVE-2024-42468 | yes | no | **yes** | **3 vulnerable matches → 0 fixed** |
-| **aggregate** | **3 / 3** | **0 / 3** | **1 / 3** | **all vulnerable flows found; one patch distinguished** |
+| **aggregate** | **3 / 3** | **0 / 3** | **2 / 3** | **all vulnerable flows found; two patches distinguished** |
 
 Round 24 recognizes narrow, rejecting Java path-containment guards using
 normalized `Path.startsWith` or canonical paths plus `File.separator`.
@@ -247,7 +296,17 @@ on the same receiver. Homonymous request types, other receivers, local field
 shadows and calls before the write remain clean. Callee-written field effects
 are deliberately deferred to an explicit heap summary.
 
-The final change is neutral on the OWASP gate at 868 / 92 / 34 / 704, while
-Juliet improves to 242 / 0 / 202 / 444. The real-pair aggregate moves from
-2/3 vulnerable flows detected to 3/3; patch distinction remains 1/3 because
-FitNesse's canonical containment guard is inside the promoted source wrapper.
+Round 26 exports receiver dirty/clean effects through proven same-receiver
+calls, which clears the fixed FitNesse revision without hiding either
+vulnerable match. The final change is neutral on the OWASP gate at
+868 / 92 / 34 / 704, while Juliet improves to 308 / 0 / 136 / 444. The
+real-pair aggregate remains 3/3 vulnerable flows detected and advances from
+1/3 to 2/3 patches distinguished. OpenRefine remains deliberately open because
+the trusted base is inherited dependency state that L0 cannot prove.
+
+The remaining Java risks are explicit: 34 OWASP false negatives and 92 false
+positives, invoked lambda/callback units, wider virtual fan-out and incomplete
+type-hierarchy closure. A process-local tainted
+`System.setProperty("user.dir", value)` is not propagated globally; its strict
+characterization remains the single expected failure rather than weakening the
+trusted-literal rule.

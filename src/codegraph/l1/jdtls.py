@@ -13,6 +13,7 @@ Download: https://download.eclipse.org/jdtls/snapshots/jdt-language-server-lates
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -46,8 +47,16 @@ class JdtlsResolver(LspResolver):
         plugins = home / "plugins"
         if not plugins.is_dir():
             return None
-        jars = sorted(plugins.glob("org.eclipse.equinox.launcher_*.jar"))
-        return jars[0] if jars else None
+        jars = list(plugins.glob("org.eclipse.equinox.launcher_*.jar"))
+        if not jars:
+            return None
+
+        def version_key(path: Path):
+            suffix = path.stem.removeprefix("org.eclipse.equinox.launcher_")
+            return tuple((0, int(part)) if part.isdigit() else (1, part)
+                         for part in re.split(r"[._-]", suffix))
+
+        return max(jars, key=version_key)
 
     @staticmethod
     def _config_dir(home: Path) -> Path | None:
@@ -75,6 +84,15 @@ class JdtlsResolver(LspResolver):
         return bool(os.environ.get("JAVA_HOME") or shutil.which("java"))
 
     # -- launch ---------------------------------------------------------------
+
+    def __init__(self, root: Path, project_root: Path | None = None) -> None:
+        try:
+            super().__init__(root, project_root)
+        except Exception:
+            data = getattr(self, "_data", None)
+            if data is not None:
+                shutil.rmtree(data, ignore_errors=True)
+            raise
 
     def _popen_argv(self) -> list[str]:
         home = self._home()

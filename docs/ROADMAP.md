@@ -41,8 +41,9 @@ claim equal depth across all 46. See [Product Maturity](MATURITY.md).
 
 ### G2 — Finish Tier A
 
-- [x] Prove Java JDTLS on a real Maven repository and rerun OWASP; 12,937
-      promotions, zero resolver errors, and taint invariant after the Java
+- [x] Prove Java JDTLS on a real Maven repository and rerun OWASP; Round 26
+      promoted 8,838 edges with JDTLS 1.60.0 on JDK 21, with zero resolver
+      errors and taint invariant after the Java
       return-summary safety guard. Gradle evidence remains a follow-up.
 - [ ] Add a TypeScript vulnerable-versus-fixed real-app corpus.
 - [ ] Add an externally labeled Go security corpus.
@@ -89,19 +90,33 @@ OWASP Benchmark v1.2, 1.698 casos das 7 categorias de taint:
 
 Esta é a primeira linha medida com concordância obrigatória de **arquivo e
 categoria**, no mesmo commit do alvo. Na mesma régua, OpenTaint marcou +0.338
-(recall 90,8%, FPR 57,0%). GraphCodeMap agora lidera essa matriz também em
-recall, com 49 TPs a mais e 362 FPs a menos. Path traversal chegou a 100% de
-recall e o FPR total ficou abaixo de 12%.
+(recall 90,8%, FPR 57,0%). Nesta matriz fixada, GraphCodeMap tem 49 TPs a mais
+e 362 FPs a menos. Isso não é uma alegação de superioridade global sobre
+CodeQL ou outro produto; ecossistema de queries, frameworks, operações e
+linguagens ficam fora desta régua. Path traversal chegou a 100% de recall e o
+FPR total ficou abaixo de 12%.
 
 O holdout independente NIST Juliet CWE-23 impede transformar isso em uma
 declaração universal: nele o GraphCodeMap teve precisão 100% e FPR 0%, mas
-recall de **54,5%**. O primeiro gate externo (recall >=50%, FPR <=5%) foi
+recall de **69,4%**. O primeiro gate externo (recall >=50%, FPR <=5%) foi
 atingido por modelagem de fontes Java qualificada por tipo, sem regra específica
 para nomes do corpus. O transporte atual encontra 3/3 vulnerabilidades Java
-reais, mas só um dos três patches elimina o oráculo. O próximo gate é resumir
-sanitização/efeitos de heap entre métodos e levar a mesma evidência às demais
+reais e dois dos três patches eliminam o oráculo. O próximo gate é ampliar os
+efeitos de heap já existentes para lambdas invocadas, fan-out e hierarquias de
+tipo, além de levar a mesma evidência às demais
 linguagens Tier A, não continuar ajustando o corpus OWASP.
 Veja [Security Benchmark](SECURITY_BENCHMARK.md).
+
+### Checkpoint Round 26
+
+- Gate local: **1.576 passed, 25 skipped, 1 xfailed**.
+- OWASP: 868 TP / 92 FP / 34 FN / 704 TN; 1.942 findings e 378 descartados por
+  categoria incorreta no rescore final.
+- Juliet CWE-23: 308 / 0 / 136 / 444, contra 242 TP na rodada anterior.
+- Pares reais: FitNesse 2 → 0 e openHAB 3 → 0; OpenRefine permanece 2 → 3.
+- Residuais priorizados: OpenRefine, lambdas Java invocadas, propagação global
+  de `System.setProperty` (xfail estrito) e fan-out/hierarquia de tipos mais
+  largos. Os 34 FN e 92 FP do OWASP continuam sendo dívida medida.
 
 Em aplicações vulneráveis REAIS (não gabarito sintético):
 
@@ -117,8 +132,9 @@ Em aplicações vulneráveis REAIS (não gabarito sintético):
 
 ## Qual é o alvo, e por que não é "score máximo"
 
-Placares oficiais publicados no repositório do Benchmark
-(`scorecard/OWASP_Benchmark_Home.html`):
+Placares oficiais publicados no artefato `scorecard/OWASP_Benchmark_Home.html`
+do checkout externo pinado do OWASP Benchmark (o corpus não é vendorizado neste
+repositório):
 
 | ferramenta | TPR | FPR | score |
 |---|---|---|---|
@@ -155,9 +171,10 @@ semanticamente (`confidence='certain'`).
 
 Medido: das centenas de atribuições com chamada, só **13** em pygoat e **3** em
 dvpwa têm resolução `certain`. No OWASP Benchmark, o JDTLS agora promove
-**12.937** arestas sem erro. A poda de retorno Java permanece fechada para
-despacho virtual/reflexão, mas aceita controle local comprovado, enhanced-for e
-domínios fechados de List/Map local com índice/chave constante.
+**8.838** arestas sem erro no snapshot Round 26. A poda de retorno Java
+permanece fechada para despacho virtual/reflexão, mas aceita controle local
+comprovado, enhanced-for e domínios fechados de List/Map local com índice/chave
+constante.
 
 | ação | estado |
 |---|---|
@@ -166,9 +183,9 @@ domínios fechados de List/Map local com índice/chave constante.
 | aumentar taxa de promoção em Python/JS | em investigação |
 
 Path traversal passou de 46% para **100% de recall**. O micro-goal de FPR <20%
-foi superado em 11,6%, com 868 TPs totais. No Juliet CWE-23 ainda há 202 FNs,
-concentrados em argumentos/campos entre métodos, containers, serialização e
-dispatch abstrato/virtual.
+foi superado em 11,6%, com 868 TPs totais. No Juliet CWE-23 ainda há 136 FNs,
+concentrados em lambdas invocadas, fan-out mais largo, hierarquias de tipo,
+containers, serialização e dispatch abstrato/virtual.
 
 ### 2. Causas de falso positivo ainda abertas
 
@@ -193,14 +210,17 @@ reclassificar antes de escolher):
   (`find_by_sql`, `constantize`, `render inline:`).
 - **Python/JS**: catálogo curado à mão; o CodeQL não publica modelos MaD para
   essas linguagens, então não há atalho.
-- **Índice de argumento nos sinks**: os modelos do CodeQL trazem `Argument[N]`
-  em cada linha e nós usamos isso em apenas um punhado de sinks
-  (`_ARG0_ONLY`). Estender é barato e reduz FP.
+- **Índice de argumento nos sinks**: Round 26 introduziu papéis declarativos e
+  modelou `Runtime.exec(command, envp, dir)` como `{0,1}`. Isso removeu os 36
+  FPs de working directory sem perder TP; o catálogo restante ainda deve ser
+  migrado conforme houver oráculo semântico.
 
 ### 4. Cobertura estrutural
 
-- **Callbacks anônimos**: feito para JS (`get#2`). Python (`lambda`) e Ruby
-  (blocos) não têm equivalente.
+- **Callbacks anônimos**: feito para JS (`get#2`). Java agora não executa uma
+  lambda não invocada por acidente, mas lambdas efetivamente invocadas ainda
+  precisam de unidade deferred e aresta de chamada próprias. Python (`lambda`)
+  e Ruby (blocos) não têm equivalente completo.
 - **Código de nível de arquivo**: feito. Era invisível e é a norma em PHP.
 - **`switch`/`if` sem chaves**: feito. Os dois avaliavam ramos em SEQUÊNCIA e
   apagavam recall em silêncio.

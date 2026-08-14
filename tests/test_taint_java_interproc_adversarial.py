@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from codegraph import CodeGraph
 
 
@@ -193,13 +191,6 @@ def test_java_io_wildcard_import_resolves_typed_input_source(tmp_path):
     assert findings
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "HeapSummary must apply a same-receiver callee's clean field state "
-        "back to the caller"
-    ),
-)
 def test_cleaning_helper_updates_caller_receiver_state(tmp_path):
     findings = _file_input_findings(
         tmp_path,
@@ -226,13 +217,168 @@ def test_cleaning_helper_updates_caller_receiver_state(tmp_path):
     assert not findings
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "data_flow does not yet compose ReceiverFlow across same-receiver "
-        "method calls"
-    ),
-)
+def test_cleaning_helper_does_not_retroactively_hide_earlier_sink(tmp_path):
+    findings = _file_input_findings(
+        tmp_path,
+        """
+        import java.io.FileInputStream;
+
+        class App {
+            String path;
+
+            void clear() { this.path = "safe"; }
+            void consume() throws Exception {
+                new FileInputStream(this.path);
+            }
+
+            void handle(javax.servlet.http.HttpServletRequest request)
+                    throws Exception {
+                this.path = request.getParameter("path");
+                consume();
+                clear();
+            }
+        }
+        """,
+    )
+    assert findings
+
+
+def test_conditional_cleaning_helper_does_not_claim_definite_kill(tmp_path):
+    findings = _file_input_findings(
+        tmp_path,
+        """
+        import java.io.FileInputStream;
+
+        class App {
+            String path;
+
+            void maybeClear(boolean allowed) {
+                if (allowed) this.path = "safe";
+            }
+            void consume() throws Exception {
+                new FileInputStream(this.path);
+            }
+
+            void handle(javax.servlet.http.HttpServletRequest request,
+                        boolean allowed) throws Exception {
+                this.path = request.getParameter("path");
+                maybeClear(allowed);
+                consume();
+            }
+        }
+        """,
+    )
+    assert findings
+
+
+def test_unresolved_same_receiver_call_keeps_clean_summary_fail_closed(tmp_path):
+    findings = _file_input_findings(
+        tmp_path,
+        """
+        import java.io.FileInputStream;
+
+        class App {
+            String path;
+
+            void clearThenUnknown() {
+                this.path = "safe";
+                extensionHook();
+            }
+            void consume() throws Exception {
+                new FileInputStream(this.path);
+            }
+
+            void handle(javax.servlet.http.HttpServletRequest request)
+                    throws Exception {
+                this.path = request.getParameter("path");
+                clearThenUnknown();
+                consume();
+            }
+        }
+        """,
+    )
+    assert findings
+
+
+def test_nested_cleaning_summary_composes_on_same_receiver(tmp_path):
+    findings = _file_input_findings(
+        tmp_path,
+        """
+        import java.io.FileInputStream;
+
+        class App {
+            String path;
+
+            void reset() { this.path = "safe"; }
+            void clear() { reset(); }
+            void consume() throws Exception {
+                new FileInputStream(this.path);
+            }
+
+            void handle(javax.servlet.http.HttpServletRequest request)
+                    throws Exception {
+                this.path = request.getParameter("path");
+                clear();
+                consume();
+            }
+        }
+        """,
+    )
+    assert not findings
+
+
+def test_other_receiver_cleaning_helper_does_not_clear_this(tmp_path):
+    findings = _file_input_findings(
+        tmp_path,
+        """
+        import java.io.FileInputStream;
+
+        class App {
+            String path;
+
+            void clear() { this.path = "safe"; }
+            void consume() throws Exception {
+                new FileInputStream(this.path);
+            }
+
+            void handle(App other,
+                        javax.servlet.http.HttpServletRequest request)
+                    throws Exception {
+                this.path = request.getParameter("path");
+                other.clear();
+                consume();
+            }
+        }
+        """,
+    )
+    assert findings
+
+
+def test_parameter_written_by_helper_updates_caller_receiver_state(tmp_path):
+    findings = _file_input_findings(
+        tmp_path,
+        """
+        import java.io.FileInputStream;
+
+        class App {
+            String path;
+
+            void capture(String value) { this.path = value; }
+            void consume() throws Exception {
+                new FileInputStream(this.path);
+            }
+
+            void handle(javax.servlet.http.HttpServletRequest request)
+                    throws Exception {
+                capture(request.getParameter("path"));
+                consume();
+            }
+        }
+        """,
+    )
+    assert findings
+
+
 def test_data_flow_reports_parameter_stored_in_receiver_field(tmp_path):
     (tmp_path / "App.java").write_text(
         """

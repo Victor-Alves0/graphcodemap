@@ -42,6 +42,16 @@ def test_baseline_tools(repo):
     assert "arquivo não encontrado" in t.read_file("nao/existe.py")
 
 
+def test_baseline_read_file_cannot_escape_repository(repo, tmp_path):
+    secret = tmp_path / "host-secret.txt"
+    secret.write_text("DO-NOT-EXFILTRATE", encoding="utf-8")
+
+    result = BaselineTools(repo).read_file("../host-secret.txt")
+
+    assert "arquivo não encontrado" in result
+    assert "DO-NOT-EXFILTRATE" not in result
+
+
 def test_codegraph_tools(cg, repo):
     t = CodeGraphTools(repo, cg.query)
     out = t.find_symbol("issue_token")

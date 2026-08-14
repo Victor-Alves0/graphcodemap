@@ -10,11 +10,11 @@ Symbols, call graph, references, impact, dataflow and taint over any codebase �
 [![CI](https://github.com/Victor-Alves0/graphcodemap/actions/workflows/tests.yml/badge.svg)](https://github.com/Victor-Alves0/graphcodemap/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%E2%80%93%203.12-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1432%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-1576%20passing-brightgreen)](tests/)
 [![Status](https://img.shields.io/badge/status-alpha%20v0.1-orange)](#status)
 
 [Quick start](#quick-start) ·
-[Why it exists](#why-it-exists) ·
+[Why it exists](#the-problem) ·
 [Documentation](docs/README.md) ·
 [When to use it](#when-to-use-it-and-when-not-to) ·
 [Benchmarks](evals/RESULTS.md) ·
@@ -45,10 +45,11 @@ invariant:
 
 Two consequences make it trustworthy where other indexes are not:
 
-- **Every fact is fresh at answer time.** Each row carries the content-hash of
-  the file it came from, and every query verifies those hashes against disk
-  *before* answering — re-indexing on the spot if the file drifted
-  (**read-repair**). You cannot get a stale answer without an explicit warning.
+- **Freshness is checked at answer time.** Each row carries the content-hash of
+  the file it came from. Relevant paths are read-repaired before answering,
+  while watcher and full-sweep backstops discover new/deleted files. Detected
+  drift is re-indexed or returned with an explicit freshness warning; broader
+  multiprocess stress remains a published maturity gate.
 - **Every fact declares its confidence.** Call edges are labeled `certain`,
   `inferred`, or `possible`. Static-analysis limits are stated, never hidden.
   Transitive queries propagate the *minimum* confidence along the path.
@@ -128,7 +129,7 @@ Full reference: **[CLI](docs/cli.md)** · **[MCP tools](docs/mcp.md)** · **[Lib
   interprocedural and computed on demand. **Flow-sensitive** in 18 of the 19
   dedicated code languages: a redefinition kills the taint, so
   `x = input(); x = escape(x); sink(x)` is correctly reported clean.
-  → [Concepts](docs/concepts.md#dataflow--taint)
+  → [Concepts](docs/concepts.md#the-layers-l0l3)
 - **Semantic L1 via LSP.** Promotes edges to `certain` through one generic LSP
   client; every dedicated language has a resolver wired.
   → [Languages & Resolvers](docs/languages.md)
@@ -155,8 +156,9 @@ Trust is built by being honest about the boundaries:
   over-approximates on purpose, so a finding is a lead to verify, not a verdict.
   Measured on the OWASP Benchmark: **90.4% precision, 96.2% recall, 11.6% FPR**
   (score TPR−FPR = +0.847). The independent NIST Juliet CWE-23 holdout is much
-  harder: **100% precision and 54.5% recall**, exposing the remaining
-  interprocedural transport gap. See [evals/RESULTS.md](evals/RESULTS.md), which records how
+  harder: **100% precision and 69.4% recall**, exposing the remaining invoked-
+  lambda, wider fan-out and type-hierarchy transport gaps. See
+  [evals/RESULTS.md](evals/RESULTS.md), which records how
   every number moved and why — including the changes that were measured and
   then *rejected*. That is in the range of mid-tier commercial SAST on the
   benchmark's own published scorecards, and short of the best. The gap that
@@ -195,7 +197,8 @@ cover all 19 dedicated code-language identifiers; 18 are flow-sensitive.
 ## Status
 
 **Alpha (v0.1.0).** The main query surfaces are implemented and covered by more
-than 1,300 tests (including contracts for the graph's load-bearing invariants),
+than 1,500 tests (the Round 26 gate closed at 1,576 passed, 25 skipped and one
+expected failure, including contracts for the graph's load-bearing invariants),
 across a CI matrix of Linux + Windows on Python 3.10–3.12. Language depth and
 external validation are still uneven; see the honest
 [maturity matrix](docs/MATURITY.md) and the [v0.2 gates](docs/ROADMAP.md). It has

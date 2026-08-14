@@ -1,0 +1,173 @@
+{
+  "schema_version": "1.0",
+  "engine_commit": "da5b1610f15bb39ea4f13c0853a67fe105bbd83a",
+  "engine_worktree_dirty": true,
+  "engine_source_tree_sha256": "d6ed3850c707501b39f4fb57ca171cb002e5b36132a111bb14ab4a8f70e9d742",
+  "engine_source_tree_hash_method": "SHA-256 over sorted src/codegraph/**/*.py entries: repo-relative path, NUL, file bytes, NUL",
+  "run_date": "2026-08-14",
+  "configuration": {
+    "resolver": "L0",
+    "isolated_database_per_revision": true,
+    "max_findings": 100000,
+    "manifest": "evals/java-real-pairs.json",
+    "manifest_engine_commit": "12d3c17224d6e580717e2d7941638eb62499743e",
+    "external_report_directory": "../_competitors/java-real-pairs/results/round26-final-20260814",
+    "reused_round26_databases": true,
+    "freshness_result": "All six index runs reported indexed=0, removed=0 and errors=0.",
+    "note": "All six final reports were freshly generated with the current dirty worktree identified by engine_source_tree_sha256. Compatible Round 26 databases were reused only after the normal freshness/version check. Report basenames retain the pinned manifest names for scorer compatibility; no Round 25 report was reused."
+  },
+  "aggregate": {
+    "vulnerable_flows_detected": 3,
+    "vulnerable_flows_total": 3,
+    "fixed_flows_cleared_after_detection": 2,
+    "detected_but_not_cleared": 1,
+    "missed": 0
+  },
+  "comparison_round25": {
+    "vulnerable_flows_detected": {
+      "round25": 3,
+      "round26": 3
+    },
+    "fixed_flows_cleared_after_detection": {
+      "round25": 1,
+      "round26": 2
+    },
+    "newly_cleared": [
+      "fitnesse-cve-2024-42499"
+    ]
+  },
+  "cases": [
+    {
+      "id": "openrefine-cve-2024-49760",
+      "cve": "CVE-2024-49760",
+      "outcome": "detected-but-not-cleared",
+      "vulnerable": {
+        "target_commit": "97c196953660f71589c9720326382a32beadc2b5",
+        "status": "complete",
+        "errors": [],
+        "warning_count": 1,
+        "index": {
+          "scanned": 1670,
+          "indexed": 0,
+          "removed": 0,
+          "errors": 0
+        },
+        "oracle_matches": 2,
+        "findings": 190,
+        "duration_s": 122.811,
+        "peak_rss_mb": 402.85,
+        "report": "openrefine-vuln-round25-final-current-l0.json",
+        "external_relative_path": "../_competitors/java-real-pairs/results/round26-final-20260814/openrefine-vuln-round25-final-current-l0.json",
+        "report_sha256": "bccd98d1845665f6af062119e7ffbcf47ba58e9b34e60e2da102512c10946826"
+      },
+      "fixed": {
+        "target_commit": "24d084052dc55426fe460f2a17524fd18d28b20c",
+        "status": "complete",
+        "errors": [],
+        "warning_count": 1,
+        "index": {
+          "scanned": 1670,
+          "indexed": 0,
+          "removed": 0,
+          "errors": 0
+        },
+        "oracle_matches": 3,
+        "findings": 188,
+        "duration_s": 124.955,
+        "peak_rss_mb": 399.99,
+        "report": "openrefine-fixed-round25-final-current-l0.json",
+        "external_relative_path": "../_competitors/java-real-pairs/results/round26-final-20260814/openrefine-fixed-round25-final-current-l0.json",
+        "report_sha256": "8bc65f3c15cb292dfeeb81401f75abb2e961cf14859b21cbb387a0004e19309d"
+      },
+      "assessment": "The vulnerable oracle remains detected, but the fixed revision still reports the patch-derived flow because the inherited trusted module base is not proven in L0."
+    },
+    {
+      "id": "fitnesse-cve-2024-42499",
+      "cve": "CVE-2024-42499",
+      "outcome": "detected-and-cleared",
+      "vulnerable": {
+        "target_commit": "9d80cf6a7c6b7f099cf61892023ea04d0bfc8f49",
+        "status": "complete",
+        "errors": [],
+        "warning_count": 1,
+        "index": {
+          "scanned": 1269,
+          "indexed": 0,
+          "removed": 0,
+          "errors": 0
+        },
+        "oracle_matches": 2,
+        "findings": 74,
+        "duration_s": 109.958,
+        "peak_rss_mb": 359.46,
+        "report": "fit-vuln-round25-hardened-final-l0.json",
+        "external_relative_path": "../_competitors/java-real-pairs/results/round26-final-20260814/fit-vuln-round25-hardened-final-l0.json",
+        "report_sha256": "b545819173a53a87de0e2fc60f272a83e8a1581da8c1b408cbed6e1311f2483b"
+      },
+      "fixed": {
+        "target_commit": "850c599e5177d6f877af063374086f3e36b4b956",
+        "status": "complete",
+        "errors": [],
+        "warning_count": 1,
+        "index": {
+          "scanned": 1269,
+          "indexed": 0,
+          "removed": 0,
+          "errors": 0
+        },
+        "oracle_matches": 0,
+        "findings": 73,
+        "duration_s": 101.85,
+        "peak_rss_mb": 358.14,
+        "report": "fit-fixed-round25-hardened-final-l0.json",
+        "external_relative_path": "../_competitors/java-real-pairs/results/round26-final-20260814/fit-fixed-round25-hardened-final-l0.json",
+        "report_sha256": "d69e1dd156705127befdff994e6d8819963d311cff25799b90e103fdf1136392"
+      },
+      "assessment": "The vulnerable composeFileName-to-File flow remains detected and the fixed revision now clears the last Round 25 oracle match."
+    },
+    {
+      "id": "openhab-cve-2024-42468",
+      "cve": "CVE-2024-42468",
+      "outcome": "detected-and-cleared",
+      "vulnerable": {
+        "target_commit": "091d0edc06862bb40a70d74a2d607d1366ce134d",
+        "status": "complete",
+        "errors": [],
+        "warning_count": 1,
+        "index": {
+          "scanned": 54,
+          "indexed": 0,
+          "removed": 0,
+          "errors": 0
+        },
+        "oracle_matches": 3,
+        "findings": 57,
+        "duration_s": 1.771,
+        "peak_rss_mb": 66.6,
+        "report": "openhab-vuln-round25-final-current-l0.json",
+        "external_relative_path": "../_competitors/java-real-pairs/results/round26-final-20260814/openhab-vuln-round25-final-current-l0.json",
+        "report_sha256": "ab606320d6f60acf3fd30c25ab565cb4e303d7013879afe95cdad6e8497f6be9"
+      },
+      "fixed": {
+        "target_commit": "630e8525835c698cf58856aa43782d92b18087f2",
+        "status": "complete",
+        "errors": [],
+        "warning_count": 1,
+        "index": {
+          "scanned": 41,
+          "indexed": 0,
+          "removed": 0,
+          "errors": 0
+        },
+        "oracle_matches": 0,
+        "findings": 39,
+        "duration_s": 1.428,
+        "peak_rss_mb": 64.61,
+        "report": "openhab-fixed-round25-ternary-guard-l0.json",
+        "external_relative_path": "../_competitors/java-real-pairs/results/round26-final-20260814/openhab-fixed-round25-ternary-guard-l0.json",
+        "report_sha256": "7596a5795b230002b1217e7a1ee190113b19c57e24cc6e137f1a6c687d9ec1c3"
+      },
+      "assessment": "The vulnerable getPathInfo-to-File flow remains detected and canonical containment continues to clear the fixed revision."
+    }
+  ]
+}

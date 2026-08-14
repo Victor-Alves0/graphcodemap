@@ -59,7 +59,15 @@ def _available(cls, root=None) -> bool:
 
 
 def available_resolvers(root=None) -> list[type]:
-    return [cls for cls in all_resolvers() if _available(cls, root)]
+    out = []
+    for cls in all_resolvers():
+        try:
+            if _available(cls, root):
+                out.append(cls)
+        except Exception as e:
+            log.debug("discovery do resolver %s falhou: %s: %s",
+                      cls.__name__, type(e).__name__, e, exc_info=True)
+    return out
 
 
 def missing_resolvers(languages, is_available=None, root=None) -> list[dict]:
@@ -96,11 +104,13 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
 
     resolvers = available_resolvers(indexer.root)
     stats = {"files": 0, "promoted": 0, "errors": 0, "roots": 0,
+             "servers": 0,
              "resolvers": sorted(lang for cls in resolvers
                                  for lang in cls.languages)}
     if not resolvers:
         return stats
     conn = indexer.conn
+    roots_used = set()
     for cls in resolvers:
         ph = ",".join("?" * len(cls.languages))
         where, args = f"language IN ({ph})", list(cls.languages)
@@ -109,15 +119,23 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
             where += f" AND path IN ({phr})"
             args += list(rels)
         files = conn.execute(
-            f"SELECT id, path FROM files WHERE {where}", args).fetchall()
+            f"SELECT id, path FROM files WHERE {where} ORDER BY path", args).fetchall()
         if not files:
             continue
         id_of = {f["path"]: f["id"] for f in files}
         groups = group_by_root(id_of.keys(), indexer.root,
                                getattr(cls, "root_markers", ()))
+        roots_used.update(groups)
         for proj_root, group_rels in groups.items():
-            stats["roots"] += 1
-            resolver = cls(indexer.root, project_root=proj_root)
+            stats["servers"] += 1
+            try:
+                resolver = cls(indexer.root, project_root=proj_root)
+            except Exception as e:
+                stats["errors"] += 1
+                log.debug("resolver %s não iniciou em %s: %s: %s",
+                          cls.__name__, proj_root, type(e).__name__, e,
+                          exc_info=True)
+                continue
             try:
                 for rel in group_rels:
                     stats["files"] += 1
@@ -133,7 +151,14 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
             finally:
                 close = getattr(resolver, "close", None)
                 if close is not None:
-                    close()
+                    try:
+                        close()
+                    except Exception as e:
+                        stats["errors"] += 1
+                        log.debug("resolver %s não fechou em %s: %s: %s",
+                                  cls.__name__, proj_root, type(e).__name__, e,
+                                  exc_info=True)
+    stats["roots"] = len(roots_used)
     if stats["promoted"]:
         mark_dirty(conn)
         mark_community_dirty(conn)

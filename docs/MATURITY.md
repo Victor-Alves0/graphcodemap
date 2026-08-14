@@ -32,7 +32,8 @@ Generated from `codegraph capabilities` after the August 2026 consolidation:
 
 The strongest current language profiles are Python, JavaScript and PHP.
 Java now has labeled-benchmark security evidence plus real Maven/JDTLS evidence;
-Gradle remains unproven. Ruby has real-application security evidence but its L1 adapter is only
+Round 26 used JDTLS 1.60.0 on JDK 21, with 8,838 promotions and zero resolver
+errors. Gradle remains unproven. Ruby has real-application security evidence but its L1 adapter is only
 wired. Go has real-repository L1 evidence but still needs a labeled security
 corpus. The remaining languages must not be described as equivalent to those
 profiles.
@@ -46,12 +47,22 @@ Run `codegraph capabilities [language]` for the machine-readable current view.
 | Graph and freshness | Strong incremental core; policy-change cleanup now covered | Multiprocess stress and no known stale-read path |
 | L0 extraction | Broad and well unit-tested | Real call-edge oracles for every Tier-A language |
 | L1 resolution | Broadly wired, unevenly proven | Live integration plus real-repo evidence for Tier A |
-| Dataflow and taint | OWASP recall 96.2% with FPR 11.6%; Juliet CWE-23 holdout recall 54.5% with FPR 0%; all three pinned Java vulnerabilities are found and one patch clears its oracle | Add sanitizer/heap summaries, containers/dispatch and clear the FitNesse/OpenRefine patches without hiding vulnerable flows |
+| Dataflow and taint | OWASP recall 96.2% with FPR 11.6%; Juliet CWE-23 holdout recall 69.4% with FPR 0%; all three pinned Java vulnerabilities are found and two patches clear their oracles | Extend heap summaries across invoked lambdas, wider fan-out and type hierarchies; clear OpenRefine without hiding vulnerable flows |
 | CLI, library and MCP | Main surfaces implemented | Versioned response schemas and parity contract tests |
 | Visualization | Functional; script-breakout regression covered | Large-graph performance budget and browser smoke suite |
 | L3 descriptions | Experimental and optional | Provider-neutral quality/cost evaluation; not a v0.2 blocker |
 | Delivery | Ruff, progressive mypy, branch coverage >=75%, a six-platform test matrix and built-wheel smoke checks gate releases | Run the complete gate on the release branch and version the public response schemas |
 | Competitive evaluation | Category-correct OWASP compares pinned GraphCodeMap/OpenTaint/OpenGrep and both official CodeQL Java suites; Juliet uses a manually compiled, validated CodeQL database | Add independent labeled corpora and equivalent official suites for the remaining Tier-A languages |
+
+Round 26's complete local gate ran in 158.60 s: 1,576 passed, 25 skipped, one
+strict expected failure and 82% total branch-aware coverage. The expected
+failure records the missing global propagation from a tainted
+`System.setProperty("user.dir", value)`; it is not counted as a supported
+behavior. The verified external snapshot is 868 / 92 / 34 / 704 on OWASP,
+308 / 0 / 136 / 444 on Juliet, and 3/3 vulnerable plus 2/3 fixed Java real-pair
+outcomes. Exact environment, resource use and SHA-256 values are in the
+[Round 26 manifest](../evals/round26-external-gates-manifest.json) and summarized
+in [Security Benchmark](SECURITY_BENCHMARK.md#round-26-verified-java-gate).
 
 ## Rule for adding scope
 

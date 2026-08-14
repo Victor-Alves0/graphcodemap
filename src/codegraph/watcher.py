@@ -33,6 +33,7 @@ class Watcher:
         self.spec = load_ignore_spec(self.root, self._excludes)
         self._pending: set[str] = set()
         self._full_rescan = False
+        self._draining = False
         self._lock = threading.Lock()
         self._drain_lock = threading.Lock()
         self._timer: threading.Timer | None = None
@@ -93,7 +94,13 @@ class Watcher:
     def drain(self) -> dict:
         """Aplica o lote pendente. Retorna estatísticas (também usado em testes)."""
         with self._drain_lock:
-            return self._drain()
+            with self._lock:
+                self._draining = True
+            try:
+                return self._drain()
+            finally:
+                with self._lock:
+                    self._draining = False
 
     def _drain(self) -> dict:
         if self.ix is None:
@@ -147,7 +154,8 @@ class Watcher:
         if obs is None or not obs.is_alive():
             return False
         with self._lock:
-            return not self._pending and not self._full_rescan
+            return (not self._pending and not self._full_rescan
+                    and not self._draining)
 
     # -- ciclo de vida -------------------------------------------------------
 

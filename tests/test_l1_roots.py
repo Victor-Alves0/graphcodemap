@@ -69,6 +69,16 @@ def test_does_not_walk_above_repo_root(tmp_path):
     assert got == repo.resolve()
 
 
+def test_relative_path_escape_cannot_select_external_marker(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "pom.xml").write_text("<project/>\n")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    got = roots.detect_project_root("../outside/Main.java", repo, ("pom.xml",))
+    assert got == repo.resolve()
+
+
 def test_group_by_root_splits_monorepo(tmp_path):
     a = tmp_path / "svc-a"
     b = tmp_path / "svc-b"

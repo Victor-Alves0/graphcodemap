@@ -8,10 +8,31 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added / Changed — consolidação de segurança e entrega
 
-- **Holdout independente NIST Juliet CWE-23: recall 27,0% → 54,5%, mantendo
-  precisão 100% e FPR 0%.** Fontes Java de leitura são reconhecidas pelo tipo
-  declarado do receptor; fontes aninhadas respeitam sanitizers e wrappers em
-  receptores construídos são resolvidos pela classe concreta.
+- **Round 26 verificado: 1.576 passed, 25 skipped, 1 xfailed em 158,60 s, com
+  82% de cobertura total branch-aware.** O snapshot
+  externo usa JDTLS 1.60.0/JDK 21, promove 8.838 arestas sem erro e registra
+  OWASP em 868/92/34/704 (90,4% precisão, 96,2% recall, 11,6% FPR,
+  score +0,847), com 1.942 findings e 378 wrong-category. Ambiente, consumo e
+  SHA-256 estão no
+  [manifest incluído/versionado nesta rodada](evals/round26-external-gates-manifest.json),
+  que será adicionado com o commit.
+- **Holdout independente NIST Juliet CWE-23: recall 27,0% → 54,5% → 69,4%,
+  mantendo precisão 100% e FPR 0%.** O resultado atual é
+  308 TP / 0 FP / 136 FN / 444 TN. Fontes Java de leitura são reconhecidas pelo
+  tipo declarado do receptor; fontes aninhadas respeitam sanitizers e wrappers
+  em receptores construídos são resolvidos pela classe concreta.
+- **HeapSummary Java fail-closed.** Efeitos dirty/clean do mesmo receiver agora
+  atravessam helpers; kills exigem despacho fechado e ausência de alias/escape,
+  enquanto subcampos e fan-out ambíguo unem sujeira. Isso limpa o patch do
+  FitNesse sem esconder seus dois fluxos vulneráveis.
+- **Contratos L0/L1/incrementais endurecidos.** Overloads e receivers Java não
+  fabricam alvo; identidade de fatos usa linha+coluna; conversões UTF-8/UTF-16,
+  deadlines LSP, mtime em nanossegundos, path containment e invalidação da
+  proveniência L1 têm regressões adversariais.
+- **Papéis semânticos de argumentos de sink.** Em Java,
+  `Runtime.exec(command, envp, dir)` considera `{0,1}` e não acusa o working
+  directory como command injection; os 36 FP foram removidos sem alterar TP/FN.
+  `File(dir)` continua visível ao modelo de path traversal.
 - **Comparação oficial reproduzível com CodeQL 2.26.2.** As suites Java
   `default` e `security-extended` foram medidas no mesmo OWASP e em uma base
   Juliet compilada manualmente, com versões, checksums e limitações publicados
@@ -19,13 +40,18 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 - **Pares reais vulnerável/corrigido para Java.** OpenRefine, FitNesse e
   openHAB/CometVisu agora têm commits e oráculos pinados; misses e alertas que
   sobrevivem ao patch são registrados em vez de descartados. O estado atual
-  detecta 3/3 vulnerabilidades e distingue 1/3 patches.
+  detecta 3/3 vulnerabilidades e distingue 2/3 patches: FitNesse 2 → 0,
+  openHAB 3 → 0 e OpenRefine permanece 2 → 3.
 - **Gate de release completo.** Ruff, mypy progressivo, branch coverage >=75%,
   Linux/Windows em Python 3.10–3.12, build/twine e smoke do wheel instalado em
   ambiente limpo passam a bloquear publicação.
 - **Handshake LSP assíncrono estabilizado.** O warmup prefere uma referência
   qualificada cross-file, evitando declarar `rust-analyzer` pronto após resolver
   apenas uma chamada local.
+
+Residuais declarados da rodada: OpenRefine, lambdas Java invocadas, fan-out e
+hierarquias de tipo mais largos, 34 FN/92 FP no OWASP e propagação global de
+`System.setProperty("user.dir", value)`, mantida como `xfail` estrito.
 
 ### Added / Changed — precisão do taint (fase "estado da arte")
 

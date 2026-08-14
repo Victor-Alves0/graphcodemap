@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from . import explain
 from .community import ensure_communities
 from .indexer import (Indexer, get_index_excludes, get_index_scopes,
-                      scan_source_stats)
+                      scan_source_stats, _repo_rel)
 from .languages import get_parser
 from .rank import ensure_ranks
 from .util import like_escape
@@ -125,7 +125,18 @@ def _paths_from_target(target: str) -> list[str]:
         for part in re.split(r"[,\s]+", t):
             if part and part not in ("/dev/null",):
                 paths.add(part.replace("\\", "/").lstrip("./"))
-    return sorted(p for p in paths if p)
+    safe: set[str] = set()
+    for path in paths:
+        norm = path.replace("\\", "/")
+        # Primeira barreira antes de qualquer acesso ao filesystem. A defesa em
+        # profundidade de _repair/Indexer ainda confere symlinks e junctions.
+        if (not norm or norm.startswith("/") or re.match(r"^[A-Za-z]:", norm)
+                or any(part == ".." for part in norm.split("/"))):
+            continue
+        parts = [part for part in norm.split("/") if part not in ("", ".")]
+        if parts:
+            safe.add("/".join(parts))
+    return sorted(safe)
 
 
 SINK_PRESETS = {
@@ -204,7 +215,13 @@ class QueryEngine:
     def _repair(self, rels: set[str], env: Envelope) -> bool:
         """Confere frescor dos arquivos; re-indexa/remoção conforme o disco. True se algo mudou."""
         changed = False
-        for rel in sorted(rels):
+        safe_rels: set[str] = set()
+        for rel in rels:
+            try:
+                safe_rels.add(_repo_rel(self.root, rel))
+            except ValueError:
+                env.warn(f"freshness: caminho fora da raiz ignorado: {rel}")
+        for rel in sorted(safe_rels):
             path = self.root / rel
             if not path.is_file():
                 self.ix.remove_file(rel)
@@ -223,7 +240,7 @@ class QueryEngine:
                     changed = True
                 continue
             st = path.stat()
-            if st.st_size == row["size"] and int(st.st_mtime) == row["mtime"]:
+            if st.st_size == row["size"] and st.st_mtime_ns == row["mtime"]:
                 continue  # fast-path: stat igual → assume fresco
             if self.ix.index_file(rel):
                 env.warn(f"freshness: {rel} mudou desde a indexação; re-indexado agora (L0).")
@@ -233,7 +250,7 @@ class QueryEngine:
             env.fresh = False           # havia drift (corrigido agora)
         return changed
 
-    def _repair_all(self, env: Envelope) -> bool:
+    def _repair_all(self, env: Envelope, *, backstop_only: bool = False) -> bool:
         """Varredura de frescor sobre todos os arquivos indexados.
 
         Usada quando uma busca vem vazia: o índice pode estar velho justamente
@@ -251,8 +268,12 @@ class QueryEngine:
         cada miss — a garantia forte anti-staleness é preservada nesse caminho.
         """
         w = self._watcher
-        if (w is not None and w.is_current()
-                and (time.monotonic() - self._last_full_sweep) < self._sweep_backstop):
+        since_sweep = time.monotonic() - self._last_full_sweep
+        # O throttle só é correto quando há outra fonte de verdade mantendo o
+        # índice quente. Sem watcher, mesmo uma consulta já não-vazia precisa
+        # varrer stats para descobrir arquivos/callers novos imediatamente.
+        watcher_current = w is not None and w.is_current()
+        if watcher_current and since_sweep < self._sweep_backstop:
             return False  # watcher garante frescor; pula a varredura O(N)
         self._last_full_sweep = time.monotonic()
         # com índice parcial, varre só as subárvores indexadas (barato em
@@ -430,8 +451,11 @@ class QueryEngine:
     def find_symbol(self, query: str, kind: str | None = None, limit: int = 10):
         env = Envelope()
         rows = self._find_rows(query, kind, limit)
-        repaired = (self._repair({r["path"] for r in rows}, env) if rows
-                    else self._repair_all(env))
+        if rows:
+            repaired = self._repair({r["path"] for r in rows}, env)
+            repaired = self._repair_all(env, backstop_only=True) or repaired
+        else:
+            repaired = self._repair_all(env)
         if repaired:
             rows = self._find_rows(query, kind, limit)
         if len(rows) >= limit:
@@ -442,7 +466,18 @@ class QueryEngine:
     def _resolve_fresh(self, selector: str, env: Envelope) -> dict:
         """Resolve o seletor; se falhar, confere frescor do índice inteiro e tenta de novo."""
         try:
-            return self._resolve_selector(selector)
+            sym = self._resolve_selector(selector)
+            if self._repair_all(env, backstop_only=True):
+                try:
+                    sym = self._resolve_selector(selector)
+                except SymbolNotFound:
+                    # Mantém o snapshot apenas como rótulo para a tool poder
+                    # devolver resultado vazio + aviso estruturado, em vez de
+                    # transformar uma remoção detectada em exceção.
+                    env.warn(
+                        f"freshness: '{sym['fqn']}' não existe mais após re-indexação."
+                    )
+            return sym
         except SymbolNotFound:
             if self._repair_all(env):
                 return self._resolve_selector(selector)
@@ -566,6 +601,47 @@ class QueryEngine:
         self._warn_partial(involved, env)
         return sym, rows, env
 
+    def _impact_rows(self, seed_id: str, depth: int) -> list[dict]:
+        """Impacto por id sobre o snapshot atual, sem acionar read-repair.
+
+        O helper permite que ``change_impact`` capture dependentes do snapshot
+        antigo antes que um rename/delete remova o símbolo do banco.
+        """
+        results: list[dict] = []
+        frontier: dict[str, str] = {seed_id: "certain"}
+        seen = {seed_id}
+        kinds_ph = ",".join("?" * len(IMPACT_KINDS))
+        for d in range(1, depth + 1):
+            ph = ",".join("?" * len(frontier))
+            rows = self.conn.execute(
+                f"SELECT e.src, e.dst, e.kind, e.confidence, e.resolver, "
+                f"f.language AS site_language, s.fqn, s.kind AS skind, "
+                f"s.rank, s.start_line, f.path FROM edges e "
+                f"JOIN symbols s ON e.src=s.id JOIN files f ON s.file_id=f.id "
+                f"WHERE e.dst IN ({ph}) AND e.kind IN ({kinds_ph}) "
+                f"AND e.src IS NOT NULL",
+                [*frontier.keys(), *IMPACT_KINDS]).fetchall()
+            nxt: dict[str, str] = {}
+            for r in rows:
+                path_conf = min(frontier[r["dst"]], r["confidence"],
+                                key=lambda c: _CONF_ORD[c])
+                if r["src"] in seen:
+                    continue
+                seen.add(r["src"])
+                nxt[r["src"]] = path_conf
+                results.append({
+                    "fqn": r["fqn"], "kind": r["skind"], "rank": r["rank"],
+                    "path": r["path"], "start_line": r["start_line"],
+                    "depth": d, "confidence": path_conf, "via": r["kind"],
+                    "resolver": explain.resolver_label(
+                        r["resolver"], r["site_language"]),
+                })
+            if not nxt:
+                break
+            frontier = nxt
+        results.sort(key=lambda r: (r["depth"], -r["rank"]))
+        return results
+
     def impact(self, selector: str, depth: int = 3):
         """Fecho transitivo de dependentes: o que pode quebrar se eu mudar isto.
 
@@ -574,51 +650,14 @@ class QueryEngine:
         env = Envelope()
         sym = self._resolve_fresh(selector, env)
         ensure_ranks(self.conn)
-
-        def walk():
-            results: list[dict] = []
-            frontier: dict[str, str] = {sym["id"]: "certain"}
-            seen = {sym["id"]}
-            kinds_ph = ",".join("?" * len(IMPACT_KINDS))
-            for d in range(1, depth + 1):
-                ph = ",".join("?" * len(frontier))
-                rows = self.conn.execute(
-                    f"SELECT e.src, e.dst, e.kind, e.confidence, e.resolver, "
-                    f"f.language AS site_language, s.fqn, s.kind AS skind, "
-                    f"s.rank, s.start_line, f.path FROM edges e "
-                    f"JOIN symbols s ON e.src=s.id JOIN files f ON s.file_id=f.id "
-                    f"WHERE e.dst IN ({ph}) AND e.kind IN ({kinds_ph}) "
-                    f"AND e.src IS NOT NULL",
-                    [*frontier.keys(), *IMPACT_KINDS]).fetchall()
-                nxt: dict[str, str] = {}
-                for r in rows:
-                    path_conf = min(frontier[r["dst"]], r["confidence"],
-                                    key=lambda c: _CONF_ORD[c])
-                    if r["src"] in seen:
-                        continue
-                    seen.add(r["src"])
-                    nxt[r["src"]] = path_conf
-                    results.append({
-                        "fqn": r["fqn"], "kind": r["skind"], "rank": r["rank"],
-                        "path": r["path"], "start_line": r["start_line"],
-                        "depth": d, "confidence": path_conf, "via": r["kind"],
-                        "resolver": explain.resolver_label(
-                            r["resolver"], r["site_language"]),
-                    })
-                if not nxt:
-                    break
-                frontier = nxt
-            results.sort(key=lambda r: (r["depth"], -r["rank"]))
-            return results
-
-        rows = walk()
+        rows = self._impact_rows(sym["id"], depth)
         if self._repair({r["path"] for r in rows} | {sym["path"]}, env):
             try:
                 sym = self._resolve_selector(sym["fqn"])
             except SymbolNotFound:
                 env.warn(f"freshness: '{sym['fqn']}' não existe mais após re-indexação.")
                 return sym, [], env
-            rows = walk()
+            rows = self._impact_rows(sym["id"], depth)
         self._completeness(sym, rows, env)
         return sym, rows, env
 
@@ -879,7 +918,8 @@ class QueryEngine:
         lang = row["language"]
         if not df.supported(lang):
             return None, lang
-        ck = (sym_row["file_id"], row["content_hash"], sym_row["start_line"])
+        ck = (sym_row["file_id"], row["content_hash"],
+              sym_row["start_line"], sym_row.get("start_col"))
         fc = self._facts_cache
         hit = fc.get(ck, _MISS)
         if hit is not _MISS:
@@ -894,7 +934,9 @@ class QueryEngine:
         if sym_row.get("kind") == "file":
             fn = tree.root_node
         else:
-            fn = df.find_function_node(tree.root_node, sym_row["start_line"], lang)
+            fn = df.find_function_node(
+                tree.root_node, sym_row["start_line"], lang,
+                sym_row.get("start_col"))
         facts = df.extract_facts(data, fn, lang) if fn is not None else None
         fc[ck] = facts
         if len(fc) > self._facts_cache_cap:
@@ -916,8 +958,8 @@ class QueryEngine:
             "WHEN 'inferred' THEN 1 ELSE 2 END LIMIT 1", args).fetchall()
         return dict(rows[0]) if rows else None
 
-    def _nonprop_lines(self, sym_row, facts, nao_propaga_fqn, cache):
-        """Linhas cuja atribuição chama função que NÃO devolve o argumento.
+    def _nonprop_spans(self, sym_row, facts, nao_propaga_fqn, cache):
+        """Spans cuja atribuição chama função que NÃO devolve o argumento.
 
         Exige `confidence='certain'`, isto é, chamada resolvida SEMANTICAMENTE
         pela camada L1 (LSP). Esta é a diferença entre otimização e defeito:
@@ -936,8 +978,9 @@ class QueryEngine:
                 continue
             alvo = self._df_resolve_call(chave, a.line, a.rhs_call)
             if (alvo and alvo["confidence"] == "certain"
-                    and alvo["fqn"] in nao_propaga_fqn):
-                out.add(a.line)
+                    and alvo["fqn"] in nao_propaga_fqn
+                    and a.span is not None):
+                out.add(a.span)
         cache[chave] = frozenset(out)
         return cache[chave]
 
@@ -1007,14 +1050,15 @@ class QueryEngine:
                 out.add(assignment.span)
         return frozenset(out)
 
-    def _df_resolve_same_this_call(self, sym_row, receiver_flow):
-        """Unique call target on the same concrete enclosing class."""
+    def _df_resolve_same_this_calls(self, sym_row, receiver_flow):
+        """Possible call targets on the same concrete enclosing class."""
         parent_id = sym_row.get("parent_id")
         if parent_id is None:
-            return None
+            return []
         rows = self.conn.execute(
             "SELECT DISTINCT e.dst, e.confidence, s.fqn, s.kind, "
-            "s.start_line, s.parent_id, f.path, f.language "
+            "s.start_line, s.parent_id, s.signature, s.visibility, s.name, "
+            "f.path, f.language "
             "FROM edges e JOIN symbols s ON e.dst=s.id "
             "JOIN files f ON s.file_id=f.id "
             "WHERE e.src=? AND e.kind='calls' AND e.line=? "
@@ -1023,7 +1067,64 @@ class QueryEngine:
              parent_id),
         ).fetchall()
         targets = {row["dst"]: dict(row) for row in rows}
-        return next(iter(targets.values())) if len(targets) == 1 else None
+        out = []
+        for target in targets.values():
+            target["closed_dispatch"] = self._java_dispatch_is_closed(target)
+            out.append(target)
+        return sorted(out, key=lambda target: target["dst"])
+
+    def _df_resolve_same_this_call(self, sym_row, receiver_flow):
+        """Unique same-receiver target, for callers that cannot join fan-out."""
+        targets = self._df_resolve_same_this_calls(sym_row, receiver_flow)
+        return targets[0] if len(targets) == 1 else None
+
+    def _java_dispatch_is_closed(self, target) -> bool:
+        """Whether a same-``this`` Java call may safely export field kills.
+
+        Dirty effects are monotone and may be applied conservatively.  A kill
+        is different: it is valid only when dispatch cannot select an override
+        with a different post-state.  Language modifiers prove this directly;
+        otherwise the indexed inheritance graph must contain no overriding
+        descendant and no unresolved homonymous inheritance edge.
+        """
+        signature = target.get("signature") or ""
+        modifiers = set(re.findall(r"[A-Za-z_$][\w$]*", signature))
+        if (target.get("visibility") == "private"
+                or modifiers & {"final", "static"}):
+            return True
+        parent_id = target.get("parent_id")
+        if parent_id is None:
+            return False
+        owner = self.conn.execute(
+            "SELECT name, signature FROM symbols WHERE id=?",
+            (parent_id,),
+        ).fetchone()
+        if owner is None:
+            return False
+        owner_modifiers = set(re.findall(
+            r"[A-Za-z_$][\w$]*", owner["signature"] or ""))
+        if "final" in owner_modifiers:
+            return True
+        # An unresolved `extends Owner` means the graph cannot prove the set of
+        # descendants closed.  Stay fail-closed even if no resolved child exists.
+        unresolved = self.conn.execute(
+            "SELECT 1 FROM edges WHERE kind='inherits' AND dst IS NULL "
+            "AND dst_name=? LIMIT 1",
+            (owner["name"],),
+        ).fetchone()
+        if unresolved is not None:
+            return False
+        override = self.conn.execute(
+            "WITH RECURSIVE descendants(id) AS ("
+            " SELECT src FROM edges WHERE kind='inherits' AND dst=? "
+            " UNION "
+            " SELECT e.src FROM edges e JOIN descendants d ON e.dst=d.id "
+            " WHERE e.kind='inherits'"
+            ") SELECT 1 FROM descendants d JOIN symbols m ON m.parent_id=d.id "
+            "WHERE m.name=? AND m.kind IN ('method','function') LIMIT 1",
+            (parent_id, target["name"]),
+        ).fetchone()
+        return override is None
 
     def _crow(self, sym_id):
         r = self.conn.execute(
@@ -1045,20 +1146,79 @@ class QueryEngine:
         if self._repair({sym["path"]}, env):
             sym = self._resolve_selector(sym["fqn"])
         cache: dict = {}
+        receiver_summary_cache: dict = {}
+        receiver_summary_building: set = set()
         facts, lang = self._df_facts(sym, cache)
         if facts is None:
             env.warn(f"dataflow: linguagem '{lang}' ainda sem análise de fluxo "
                      f"(suportadas: {', '.join(df.supported_langs())}).")
             return {"function": sym, "supported": False, "params": []}, env
 
+        def receiver_effects(sym_row, f):
+            effects = {}
+            for call in f.calls:
+                if (call.span is None
+                        or call.receiver_kind not in {
+                            "implicit_this", "explicit_this"}):
+                    continue
+                callees = self._df_resolve_same_this_calls(sym_row, call)
+                if not callees:
+                    continue
+                candidates = []
+                for callee in callees:
+                    summary_key = callee["dst"]
+                    if summary_key not in receiver_summary_cache:
+                        if summary_key in receiver_summary_building:
+                            continue
+                        receiver_summary_building.add(summary_key)
+                        try:
+                            crow = self._crow(summary_key)
+                            cf, clang = (self._df_facts(crow, cache)
+                                         if crow else (None, None))
+                            if cf is None or clang != "java":
+                                receiver_summary_cache[summary_key] = None
+                            else:
+                                nested = receiver_effects(crow, cf)
+                                same_receiver_calls = [
+                                    site for site in cf.calls
+                                    if site.receiver_kind in {
+                                        "implicit_this", "explicit_this"}
+                                ]
+                                receiver_summary_cache[summary_key] = (
+                                    df.summarize_java_receiver_effect(
+                                        cf, receiver_effects=nested,
+                                        allow_overwrites=(
+                                            callee["closed_dispatch"]
+                                            and not df.java_receiver_may_escape(cf)
+                                            and all(site.span in nested
+                                                    for site in
+                                                    same_receiver_calls))))
+                        finally:
+                            receiver_summary_building.discard(summary_key)
+                    effect = receiver_summary_cache.get(summary_key)
+                    if effect is not None:
+                        candidates.append(effect)
+                if candidates:
+                    if len(candidates) != len(callees):
+                        # An unresolved/recursive candidate contributes no
+                        # proven kills.  Joining a neutral effect preserves
+                        # dirty unions while forcing overwrite intersection
+                        # to empty.
+                        candidates.append(df.ReceiverEffect())
+                    effects[call.span] = df.merge_receiver_effects(candidates)
+            return effects
+
         def trace(sym_row, tainted, d, visited):
             f, flang = self._df_facts(sym_row, cache)
             if f is None:
                 return []
-            flow = df.analyze(f, tainted, lang=flang)
+            same_this = receiver_effects(sym_row, f) if flang == "java" else None
+            flow = df.analyze(f, tainted, lang=flang,
+                              receiver_effects=same_this)
             sinks = []
             for af in flow.arg_flows:
-                callee = self._df_resolve_call(sym_row["id"], af.line)
+                callee = self._df_resolve_call(
+                    sym_row["id"], af.line, af.callee)
                 sinks.append({
                     "callee_name": af.callee, "arg_index": af.arg_index,
                     "line": af.line, "via": af.via, "depth": d,
@@ -1078,11 +1238,39 @@ class QueryEngine:
                         if cf and af.arg_index < len(cf.params):
                             sinks.extend(trace(crow, {cf.params[af.arg_index]},
                                                d + 1, visited))
+            for receiver_flow in flow.receiver_flows:
+                if d >= depth:
+                    continue
+                for callee in self._df_resolve_same_this_calls(
+                        sym_row, receiver_flow):
+                    crow = self._crow(callee["dst"])
+                    cf, _ = (self._df_facts(crow, cache)
+                             if crow else (None, None))
+                    if cf is None:
+                        continue
+                    fields = receiver_flow.fields & cf.instance_fields
+                    if not fields:
+                        continue
+                    receiver_visit_key = (
+                        callee["dst"], "this", tuple(sorted(fields)))
+                    if receiver_visit_key in visited:
+                        continue
+                    visited.add(receiver_visit_key)
+                    field_seeds: set[tuple[str, ...]] = {
+                        ("this", field) for field in fields
+                    }
+                    field_seeds |= {
+                        (field,) for field in fields
+                        if field not in cf.local_names
+                    }
+                    sinks.extend(trace(crow, field_seeds, d + 1, visited))
             return sinks
 
         result_params = []
         for i, p in enumerate(facts.params):
-            flow = df.analyze(facts, {p}, lang=lang)
+            same_this = receiver_effects(sym, facts) if lang == "java" else None
+            flow = df.analyze(facts, {p}, lang=lang,
+                              receiver_effects=same_this)
             sinks = trace(sym, {p}, 1, {(sym["id"], i)})
             result_params.append({
                 "name": p, "reaches_return": flow.reaches_return, "sinks": sinks})
@@ -1129,6 +1317,9 @@ class QueryEngine:
         eff_src: set = set(rules.sources)
         nao_propaga_fqn: set = set()      # preenchido na 1ª passada da varredura
         nonprop_cache: dict = {}
+        src_func_fqns: set[str] = set()
+        receiver_summary_cache: dict = {}
+        receiver_summary_building: set = set()
 
         def conf_min(a, b):
             if a is None:
@@ -1136,6 +1327,64 @@ class QueryEngine:
             if b is None:
                 return a
             return a if order[a] <= order[b] else b
+
+        def java_receiver_effects(sym_row, facts):
+            """Exact-call effects for literal/implicit ``this`` receivers."""
+            effects = {}
+            for call in facts.calls:
+                if (call.span is None
+                        or call.receiver_kind not in {
+                            "implicit_this", "explicit_this"}):
+                    continue
+                callees = self._df_resolve_same_this_calls(sym_row, call)
+                if not callees:
+                    continue
+                candidates = []
+                for callee in callees:
+                    summary_key = callee["dst"]
+                    if summary_key not in receiver_summary_cache:
+                        if summary_key in receiver_summary_building:
+                            continue
+                        receiver_summary_building.add(summary_key)
+                        try:
+                            crow = self._crow(summary_key)
+                            cf, clang = (self._df_facts(crow, cache)
+                                         if crow else (None, None))
+                            if cf is None or clang != "java":
+                                receiver_summary_cache[summary_key] = None
+                            else:
+                                nested = java_receiver_effects(crow, cf)
+                                same_receiver_calls = [
+                                    site for site in cf.calls
+                                    if site.receiver_kind in {
+                                        "implicit_this", "explicit_this"}
+                                ]
+                                callee_nonprop = self._nonprop_spans(
+                                    crow, cf, nao_propaga_fqn, nonprop_cache)
+                                callee_sources = self._source_wrapper_spans(
+                                    crow, cf, src_func_fqns)
+                                receiver_summary_cache[summary_key] = (
+                                    df.summarize_java_receiver_effect(
+                                        cf, rules.sanitizers, eff_src,
+                                        callee_nonprop, callee_sources, nested,
+                                        allow_overwrites=(
+                                            callee["closed_dispatch"]
+                                            and not df.java_receiver_may_escape(cf)
+                                            and all(site.span in nested
+                                                    for site in
+                                                    same_receiver_calls)),
+                                        trusted_source_literals=(
+                                            rules.trusted_source_literals)))
+                        finally:
+                            receiver_summary_building.discard(summary_key)
+                    effect = receiver_summary_cache.get(summary_key)
+                    if effect is not None:
+                        candidates.append(effect)
+                if candidates:
+                    if len(candidates) != len(callees):
+                        candidates.append(df.ReceiverEffect())
+                    effects[call.span] = df.merge_receiver_effects(candidates)
+            return effects
 
         def trace(sym_row, tainted, origin, steps, d, visited, path_conf,
                   path_flow="flow-sensitive", seed_map=None,
@@ -1151,22 +1400,30 @@ class QueryEngine:
             # caminho ter rodado no motor que over-aproxima.
             if not df.uses_flow_sensitive(f, flang):
                 path_flow = "over-approximated"
-            nonprop_lines = self._nonprop_lines(
+            nonprop_spans = self._nonprop_spans(
                 sym_row, f, nao_propaga_fqn, nonprop_cache)
+            receiver_effects = (java_receiver_effects(sym_row, f)
+                                if flang == "java" else None)
             flow = df.analyze(f, tainted, rules.sanitizers, lang=flang,
-                              sources=eff_src, nonprop=nonprop_lines,
-                              source_spans=source_spans)
+                              sources=eff_src, nonprop=nonprop_spans,
+                              source_spans=source_spans,
+                              receiver_effects=receiver_effects,
+                              trusted_source_literals=(
+                                  rules.trusted_source_literals))
             if flang == "java":
                 collection_flow = df.analyze_java_constant_collections(
                     f, tainted, rules.sanitizers, sources=eff_src,
-                    nonprop=nonprop_lines, source_spans=source_spans,
-                    allow_unrelated_calls=True)
+                    nonprop=nonprop_spans, source_spans=source_spans,
+                    allow_unrelated_calls=True,
+                    receiver_effects=receiver_effects,
+                    trusted_source_literals=rules.trusted_source_literals)
                 if collection_flow is not None:
                     flow = collection_flow
             for af in flow.arg_flows:
                 if budget.hit():
                     return
-                callee = self._df_resolve_call(sym_row["id"], af.line)
+                callee = self._df_resolve_call(
+                    sym_row["id"], af.line, af.callee)
                 step = {
                     "func_fqn": sym_row["fqn"], "callee": af.callee,
                     "callee_fqn": callee["fqn"] if callee else None,
@@ -1195,7 +1452,8 @@ class QueryEngine:
                             "what": rotulo + "()"}
                 # casa pelo nome simples OU pelo qualificado receptor.método:
                 # `getWriter.println` é sink de XSS, `out.println` não é.
-                if rules.is_sink(af.callee, af.qualified, af.arg_index):
+                if rules.is_sink(af.callee, af.qualified, af.arg_index,
+                                 language=flang):
                     if len(findings) < max_findings:
                         findings.append({
                             "origin": here,
@@ -1227,42 +1485,46 @@ class QueryEngine:
             for receiver_flow in flow.receiver_flows:
                 if budget.hit() or d >= depth:
                     return
-                callee = self._df_resolve_same_this_call(
-                    sym_row, receiver_flow)
-                if callee is None:
-                    continue
-                crow = self._crow(callee["dst"])
-                cf, _ = self._df_facts(crow, cache) if crow else (None, None)
-                if cf is None:
-                    continue
-                fields = frozenset(
-                    receiver_flow.fields & cf.instance_fields)
-                if not fields:
-                    continue
-                key = (callee["dst"], "this", tuple(sorted(fields)))
-                if key in visited or key in explored:
-                    continue
-                field_seeds = {("this", field) for field in fields}
-                field_seeds |= {
-                    (field,) for field in fields if field not in cf.local_names
-                }
-                step = {
-                    "func_fqn": sym_row["fqn"],
-                    "callee": receiver_flow.callee,
-                    "callee_fqn": callee["fqn"],
-                    "site_path": sym_row["path"],
-                    "line": receiver_flow.line,
-                    "arg_index": -2,
-                    "via": ", ".join(f"this.{field}"
-                                     for field in sorted(fields)),
-                    "confidence": callee["confidence"],
-                    "resolved": True,
-                }
-                cur_conf = conf_min(path_conf, callee["confidence"])
-                visited.add(key)
-                explored.add(key)
-                trace(crow, field_seeds, origin, steps + [step], d + 1,
-                      visited, cur_conf, path_flow)
+                for callee in self._df_resolve_same_this_calls(
+                        sym_row, receiver_flow):
+                    crow = self._crow(callee["dst"])
+                    cf, _ = (self._df_facts(crow, cache)
+                             if crow else (None, None))
+                    if cf is None:
+                        continue
+                    fields = frozenset(
+                        receiver_flow.fields & cf.instance_fields)
+                    if not fields:
+                        continue
+                    receiver_visit_key = (
+                        callee["dst"], "this", tuple(sorted(fields)))
+                    if (receiver_visit_key in visited
+                            or receiver_visit_key in explored):
+                        continue
+                    field_seeds: set[tuple[str, ...]] = {
+                        ("this", field) for field in fields
+                    }
+                    field_seeds |= {
+                        (field,) for field in fields
+                        if field not in cf.local_names
+                    }
+                    step = {
+                        "func_fqn": sym_row["fqn"],
+                        "callee": receiver_flow.callee,
+                        "callee_fqn": callee["fqn"],
+                        "site_path": sym_row["path"],
+                        "line": receiver_flow.line,
+                        "arg_index": -2,
+                        "via": ", ".join(f"this.{field}"
+                                         for field in sorted(fields)),
+                        "confidence": callee["confidence"],
+                        "resolved": True,
+                    }
+                    cur_conf = conf_min(path_conf, callee["confidence"])
+                    visited.add(receiver_visit_key)
+                    explored.add(receiver_visit_key)
+                    trace(crow, field_seeds, origin, steps + [step], d + 1,
+                          visited, cur_conf, path_flow)
 
         if entry:
             sym = self._resolve_fresh(entry, env)
@@ -1291,7 +1553,6 @@ class QueryEngine:
             # 1ª passada: funções que RETORNAM dado de fonte viram elas próprias
             # fontes (pega o idioma comum do wrapper `x = get_input()`)
             collected: list = []
-            src_func_fqns: set[str] = set()
             for r in rows:
                 if budget.hit():
                     break
@@ -1299,15 +1560,16 @@ class QueryEngine:
                 if f is None:
                     continue
                 collected.append((dict(r), f))
-                direct = any(
-                    rt.top_call in rules.sources
-                    or df.return_reads_named_source(
-                        rt, rules.sources, rules.sanitizers)
-                    for rt in f.returns
-                )
-                seed = df.source_vars(f, rules.sources, rules.sanitizers)
+                direct = any(df.return_reads_named_source(
+                    rt, rules.sources, rules.sanitizers,
+                    rules.trusted_source_literals) for rt in f.returns)
+                seed = df.source_vars(
+                    f, rules.sources, rules.sanitizers,
+                    trusted_source_literals=rules.trusted_source_literals)
                 if direct or (seed and df.analyze(
-                        f, seed, lang=flang, sources=eff_src).reaches_return):
+                        f, seed, lang=flang, sources=eff_src,
+                        trusted_source_literals=(
+                            rules.trusted_source_literals)).reaches_return):
                     src_func_fqns.add(r["fqn"])
                 # SUMÁRIO DE RETORNO: esta função devolve o que recebe?
                 # Só funções COM parâmetros — `x = obj.metodo()` sem argumento
@@ -1338,14 +1600,26 @@ class QueryEngine:
                     summary_safe = all(c.callee in pure_constant_calls
                                        for c in f.calls)
                     if not summary_safe:
-                        summary_flow = df.analyze_java_constant_collections(
-                            f, set(f.params), rules.sanitizers)
-                        summary_safe = summary_flow is not None
+                        param_flow = df.analyze(
+                            f, set(f.params), rules.sanitizers, lang=flang,
+                            trusted_source_literals=(
+                                rules.trusted_source_literals))
+                        if (param_flow.proven_sanitized_return
+                                and not param_flow.reaches_return):
+                            summary_flow = param_flow
+                            summary_safe = True
+                        else:
+                            summary_flow = df.analyze_java_constant_collections(
+                                f, set(f.params), rules.sanitizers,
+                                trusted_source_literals=(
+                                    rules.trusted_source_literals))
+                            summary_safe = summary_flow is not None
                 if (summary_safe and f.params and f.returns
                         and r["fqn"] not in src_func_fqns
                         and not (summary_flow or df.analyze(
                             f, set(f.params), rules.sanitizers,
-                            lang=flang)).reaches_return):
+                            lang=flang, trusted_source_literals=(
+                                rules.trusted_source_literals))).reaches_return):
                     nao_propaga_fqn.add(r["fqn"])
             scanned = 0
             for r, f in collected:
@@ -1355,21 +1629,49 @@ class QueryEngine:
                 wrapper_spans = self._source_wrapper_spans(
                     r, f, src_func_fqns)
                 seeds = df.source_sites(
-                    f, rules.sources, rules.sanitizers, wrapper_spans)
+                    f, rules.sources, rules.sanitizers, wrapper_spans,
+                    rules.trusted_source_literals)
                 # a fonte também pode estar escrita DENTRO do argumento, sem
                 # passar por variável — aí não há semente, mas há vulnerabilidade
                 # (`eval(req.body.x)`). Sem esta linha a função nem seria varrida.
                 direto = next(((c.line, s) for c in f.calls
-                               for _, s in df.direct_source_args(c, rules.sanitizers)),
-                              None)
-                if not seeds and direto is None:
+                               for _, s in (
+                                   list(df.direct_source_args(
+                                       c, rules.sanitizers))
+                                   + list(df.direct_named_source_args(
+                                       c, eff_src, rules.sanitizers,
+                                       rules.trusted_source_literals)))), None)
+                heap_source = None
+                if flang == "java":
+                    effects = java_receiver_effects(r, f)
+                    heap_source = next((
+                        (call.line, call.callee)
+                        for call in f.calls
+                        if call.span in effects
+                        and effects[call.span].always_dirty
+                    ), None)
+                if not seeds and direto is None and heap_source is None:
                     continue
                 names = {n for n, _, _ in seeds}
-                origin = ({"kind": "source", "func_fqn": r["fqn"], "path": r["path"],
-                           "line": seeds[0][1], "what": seeds[0][2] + "()"} if seeds
-                          else {"kind": "source", "func_fqn": r["fqn"],
-                                "path": r["path"], "line": direto[0],
-                                "what": direto[1]})
+                if seeds:
+                    origin = {
+                        "kind": "source", "func_fqn": r["fqn"],
+                        "path": r["path"], "line": seeds[0][1],
+                        "what": seeds[0][2] + "()",
+                    }
+                elif direto is not None:
+                    origin = {
+                        "kind": "source", "func_fqn": r["fqn"],
+                        "path": r["path"], "line": direto[0],
+                        "what": direto[1],
+                    }
+                else:
+                    assert heap_source is not None
+                    origin = {
+                        "kind": "source", "func_fqn": r["fqn"],
+                        "path": r["path"], "line": heap_source[0],
+                        "what": heap_source[1] + "()",
+                    }
                 seed_map = {".".join(p): (ln, rot) for p, ln, rot in seeds}
                 # Flow-sensitive engines generate each source at its actual
                 # assignment. Seeding at function entry would let a later
@@ -1521,7 +1823,7 @@ class QueryEngine:
 
     # -- tools de alto nível (orientadas a agentes) ---------------------------
 
-    def _symbols_in_paths(self, paths: list[str]) -> list[dict]:
+    def _symbols_in_paths(self, paths: list[str], *, include_id: bool = False) -> list[dict]:
         """Símbolos de TOPO declarados nos arquivos dados (o que 'mudou')."""
         out: list[dict] = []
         for rel in paths:
@@ -1530,11 +1832,14 @@ class QueryEngine:
             if frow is None:
                 continue
             for s in self.conn.execute(
-                    "SELECT fqn, kind, start_line FROM symbols WHERE file_id=? "
+                "SELECT id, fqn, kind, start_line FROM symbols WHERE file_id=? "
                     "AND parent_id IS NULL AND kind<>'file' ORDER BY start_line",
                     (frow["id"],)):
-                out.append({"fqn": s["fqn"], "kind": s["kind"], "path": rel,
-                            "start_line": s["start_line"]})
+                item = {"fqn": s["fqn"], "kind": s["kind"], "path": rel,
+                        "start_line": s["start_line"]}
+                if include_id:
+                    item["id"] = s["id"]
+                out.append(item)
         return out
 
     def change_impact(self, target: str, depth: int = 3):
@@ -1544,14 +1849,25 @@ class QueryEngine:
         (trabalha a partir de um diff), não de um fqn."""
         env = Envelope()
         paths = _paths_from_target(target)
+        ensure_ranks(self.conn)
+        before = self._symbols_in_paths(paths, include_id=True)
+        before_impacts = [self._impact_rows(c["id"], depth) for c in before]
         self._repair(set(paths), env)
-        changed = self._symbols_in_paths(paths)
+        ensure_ranks(self.conn)
+        after = self._symbols_in_paths(paths, include_id=True)
+        changed_by_fqn = {
+            item["fqn"]: {k: v for k, v in item.items() if k != "id"}
+            for item in [*before, *after]
+        }
+        changed = list(changed_by_fqn.values())
         impacted: dict[str, dict] = {}
-        for c in changed:
-            try:
-                _s, rows, _e = self.impact(c["fqn"], depth=depth)
-            except (SymbolNotFound, AmbiguousSymbol):
-                continue
+        for rows in before_impacts:
+            for r in rows:
+                cur = impacted.get(r["fqn"])
+                if cur is None or r["depth"] < cur["depth"]:
+                    impacted[r["fqn"]] = r
+        for c in after:
+            rows = self._impact_rows(c["id"], depth)
             for r in rows:
                 cur = impacted.get(r["fqn"])
                 if cur is None or r["depth"] < cur["depth"]:

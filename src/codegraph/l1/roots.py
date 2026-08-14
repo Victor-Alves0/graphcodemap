@@ -32,9 +32,16 @@ def detect_project_root(rel: str, repo_root: Path, markers) -> Path:
     Sobe do diretório do arquivo até a raiz do repo (inclusive), parando no 1º
     ancestral com um marcador. Nunca sobe acima da raiz do repo."""
     if not markers:
-        return repo_root
+        return repo_root.resolve()
     repo_root = repo_root.resolve()
-    d = (repo_root / rel).resolve().parent
+    candidate = (repo_root / rel).resolve()
+    try:
+        candidate.relative_to(repo_root)
+    except ValueError:
+        # Caminho malformado ou symlink que escapa do repo: nunca usar um
+        # marcador externo como root de um servidor que analisará o workspace.
+        return repo_root
+    d = candidate.parent
     while True:
         if _has_marker(d, markers):
             return d
@@ -48,7 +55,7 @@ def group_by_root(rels, repo_root: Path, markers) -> dict[Path, list[str]]:
 
     Sem marcadores, um único grupo (a raiz do repo) → um servidor, como antes."""
     groups: dict[Path, list[str]] = {}
-    for rel in rels:
+    for rel in sorted(set(rels)):
         root = detect_project_root(rel, repo_root, markers)
         groups.setdefault(root, []).append(rel)
     return groups
