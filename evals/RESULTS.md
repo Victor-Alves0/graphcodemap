@@ -1613,3 +1613,98 @@ completa fechou em **1.411 passed, 24 skipped**.
 O gate FPR <20% está concluído. O próximo micro-goal é recuperar pelo menos 10
 dos 23 FNs de path traversal, levando a categoria a recall >=90% sem devolver o
 FPR total acima de 20%.
+
+---
+
+# Rodada 21 — enhanced-for Java e recall de path traversal (2026-08-14)
+
+Dos 23 FNs de path traversal, 16 liam `Cookie[]` vindo de `getCookies()` e
+perdiam a origem em `for (Cookie cookie : cookies)`. A fonte do array já era
+reconhecida; o extrator não normalizava o binding elemento←iterável.
+
+Foi adicionado um fato sintético geral para `enhanced_for_statement`. Não se
+marcou `getValue` como fonte: isso teria transformado qualquer getter homônimo
+em input externo. Testes cobrem iterável sujo, iterável seguro e rebind seguro
+depois de um loop sujo.
+
+| total OWASP | rodada 20 | rodada 21 |
+|---|---:|---:|
+| TP | 745 | **807** |
+| FP | 137 | **145** |
+| FN | 157 | **95** |
+| TN | 659 | **651** |
+| precisão | 84,5% | **84,8%** |
+| recall | 82,6% | **89,5%** |
+| FPR | 17,2% | **18,2%** |
+| score | +0,654 | **+0,712** |
+
+Path traversal passou de 110/27/23/108 para **125/30/8/105**: recall 94%.
+A semântica geral também recuperou TPs em command, LDAP, SQL, trust-boundary e
+XPath. Os oito FPs novos são o custo honesto de propagar o elemento de um
+iterável externo; o FPR total permaneceu abaixo do gate de 20%.
+
+---
+
+# Rodada 22 — Map/List fechado e path traversal 100% (2026-08-14)
+
+O domínio de coleções Java foi estendido para uso tanto no summary de retorno
+quanto no trace intra-procedural:
+
+- List local: `add/remove/get` com índice constante;
+- HashMap, LinkedHashMap e TreeMap locais: `put/get/remove` com chave literal;
+- overwrite por chave e valor anterior devolvido por `put/remove`;
+- resultado contaminado em assignment, return ou chamada aninhada;
+- fail-closed em alias, escape, chave dinâmica, método desconhecido, overload
+  não modelado, reinicialização e mutação condicional.
+
+A revisão root adicionou um hardening que o OWASP não exigia: List criada fora
+de um branch não pode ser considerada limpa por overwrite que ocorre apenas em
+um braço ou loop. Construtor e operações precisam compartilhar o mesmo caminho
+estrutural; loop ou branch aninhado/diferente aborta a prova. Dois testes
+adversariais congelam esse comportamento. O hardening não alterou as métricas.
+
+| total OWASP | rodada 21 | rodada 22 |
+|---|---:|---:|
+| TP | 807 | **868** |
+| FP | 145 | **92** |
+| FN | 95 | **34** |
+| TN | 651 | **704** |
+| precisão | 84,8% | **90,4%** |
+| recall | 89,5% | **96,2%** |
+| FPR | 18,2% | **11,6%** |
+| score | +0,712 | **+0,847** |
+
+| categoria | TP | FP | FN | TN | recall | score |
+|---|---:|---:|---:|---:|---:|---:|
+| command injection | 107 | 8 | 19 | 117 | 85% | +0,79 |
+| LDAP injection | 27 | 2 | 0 | 30 | 100% | +0,94 |
+| path traversal | **133** | 15 | **0** | 120 | **100%** | +0,89 |
+| SQL injection | 272 | 19 | 0 | 213 | 100% | +0,92 |
+| trust boundary | 77 | 0 | 6 | 43 | 93% | +0,93 |
+| XPath injection | 15 | 1 | 0 | 19 | 100% | +0,95 |
+| XSS | 237 | 47 | 9 | 162 | 96% | +0,74 |
+
+Nenhum dos 807 TPs da entrada foi perdido e nenhum FP novo foi criado. Os 53
+FPs removidos eram Maps locais; os 61 TPs recuperados se dividem em 32 Map e 29
+List. A execução final hardened levou 43,59 s e 575,54 MB de pico RSS.
+
+## Holdout independente: NIST Juliet Java 1.3 CWE-23
+
+Para testar overfitting, o corpus oficial SARD suite #111 foi baixado fora do
+workspace e verificado pelo SHA-256 publicado:
+`d985f4177c2bcd7b03455a05c1c8f2e755f55c9eb250accd052f05f877347e60`.
+`evals/julietbench.py` usa o manifesto para enumerar 444 casos vulneráveis e
+pontua os 444 companions `good()` como negativos.
+
+| corpus | TP | FP | FN | TN | precisão | recall | FPR | score |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Juliet CWE-23 | 120 | 0 | 324 | 444 | **100%** | **27,0%** | **0%** | +0,270 |
+
+L0 e JDTLS produziram os mesmos 240 traces, todos `bad`→`bad`, e nenhum fluxo
+`good`. Variantes 21/22/42/61 ficaram 12/12; 41/45/51–54/66–75/81 ficaram
+0/12. O resultado forte no OWASP portanto não é tratado como cobertura Java
+universal: o próximo gate é Juliet recall >=50% mantendo FPR <=5%.
+
+Os cinco aplicativos reais não-Java preservaram os mesmos 23 achados e
+categorias: pygoat 10, dvpwa 1, DVNA 6, NodeGoat 4 e nodejs-goof 2. A suíte
+completa fechou em **1.432 passed, 24 skipped**.

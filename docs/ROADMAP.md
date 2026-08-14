@@ -81,18 +81,22 @@ OWASP Benchmark v1.2, 1.698 casos das 7 categorias de taint:
 
 | | valor |
 |---|---|
-| precisão | 84,5% |
-| recall (TPR) | 82,6% |
-| FPR | 17,2% |
-| score (TPR − FPR) | **+0.654** |
+| precisão | 90,4% |
+| recall (TPR) | 96,2% |
+| FPR | 11,6% |
+| score (TPR − FPR) | **+0.847** |
 
 Esta é a primeira linha medida com concordância obrigatória de **arquivo e
 categoria**, no mesmo commit do alvo. Na mesma régua, OpenTaint marcou +0.338
-(recall 90,8%, FPR 57,0%). GraphCodeMap agora lidera o score desta matriz, mas
-ainda perde 74 TPs para o OpenTaint. O gate de FPR <20% foi atingido sem perder
-nenhum TP. O objetivo imediato agora é recuperar pelo menos 10 dos 23 FNs de
-path traversal, levando a categoria de 83% para 90% de recall sem devolver o
-FPR total acima de 20%. Veja a matriz em [Security Benchmark](SECURITY_BENCHMARK.md).
+(recall 90,8%, FPR 57,0%). GraphCodeMap agora lidera essa matriz também em
+recall, com 49 TPs a mais e 362 FPs a menos. Path traversal chegou a 100% de
+recall e o FPR total ficou abaixo de 12%.
+
+O holdout independente NIST Juliet CWE-23 impede transformar isso em uma
+declaração universal: nele o GraphCodeMap teve precisão 100% e FPR 0%, mas
+recall de apenas **27,0%**. O objetivo imediato agora é elevar esse recall para
+>=50% sem FPR acima de 5%, atacando fontes e variantes interprocedurais, não
+continuar ajustando o corpus OWASP. Veja [Security Benchmark](SECURITY_BENCHMARK.md).
 
 Em aplicações vulneráveis REAIS (não gabarito sintético):
 
@@ -115,15 +119,15 @@ Placares oficiais publicados no repositório do Benchmark
 |---|---|---|---|
 | FindBugs + FindSecBugs 1.4.6 | 96,8% | 57,7% | 39,1% |
 | SonarQube Java 3.14 | 50,4% | 17,0% | 33,3% |
-| **graphcodemap (7 categorias, category-correct)** | **82,6%** | **17,2%** | **65,4%** |
+| **graphcodemap (7 categorias, category-correct)** | **96,2%** | **11,6%** | **84,7%** |
 | OWASP ZAP (DAST) | 20,0% | 0,1% | 19,8% |
 
 O líder em score tem **57,7% de FPR** — mais da metade do código seguro
 acusado. Ninguém revisa um relatório assim; o score alto não se traduz em
 ferramenta usável.
 
-> **O perfil-alvo inicial foi atingido: recall acima de 80% com FPR abaixo de
-> 20%. O próximo gate é path traversal com recall >=90%, preservando esse FPR.**
+> **Os gates OWASP de recall e FPR foram atingidos. O próximo gate é externo:
+> Juliet CWE-23 com recall >=50% e FPR <=5%.**
 
 Ressalva da comparação: os placares cobrem 11 categorias e nós pontuamos 7.
 Nossa medição agora exige arquivo **e categoria**, mas ainda não é comparação
@@ -146,8 +150,8 @@ semanticamente (`confidence='certain'`).
 Medido: das centenas de atribuições com chamada, só **13** em pygoat e **3** em
 dvpwa têm resolução `certain`. No OWASP Benchmark, o JDTLS agora promove
 **12.937** arestas sem erro. A poda de retorno Java permanece fechada para
-despacho virtual/reflexão, mas aceita controle local comprovado e listas locais
-com `add/remove/get` e índices constantes.
+despacho virtual/reflexão, mas aceita controle local comprovado, enhanced-for e
+domínios fechados de List/Map local com índice/chave constante.
 
 | ação | estado |
 |---|---|
@@ -155,24 +159,24 @@ com `add/remove/get` e índices constantes.
 | resolver L1 de PHP (intelephense) | em investigação |
 | aumentar taxa de promoção em Python/JS | em investigação |
 
-Path traversal passou de 46% para 83% de recall. O micro-goal de FPR <20% foi
-concluído em 17,2%, sem perder os 745 TPs. O próximo é recuperar ao menos 10
-dos 23 FNs de path traversal e manter o FPR total abaixo de 20%.
+Path traversal passou de 46% para **100% de recall**. O micro-goal de FPR <20%
+foi superado em 11,6%, com 868 TPs totais. A próxima medida de recall vem do
+Juliet CWE-23, onde ainda há 324 FNs.
 
 ### 2. Causas de falso positivo ainda abertas
 
 Classificação medida dos falsos positivos (a distribuição muda a cada rodada;
 reclassificar antes de escolher):
 
-- **Lista local com índice constante** — 66 FPs resolvidos na rodada 20; as 65
-  versões vulneráveis equivalentes continuaram detectadas.
-- **Map local com chave constante** — 48 FPs restantes; exige domínio por chave
-  e overwrite, sem transformar qualquer `Map.get` em prova de limpeza.
+- **Lista/Map local com índice/chave constante** — resolvidos por domínio
+  fechado, com alias, escape, branch incerto e chave dinâmica fail-closed.
 - **Despacho/reflexão com argumento constante** — 52 FPs restantes; alvo de
   chamada certo ainda não prova o valor devolvido pela implementação runtime.
 - **Sanitizador HTML contextual** — 37 FPs restantes (ESAPI, Spring, Commons
   Lang, OWASP Java Encoder). Custa recall: escape para HTML não protege uso em
   contexto de URL, e tratá-lo como universal apaga esse bug.
+- **Enhanced-for seguro conservador** — 3 FPs restantes; a propagação correta
+  do elemento iterado recuperou 62 TPs totais e não deve ser desfeita.
 - **Propagação pelo RECEPTOR** — `String s = objSujo.toString()`. Hoje o motor
   não distingue receptor de argumento, o que impede endurecer o sumário.
 

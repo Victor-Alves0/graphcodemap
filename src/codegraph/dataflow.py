@@ -44,6 +44,10 @@ GEN: dict[str, dict] = {
              "id": {"identifier"}, "params": ("field", "parameters"),
              "assigns": [("lr", {"assignment_expression"}, "left", "right"),
                          ("decl", {"variable_declarator"}, "name", "value")],
+             # `for (T item : values)` binds each element read from `values`
+             # to `item`.  Without this normalized assignment, taint on a
+             # request-derived array/collection stops at the loop boundary.
+             "foreach": ({"enhanced_for_statement"}, "name", "value"),
              "calls": {"method_invocation", "object_creation_expression"},
              "returns": {"return_statement"}, "tail": False},
     "csharp": {"func": {"method_declaration", "constructor_declaration",
@@ -565,55 +569,186 @@ class Flow:
 
 
 _JAVA_LIST_CTOR = re.compile(r"^(?:ArrayList|LinkedList)(?:<.*>)?$")
+_JAVA_MAP_CTOR = re.compile(r"^(?:HashMap|LinkedHashMap|TreeMap)(?:<.*>)?$")
 _JAVA_INT_LITERAL = re.compile(r"^[+-]?\d+$")
+_JAVA_MAP_KEY_LITERAL = re.compile(
+    r'''^(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])'|'''
+    r'''[+-]?(?:\d+(?:\.\d+)?|\.\d+)[a-zA-Z]*|true|false|null)$'''
+)
 _JAVA_COLLECTION_SENTINEL = ("__graphcodemap_collection_taint__",)
 
 
-def analyze_java_constant_list(facts: FnFacts, tainted,
-                               sanitizers=frozenset()):
-    """Refina o fluxo de retorno de wrappers Java com listas locais simples.
+def analyze_java_constant_collections(
+        facts: FnFacts, tainted, sanitizers=frozenset(), sources=frozenset(),
+        nonprop=frozenset(), *, allow_unrelated_calls: bool = False):
+    """Refina Java com listas e mapas locais de operações determinísticas.
 
-    O analisador geral é corretamente conservador sobre aliasing: uma chamada
-    `values.add(param)` não altera a variável `values` no ambiente escalar.
-    Isso impede provar que `remove(0); get(1)` devolve o literal seguro, mas
-    também fazia a tentativa ingênua de resumo apagar o caso vulnerável
-    `remove(0); get(0)`.
+    O analisador escalar é conservador sobre aliasing: `map.put(key, value)`
+    não altera a variável `map` no ambiente. Este domínio fechado interpreta
+    `ArrayList`/`LinkedList` e `HashMap`/`LinkedHashMap`/`TreeMap` criados na
+    função. Mapas admitem somente `put`/`get`/`remove` com chave literal e
+    overwrite por chave.
 
-    Este refinamento só aceita listas criadas localmente e a sequência exata
-    `add`/`remove`/`get` com índices inteiros constantes. Argumento com qualquer
-    identificador é tratado como possivelmente sujo; literal é limpo. Qualquer
-    chamada, receptor ou índice fora desse subconjunto devolve ``None`` e o
-    chamador mantém a superaproximação anterior.
+    Alias, escape, mutação condicional, chave dinâmica ou método desconhecido
+    no container devolvem ``None``. Para summaries, chamadas alheias também
+    abortam a prova; no fluxo normal elas continuam no analisador compartilhado.
     """
     if not facts.calls or facts.regions is None:
         return None
 
     local_lists: dict[str, list[bool]] = {}
+    local_maps: dict[str, dict[str, bool]] = {}
+    list_ctor_assignments: dict[str, list[Assign]] = {}
+    map_ctor_assignments: list[Assign] = []
+    map_ctor_counts: dict[str, int] = {}
     for assignment in facts.assigns:
-        if (assignment.rhs_call
-                and _JAVA_LIST_CTOR.match(assignment.rhs_call)
-                and len(assignment.targets) == 1):
+        if assignment.rhs_call and len(assignment.targets) == 1:
             target = next(iter(assignment.targets))
             if len(target) != 1:
                 return None
-            local_lists[target[0]] = []
-    if not local_lists:
+            if _JAVA_LIST_CTOR.match(assignment.rhs_call):
+                local_lists[target[0]] = []
+                list_ctor_assignments.setdefault(target[0], []).append(assignment)
+            elif _JAVA_MAP_CTOR.match(assignment.rhs_call):
+                local_maps[target[0]] = {}
+                map_ctor_assignments.append(assignment)
+                map_ctor_counts[target[0]] = map_ctor_counts.get(target[0], 0) + 1
+    if not local_lists and not local_maps:
         return None
 
-    # Não resumimos uma função que mistura a lista local com chamadas que o
-    # pequeno domínio abstrato não entende. Falhar fechado aqui protege recall.
-    for call in facts.calls:
-        if call.callee and _JAVA_LIST_CTOR.match(call.callee):
-            continue
-        if not call.qualified or "." not in call.qualified:
+    local_names = set(local_lists) | set(local_maps)
+
+    # Source-order flattening could mistake a conditional safe overwrite for
+    # an unconditional one. The new Map proof rejects reads/mutations under a
+    # Branch/Loop until collection state lives inside the structured CFG.
+    from .flowsens import Branch, Loop, Seq, Span
+
+    # Each leaf span carries its exact branch-arm path and whether it is under
+    # a loop. This is stricter than a boolean "conditional": a List created and
+    # consumed inside the same arm is deterministic for that path, while a
+    # nested/different arm can make a linearized overwrite optional.
+    flow_spans: list[tuple[int, int, tuple, bool]] = []
+    branch_serial = 0
+
+    def collect_flow_context(region, context=(), in_loop=False):
+        nonlocal branch_serial
+        if isinstance(region, Span):
+            flow_spans.append((region.start, region.end, context, in_loop))
+        elif isinstance(region, Seq):
+            for item in region.items:
+                collect_flow_context(item, context, in_loop)
+        elif isinstance(region, Branch):
+            branch_serial += 1
+            branch_id = branch_serial
+            for arm_index, arm in enumerate(region.arms):
+                collect_flow_context(
+                    arm, context + ((branch_id, arm_index),), in_loop)
+        elif isinstance(region, Loop):
+            collect_flow_context(region.body, context, True)
+
+    collect_flow_context(facts.regions)
+
+    def span_context(span) -> tuple[tuple, bool]:
+        pos = (span or (-1, -1))[0]
+        matches = [(context, in_loop, end - start)
+                   for start, end, context, in_loop in flow_spans
+                   if start <= pos < end]
+        if not matches:
+            return (), False
+        context, in_loop, _width = max(
+            matches, key=lambda item: (len(item[0]), item[1], -item[2]))
+        return context, in_loop
+
+    def span_is_conditional(span) -> bool:
+        context, in_loop = span_context(span)
+        return bool(context) or in_loop
+
+    # List operations may be linearized only within one exact arm. A loop can
+    # execute zero/N times, so it is never safe for this source-order domain.
+    list_contexts: dict[str, tuple] = {}
+    for name, constructors in list_ctor_assignments.items():
+        if len(constructors) != 1:
             return None
-        receiver, method = call.qualified.rsplit(".", 1)
-        if receiver not in local_lists or method not in {"add", "remove", "get"}:
+        context, in_loop = span_context(constructors[0].span)
+        if in_loop:
+            return None
+        list_contexts[name] = context
+
+    # Reinitialization would reset the abstract state; conditional creation
+    # additionally means the container may not exist on every path. Both are
+    # outside this deliberately small domain.
+    if any(count != 1 for count in map_ctor_counts.values()) \
+            or any(span_is_conditional(a.span) for a in map_ctor_assignments):
+        return None
+
+    def refs_local(paths) -> bool:
+        return any(path and path[0] in local_names for path in paths)
+
+    def contained_collection_call(span, exclude=None) -> bool:
+        if not span:
+            return False
+        return any(
+            call is not exclude and call.span
+            and span[0] <= call.span[0] < call.span[1] <= span[1]
+            and call.qualified and "." in call.qualified
+            and call.qualified.rsplit(".", 1)[0] in local_names
+            and call.callee in {"get", "put", "remove"}
+            for call in facts.calls
+        )
+
+    # A collection local não pode adquirir alias, escapar como argumento ou
+    # ser retornada diretamente. `x = map.get("k")` menciona o receiver nos
+    # IDs genéricos e só é liberado pela chamada suportada contida no span.
+    for assignment in facts.assigns:
+        if refs_local(assignment.rhs_ids) \
+                and not contained_collection_call(assignment.span):
+            return None
+    for returned in facts.returns:
+        if refs_local(returned.ids) and not contained_collection_call(returned.span):
+            return None
+
+    # Valida chamadas antes de interpretar estado. Operação desconhecida no
+    # container e escape real sempre abortam. Uma leitura aninhada suportada
+    # (`sink(map.get("k"))`) não é escape do mapa.
+    for call in facts.calls:
+        if call.callee and (_JAVA_LIST_CTOR.match(call.callee)
+                            or _JAVA_MAP_CTOR.match(call.callee)):
+            continue
+        receiver, method = (call.qualified.rsplit(".", 1)
+                            if call.qualified and "." in call.qualified
+                            else (None, call.callee))
+        local_args = [paths for _index, paths in call.args
+                      if refs_local(paths)]
+        if local_args:
+            nested = contained_collection_call(call.span, exclude=call)
+            # More than one collection-bearing argument is ambiguous without
+            # per-argument AST spans (`f(map, map.get("k"))` must be treated as
+            # an escape). A single argument is accepted only when its IDs show
+            # the result of the supported nested operation, not the map alone.
+            operation_id = any(
+                path and path[0] in {"get", "put", "remove"}
+                for path in local_args[0]
+            )
+            if len(local_args) != 1 or not nested or not operation_id:
+                return None
+        if receiver in local_lists:
+            context, in_loop = span_context(call.span)
+            if (method not in {"add", "remove", "get"} or in_loop
+                    or context != list_contexts.get(receiver)):
+                return None
+        elif receiver in local_maps:
+            if (method not in {"put", "get", "remove"}
+                    or span_is_conditional(call.span)):
+                return None
+        elif not allow_unrelated_calls:
             return None
 
     cloned_assigns = [replace(a, rhs_ids=set(a.rhs_ids)) for a in facts.assigns]
+    cloned_calls = [replace(c, args=[(i, set(ids)) for i, ids in c.args])
+                    for c in facts.calls]
+    cloned_returns = [replace(r, ids=set(r.ids)) for r in facts.returns]
     events = []
-    for call in facts.calls:
+    for call in cloned_calls:
         events.append(((call.span or (0, 0))[0], 1, call))
     for assignment in cloned_assigns:
         events.append(((assignment.span or (0, 0))[0], 0, assignment))
@@ -624,40 +759,90 @@ def analyze_java_constant_list(facts: FnFacts, tainted,
         if kind == 0:
             continue
         call = fact
-        if call.callee and _JAVA_LIST_CTOR.match(call.callee):
+        if call.callee and (_JAVA_LIST_CTOR.match(call.callee)
+                            or _JAVA_MAP_CTOR.match(call.callee)):
+            continue
+        if not call.qualified or "." not in call.qualified:
             continue
         receiver, method = call.qualified.rsplit(".", 1)
-        state = local_lists[receiver]
+        if receiver not in local_names:
+            continue
         args = dict(call.args)
-        if method == "add":
-            if 0 not in args:
+        if receiver in local_lists and method == "add":
+            if set(args) != {0}:
                 return None
-            # Conservador: variável/expressão desconhecida pode estar suja;
-            # somente argumento sem IDs (literal) é comprovadamente limpo.
-            state.append(bool(args[0]))
+            local_lists[receiver].append(bool(args[0]))
             continue
-        raw_index = call.arg_values.get(0, "").strip()
-        if not _JAVA_INT_LITERAL.match(raw_index):
-            return None
-        index = int(raw_index)
-        if index < 0 or index >= len(state):
-            return None
-        if method == "remove":
-            state.pop(index)
-            continue
-        # `get`: marca a atribuição correspondente somente se o elemento
-        # lido é possivelmente sujo. O CFG existente decide os branches.
-        if state[index]:
-            assignment = next((a for a in cloned_assigns
-                               if a.span and call.span
-                               and a.span[0] <= call.span[0] < a.span[1]), None)
-            if assignment is None:
-                return None
-            assignment.rhs_ids.add(_JAVA_COLLECTION_SENTINEL)
 
-    refined = replace(facts, assigns=cloned_assigns)
+        dirty_result = False
+        if receiver in local_lists:
+            state = local_lists[receiver]
+            raw_index = call.arg_values.get(0, "").strip()
+            if not _JAVA_INT_LITERAL.match(raw_index):
+                return None
+            index = int(raw_index)
+            if index < 0 or index >= len(state):
+                return None
+            dirty_result = state[index]
+            if method == "remove":
+                state.pop(index)
+        else:
+            state = local_maps[receiver]
+            raw_key = call.arg_values.get(0, "").strip()
+            if not _JAVA_MAP_KEY_LITERAL.match(raw_key):
+                return None
+            if method == "put":
+                if set(args) != {0, 1}:
+                    return None
+                dirty_result = state.get(raw_key, False)  # previous value
+                state[raw_key] = bool(args[1])
+            elif method == "get":
+                if set(args) != {0}:
+                    return None
+                dirty_result = state.get(raw_key, False)
+            else:  # remove(key) returns the removed value
+                if set(args) != {0}:
+                    return None
+                dirty_result = state.pop(raw_key, False)
+
+        if not dirty_result:
+            continue
+        assignment = next((a for a in cloned_assigns
+                           if a.span and call.span
+                           and a.span[0] <= call.span[0] < a.span[1]), None)
+        if assignment is not None:
+            assignment.rhs_ids.add(_JAVA_COLLECTION_SENTINEL)
+            continue
+        returned = next((r for r in cloned_returns
+                         if r.span and call.span
+                         and r.span[0] <= call.span[0] < r.span[1]), None)
+        if returned is not None:
+            returned.ids.add(_JAVA_COLLECTION_SENTINEL)
+            continue
+        # Nested `sink(map.get("k"))`: mark the enclosing argument that
+        # references this receiver.
+        for outer in cloned_calls:
+            if not outer.span or not call.span or outer is call:
+                continue
+            if outer.span[0] <= call.span[0] < call.span[1] <= outer.span[1]:
+                for _idx, paths in outer.args:
+                    if any(path and path[0] == receiver for path in paths):
+                        paths.add(_JAVA_COLLECTION_SENTINEL)
+        # A standalone `put`/`get`/`remove` may discard its return value. The
+        # collection state change above still applies; there is no scalar flow
+        # to mark in that case.
+
+    refined = replace(facts, assigns=cloned_assigns, calls=cloned_calls,
+                      returns=cloned_returns)
     initial = set(tainted) | {_JAVA_COLLECTION_SENTINEL}
-    return analyze(refined, initial, sanitizers, lang="java")
+    return analyze(refined, initial, sanitizers, lang="java", sources=sources,
+                   nonprop=nonprop)
+
+
+def analyze_java_constant_list(facts: FnFacts, tainted,
+                               sanitizers=frozenset()):
+    """Compatibilidade para callers antigos do domínio de listas."""
+    return analyze_java_constant_collections(facts, tainted, sanitizers)
 
 
 # -- helpers de árvore --------------------------------------------------------
@@ -1382,6 +1567,42 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                                     _ternary(source, rhs_node,
                                              lambda n: _gen_colher(source, n, idset)),
                                     any(len(q) == 1 and q[0] in nuas for q in rids)))
+
+    # Iteration is also a data-flow assignment: in `for (T item : values)`,
+    # every value observed through `item` came from `values`.  Tree-sitter
+    # represents the binding on the loop node rather than as a regular
+    # declaration, so the normal assignment walk above cannot see it.
+    #
+    # Place the synthetic fact on the iterable expression.  The structured
+    # CFG evaluates that header before entering its Loop region, which is
+    # equivalent for may-taint and also lets a later safe foreach binding kill
+    # taint left by an earlier loop using the same variable name.
+    foreach = cfg.get("foreach")
+    if foreach:
+        loop_types, target_field, value_field = foreach
+        loops: list = []
+        _walk(body, loop_types, stop, loops)
+        loop_assigns = []
+        for loop in loops:
+            target_node = loop.child_by_field_name(target_field)
+            value_node = loop.child_by_field_name(value_field)
+            targets = _gen_target_paths(source, target_node, idset)
+            rids: set = set()
+            _gen_paths(source, value_node, idset, rids)
+            if not targets or value_node is None or not rids:
+                continue
+            loop_assigns.append(Assign(
+                targets, rids, False,
+                _rhs_call(source, value_node, calls_t, idset),
+                loop.start_point[0] + 1,
+                (value_node.start_byte, value_node.end_byte),
+                _rhs_qualified(source, value_node, calls_t),
+                _const_text(source, value_node),
+                _ternary(source, value_node,
+                         lambda n: _gen_colher(source, n, idset)),
+                any(len(q) == 1 and q[0] in nuas for q in rids),
+            ))
+        facts.assigns.extend(loop_assigns)
 
     # chamadas
     calls: list = []

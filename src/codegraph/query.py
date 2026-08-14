@@ -1067,11 +1067,16 @@ class QueryEngine:
             # caminho ter rodado no motor que over-aproxima.
             if not df.uses_flow_sensitive(f, flang):
                 path_flow = "over-approximated"
+            nonprop_lines = self._nonprop_lines(
+                sym_row, f, nao_propaga_fqn, nonprop_cache)
             flow = df.analyze(f, tainted, rules.sanitizers, lang=flang,
-                              sources=eff_src,
-                              nonprop=self._nonprop_lines(sym_row, f,
-                                                          nao_propaga_fqn,
-                                                          nonprop_cache))
+                              sources=eff_src, nonprop=nonprop_lines)
+            if flang == "java":
+                collection_flow = df.analyze_java_constant_collections(
+                    f, tainted, rules.sanitizers, sources=eff_src,
+                    nonprop=nonprop_lines, allow_unrelated_calls=True)
+                if collection_flow is not None:
+                    flow = collection_flow
             for af in flow.arg_flows:
                 if budget.hit():
                     return
@@ -1203,7 +1208,7 @@ class QueryEngine:
                     summary_safe = all(c.callee in pure_constant_calls
                                        for c in f.calls)
                     if not summary_safe:
-                        summary_flow = df.analyze_java_constant_list(
+                        summary_flow = df.analyze_java_constant_collections(
                             f, set(f.params), rules.sanitizers)
                         summary_safe = summary_flow is not None
                 if (summary_safe and f.params and f.returns
