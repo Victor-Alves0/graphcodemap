@@ -756,7 +756,8 @@ class _Eval:
                     c.callee, c.line, fields, c.qualified, c.span))
 
     def _clear_validated_file_constructors(
-            self, candidate: tuple[str, ...], guard_start: int) -> None:
+            self, candidate: tuple[str, ...], base: tuple[str, ...],
+            guard_start: int) -> None:
         """Retract only the exact non-I/O File construction proven contained.
 
         ``File`` is a deliberate surrogate sink until receiver-to-call taint is
@@ -768,8 +769,7 @@ class _Eval:
         for assignment in self.assigns:
             span = assignment.span
             if (span is None or span[1] > guard_start
-                    or assignment.targets != {candidate}
-                    or assignment.rhs_call != "File"):
+                    or assignment.targets != {candidate}):
                 continue
             constructors = [
                 call for call in self.calls
@@ -778,15 +778,28 @@ class _Eval:
             ]
             if not constructors:
                 continue
-            # `File candidate = wrap(new File(raw))` has a File call inside
-            # the initializer, but that object escaped to `wrap`; it is not
-            # the value validated later.  `rhs_call == File` proves the outer
-            # expression is a constructor, and the widest File span is that
-            # top-level constructor.  Nested constructors remain findings.
-            constructors = [max(
-                constructors,
-                key=lambda call: call.span[1] - call.span[0],
-            )]
+            if assignment.rhs_call == "File":
+                # `File candidate = wrap(new File(raw))` has a File call
+                # inside the initializer, but that object escaped to `wrap`;
+                # it is not the value validated later.  A top-level File RHS
+                # proves which constructor produced the guarded candidate.
+                constructors = [max(
+                    constructors,
+                    key=lambda call: call.span[1] - call.span[0],
+                )]
+            elif assignment.ternary is not None and len(constructors) == 1:
+                # Common safe fallback: `candidate = input != null
+                # ? new File(base, input) : base;` followed immediately by a
+                # rejecting canonical containment guard.  Accept only when the
+                # non-constructor arm is exactly the same trusted base.  This
+                # keeps nested helpers, two constructors and unrelated clean
+                # alternatives fail-closed.
+                _condition, then_ids, else_ids = assignment.ternary
+                if not ({base} in (then_ids, else_ids)
+                        and base in (then_ids | else_ids)):
+                    continue
+            else:
+                continue
 
             # Any use between construction and validation may have observed
             # the unvalidated path.  Calls on the candidate receiver count as
@@ -891,7 +904,7 @@ class _Eval:
                 # the environment entering the guard, before the rejecting arm.
                 if not _is_tainted(base, incoming):
                     self._clear_validated_file_constructors(
-                        candidate, guard_start)
+                        candidate, base, guard_start)
                     out = _kill(out, {candidate})
             return out
         if isinstance(region, Loop):

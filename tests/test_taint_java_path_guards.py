@@ -63,6 +63,20 @@ def test_canonical_guard_with_separator_clears_same_candidate(tmp_path):
     """)
 
 
+def test_canonical_guard_clears_constructor_in_trusted_base_ternary(tmp_path):
+    assert not _path_findings(tmp_path, """
+        String raw = request.getParameter("path");
+        java.io.File baseFile = base.toFile();
+        java.io.File candidate = raw != null
+                ? new java.io.File(baseFile, raw)
+                : baseFile;
+        if (!candidate.getCanonicalPath().startsWith(
+                baseFile.getCanonicalPath() + java.io.File.separator)) {
+            return;
+        }
+    """)
+
+
 def test_guard_does_not_retract_another_file_constructor_on_same_line(tmp_path):
     findings = _path_findings(tmp_path, """
         String raw = request.getParameter("path");
