@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "engine_commit": "4a930075ac0aa6dde109146c280510b602355647",
+  "engine_commit": "12d3c17224d6e580717e2d7941638eb62499743e",
   "method": "GraphCodeMap L0, isolated database per revision, max_findings=100000",
   "cases": [
     {
@@ -18,8 +18,8 @@
         "source_label": "getParameter()",
         "sink_path_suffix": "main/src/com/google/refine/commands/lang/LoadLanguageCommand.java"
       },
-      "vulnerable_report": "openrefine-vuln-l0.json",
-      "fixed_report": "openrefine-fixed-l0.json"
+      "vulnerable_report": "openrefine-vuln-round25-final-current-l0.json",
+      "fixed_report": "openrefine-fixed-round25-final-current-l0.json"
     },
     {
       "id": "fitnesse-cve-2024-42499",
@@ -39,8 +39,8 @@
         "sink_label": "File",
         "sink_symbol_contains": ".HistoryComparerResponder.filesExist"
       },
-      "vulnerable_report": "fit-vuln-l0.json",
-      "fixed_report": "fit-fixed-l0.json"
+      "vulnerable_report": "fit-vuln-round25-hardened-final-l0.json",
+      "fixed_report": "fit-fixed-round25-hardened-final-l0.json"
     },
     {
       "id": "openhab-cve-2024-42468",
@@ -59,8 +59,8 @@
         "sink_path_suffix": "src/main/java/org/openhab/ui/cometvisu/internal/servlet/CometVisuServlet.java",
         "sink_label": "File"
       },
-      "vulnerable_report": "openhab-vuln-l0.json",
-      "fixed_report": "openhab-fixed-l0.json"
+      "vulnerable_report": "openhab-vuln-round25-final-current-l0.json",
+      "fixed_report": "openhab-fixed-round25-ternary-guard-l0.json"
     }
   ]
 }

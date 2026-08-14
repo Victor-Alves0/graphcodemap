@@ -1,0 +1,83 @@
+{
+  "schema_version": "1.0",
+  "engine_commit": "12d3c17224d6e580717e2d7941638eb62499743e",
+  "run_date": "2026-08-14",
+  "configuration": {
+    "resolver": "L0",
+    "isolated_database_per_revision": true,
+    "max_findings": 100000,
+    "note": "All six reports use the Round 25 engine semantics. The final ternary-guard patch affects only the openHAB fixed report; the other reports were generated on its immediate parent and were re-gated against OWASP, Juliet and the complete test suite after the patch."
+  },
+  "aggregate": {
+    "vulnerable_flows_detected": 3,
+    "vulnerable_flows_total": 3,
+    "fixed_flows_cleared_after_detection": 1,
+    "detected_but_not_cleared": 2,
+    "missed": 0
+  },
+  "cases": [
+    {
+      "id": "openrefine-cve-2024-49760",
+      "outcome": "detected-but-not-cleared",
+      "vulnerable": {
+        "oracle_matches": 2,
+        "findings": 136,
+        "duration_s": 156.007,
+        "peak_rss_mb": 403.22,
+        "report": "openrefine-vuln-round25-final-current-l0.json",
+        "report_sha256": "557f3b7b1718a2ae5f78741e2679fc83dfa693a4c29e9110d7f639927270bf77"
+      },
+      "fixed": {
+        "oracle_matches": 3,
+        "findings": 134,
+        "duration_s": 156.876,
+        "peak_rss_mb": 400.33,
+        "report": "openrefine-fixed-round25-final-current-l0.json",
+        "report_sha256": "e69bf9dbf94e1c17b30aec4e7cd079470174ef94926d3f9e1c7b75f1fd357b9d"
+      },
+      "assessment": "The vulnerable request-to-file flow is found. The fixed revision still depends on proving a trusted module base selected through inherited map state."
+    },
+    {
+      "id": "fitnesse-cve-2024-42499",
+      "outcome": "detected-but-not-cleared",
+      "vulnerable": {
+        "oracle_matches": 2,
+        "findings": 49,
+        "duration_s": 136.174,
+        "peak_rss_mb": 337.3,
+        "report": "fit-vuln-round25-hardened-final-l0.json",
+        "report_sha256": "b40540fe614ac375e1de33c9e6fd311a0cfee566ed884f860d360b81b2bd1102"
+      },
+      "fixed": {
+        "oracle_matches": 1,
+        "findings": 48,
+        "duration_s": 133.099,
+        "peak_rss_mb": 336.71,
+        "report": "fit-fixed-round25-hardened-final-l0.json",
+        "report_sha256": "2ab4be9efba731fc59672e2d61d125a1a77c016941c206ebc4e03e4d8353efac"
+      },
+      "assessment": "Qualified request sources and same-receiver field transport close the discovery miss. The canonical containment check inside composeFileName is not yet exported as a sanitizer summary."
+    },
+    {
+      "id": "openhab-cve-2024-42468",
+      "outcome": "detected-and-cleared",
+      "vulnerable": {
+        "oracle_matches": 3,
+        "findings": 47,
+        "duration_s": 2.624,
+        "peak_rss_mb": 71.11,
+        "report": "openhab-vuln-round25-final-current-l0.json",
+        "report_sha256": "184d137aea03b33e9a2135ac975c787edad69698a4be26f0fbee05fc18cc9ce7"
+      },
+      "fixed": {
+        "oracle_matches": 0,
+        "findings": 28,
+        "duration_s": 2.447,
+        "peak_rss_mb": 66.31,
+        "report": "openhab-fixed-round25-ternary-guard-l0.json",
+        "report_sha256": "a7c0499fea272c3e9e1da2f40c85c7e3ad3cd0c0fda88bef7cdf120773021ebf"
+      },
+      "assessment": "The vulnerable getPathInfo-to-File flow remains. Canonical containment clears direct and trusted-base ternary File construction in the fixed revision."
+    }
+  ]
+}

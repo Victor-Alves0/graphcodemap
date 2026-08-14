@@ -1830,3 +1830,8 @@ do wrapper `composeFileName`, e o motor ainda não exporta um sumário
 sanitizante desse helper. O agregado, portanto, é **3/3 vulnerabilidades
 detectadas e 1/3 patches distinguidos**; o resultado não é promovido a
 `detected-and-cleared` artificialmente.
+
+O gate final fechou em **1.501 passed, 24 skipped, 3 xfailed**, Ruff e mypy
+limpos, cobertura branch-aware total de **81%**, além de wheel/sdist aprovados
+por `twine check`. O resultado reproduzível dos seis scans está em
+`evals/java-real-pairs-round25-results.json`, com hash SHA-256 de cada relatório.
