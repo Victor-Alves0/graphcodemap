@@ -33,6 +33,12 @@ def test_every_row_is_fully_classified():
         for k in ("dataflow", "taint", "flow", "l1_wired", "l1_validated",
                   "dataflow_applicable", "l1_applicable"):
             assert isinstance(r[k], bool), f"{r['language']}: {k} não classificado"
+        assert r["product_level"] in {
+            "recognized", "structural", "engine", "security-validated",
+            "semantic-validated",
+        }
+        assert r["l1_evidence"] in {"none", "wired", "live-smoke", "real-repo"}
+        assert r["security_evidence"] in {"none", "real-app", "labeled-benchmark"}
 
 
 def test_dedicated_set_matches_matrix():
@@ -98,6 +104,13 @@ def test_l1_validated_is_subset_of_wired():
         assert rows[lang]["l1_wired"], f"{lang} validado mas não wired"
 
 
+def test_php_live_validation_is_not_lost_from_capability_map():
+    # DVWA: 659 certain via intelephense; docs/RESULTS registram a medição.
+    php = caps.for_language("php")
+    assert php["l1_validated"]
+    assert php["l1_evidence"] == "real-repo"
+
+
 def test_l1_only_on_code_languages():
     for r in caps.matrix():
         if r["l1_wired"]:
@@ -128,12 +141,17 @@ def test_gaps_never_report_non_applicable_axes():
             assert "resolver L1" not in g["missing"]
 
 
+def test_unvalidated_dedicated_language_surfaces_security_evidence_gap():
+    gaps = {g["language"]: g["missing"] for g in caps.gaps()}
+    assert "validar segurança em corpus" in gaps["c"]
+    assert "validar segurança em corpus" not in gaps.get("python", [])
+
+
 def test_fully_ready_language_has_no_gaps():
     # quando uma linguagem tiver tudo, ela some da lista de lacunas
     faltantes = {g["language"] for g in caps.gaps()}
     for r in caps.matrix():
-        completa = (r["extract"] == "dedicated" and r["dataflow"] and r["flow"]
-                    and r["l1_validated"])
+        completa = r["product_level"] == "semantic-validated"
         if completa:
             assert r["language"] not in faltantes
 

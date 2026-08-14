@@ -14,6 +14,12 @@ from pathlib import Path
 from . import promote
 
 
+# ``param``/``statement`` apontam para um nome que contém um callable, não para
+# a implementação chamada. Ex.: ``def run(cb): cb()``; mapear a linha do
+# parâmetro pelo menor símbolo envolvente fabricava ``run -> run [certain]``.
+_CALLABLE_TYPES = frozenset({"function", "class"})
+
+
 class JediResolver:
     languages = ("python",)
     # raiz de projeto Python (jedi.Project infere sys.path a partir dela).
@@ -72,11 +78,13 @@ class JediResolver:
             for d in defs:
                 if d.module_path is None or not d.line:
                     continue
+                if d.type not in _CALLABLE_TYPES:
+                    continue
                 try:
                     drel = Path(d.module_path).resolve().relative_to(root).as_posix()
                 except ValueError:
                     continue  # definição fora do repo (stdlib/site-packages)
-                sid = promote.target_symbol(conn, drel, d.line)
+                sid = promote.target_symbol(conn, drel, d.line, dname=d.name)
                 if sid is not None:
                     targets.append(sid)
             promoted += promote.apply(conn, file_id, e, targets)

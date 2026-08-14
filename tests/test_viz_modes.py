@@ -257,3 +257,16 @@ def test_html_encodes_seed_and_mode(tmp_path):
     html = render_html(g.visualize("callers", symbol="base")[0])
     assert "modo callers" in html and "core.base" in html
     g.close()
+
+
+def test_html_json_cannot_break_out_of_script_tag():
+    payload = "</script><script>globalThis.PWNED=1</script>"
+    data = {
+        "nodes": [{"id": payload, "label": payload, "language": "markdown",
+                   "weight": 1, "domain": None, "changed": False}],
+        "links": [], "scope": None, "mode": "file", "directed": False,
+        "languages": ["markdown"], "confidences": [], "domains": [],
+    }
+    html = render_html(data)
+    assert payload not in html
+    assert "\\u003c/script\\u003e" in html

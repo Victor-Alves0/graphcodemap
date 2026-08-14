@@ -1340,3 +1340,212 @@ O caminho para o FPR agora tem nome e ordem:
 
 Trocar a ordem seria repetir o erro da rodada 13: otimizar precisão sobre uma
 resolução em que não se pode confiar.
+
+---
+
+# Rodada 17 — consolidação da confiança sem perda de achados (2026-08-13)
+
+## Hipótese testada
+
+A definição devolvida por um language server não é automaticamente um alvo de
+chamada. Parâmetros, variáveis, propriedades e funções vizinhas podiam ser
+promovidos a `certain`; em JavaScript minificado isso fabricava autoarestas em
+escala. A correção passou a exigir kind chamável, identidade de nome, posição
+exata quando disponível e reutilização segura do alvo em colisões.
+
+Foi criado um oráculo executável com callback, alias, propriedade de objeto,
+função vizinha e object literal. O serviço TypeScript agora devolve
+`line/column/kind/name`, e object literals ganham símbolos de método em vez de
+serem confundidos com o contêiner.
+
+## A/B em aplicações vulneráveis reais
+
+Achados foram normalizados por origem, sink, caminho, linha, argumento e
+evidência de fluxo. O mesmo checkout foi analisado antes e depois de L1.
+
+| app | sem L1 | com L1 | idêntico | promoções | autoarestas certas suspeitas |
+|---|---:|---:|---|---:|---:|
+| pygoat | 10 | 10 | sim | 48 | 0 |
+| dvpwa | 1 | 1 | sim | 656 | 0 |
+| dvna | 6 | 6 | sim | 2 | 0 |
+| NodeGoat | 4 | 4 | sim | 209 | 0 |
+| nodejs-goof | 2 | 2 | sim | 8 | 0 |
+
+No dvpwa existem 10 autoarestas `certain`, todas auditadas como recursão real
+em `materialize.js` (`extend`, `P`, `set`, `create`, `isDateExact` e `wrap`), por
+isso não entram na coluna de suspeitas. No NodeGoat, as **36 autoarestas
+fabricadas caíram para zero**. Nenhuma aresta `certain` terminou em kind não
+chamável nos cinco projetos.
+
+## Outros invariantes fechados
+
+- JSON da visualização não permite breakout de `</script>`.
+- Recalculo lazy de PageRank e comunidades usa uma transação consistente e
+  retry de lock; um writer concorrente não perde a marca de dirty.
+- Arquivos já indexados são removidos quando uma nova política de ignore passa
+  a excluí-los.
+- O comando `capabilities` separa adapter wired, live smoke, real-repo e
+  evidência externa de segurança; cobertura de parser não vira mais paridade.
+
+## Leitura
+
+Esta rodada não tenta aumentar recall. Ela remove confiança inventada e prova
+que isso não esconde as 23 vulnerabilidades encontradas nos cinco aplicativos.
+O próximo ganho legítimo depende de medição comparável por categoria e de
+fechar o Tier A definido em `docs/ROADMAP.md`.
+
+---
+
+# Rodada 18 — mesma régua, categoria correta e primeiro confronto completo (2026-08-13)
+
+## O contrato
+
+Foi criado um formato normalizado e versionado para GraphCodeMap, SARIF
+(CodeQL/OpenTaint) e JSON do OpenGrep. Cada execução carrega versão da
+ferramenta, commit do alvo, categoria/CWE, origem, sink, status, tempo, pico de
+memória da árvore de processos, warnings e erros. `failed`, `partial` e
+`unavailable` não viram execução bem-sucedida com zero achados.
+
+O avaliador OWASP também foi corrigido: um alerta só é hit quando **arquivo e
+categoria** coincidem com o gabarito. Antes, qualquer alerta no arquivo podia
+receber crédito; por isso as rodadas anteriores permanecem históricas, mas não
+são mais a linha de base.
+
+## OWASP Benchmark v1.2
+
+Mesmo checkout `f51bf36b8891`, 1.698 casos nas sete categorias de fluxo:
+
+| ferramenta/configuração | status | TP | FP | FN | TN | precisão | recall | FPR | score | tempo | pico RSS |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| GraphCodeMap 0.1.0 | complete | 696 | 364 | 206 | 432 | 65,7% | 77,2% | 45,7% | **+0,314** | 43,29 s | 551 MB |
+| OpenTaint `dev-7f7da63`, 323 regras de fluxo | complete | 819 | 454 | 83 | 342 | 64,3% | 90,8% | 57,0% | **+0,338** | 240,34 s | 5.120 MB |
+| OpenGrep 1.22.0, fixture Java de 28 regras | complete | 74 | 64 | 828 | 732 | 53,6% | 8,2% | 8,0% | **+0,002** | 59,13 s | 547 MB |
+| CodeQL | unavailable | - | - | - | - | - | - | - | - | - | - |
+
+OpenTaint vence o score por +0,023 e encontra 123 vulnerabilidades a mais, ao
+custo de 90 falsos positivos adicionais, 5,6x o tempo e 9,3x o pico de
+memória. GraphCodeMap não é o líder ainda. A linha OpenGrep vale somente para
+o ruleset local de 28 regras usado: ela valida o adaptador e a reprodutibilidade,
+não representa todo o ecossistema de regras OpenGrep. CodeQL não estava
+instalado e foi registrado como `unavailable`, sem número inventado.
+
+### GraphCodeMap por categoria
+
+| categoria | TP | FP | FN | TN | precisão | recall | score |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| cmdi | 90 | 53 | 36 | 72 | 63% | 71% | +0,29 |
+| ldapi | 22 | 19 | 5 | 13 | 54% | 81% | +0,22 |
+| pathtraver | 61 | 47 | 72 | 88 | 56% | 46% | +0,11 |
+| sqli | 225 | 114 | 47 | 118 | 66% | 83% | +0,34 |
+| trustbound | 66 | 19 | 17 | 24 | 78% | 80% | +0,35 |
+| xpathi | 13 | 9 | 2 | 11 | 59% | 87% | +0,42 |
+| xss | 219 | 103 | 27 | 106 | 68% | 89% | +0,40 |
+
+Os micro-goals agora são objetivos: primeiro `pathtraver`, com 46% de recall;
+depois o FPR de SQLi/XSS. Não há justificativa numérica para
+abrir outra linguagem ou outra superfície antes disso.
+
+## Correção guiada pela medição
+
+A primeira execução GraphCodeMap produziu 2.522 candidatos em 94,68 s. A
+normalização revelou APIs Java de arquivo, resposta HTTP, sessão e processo
+caindo em `unknown`; o adaptador agora preserva suas categorias reais.
+
+Também revelou uma perda de tipo na importação dos modelos CodeQL:
+`String.getBytes`, `MessageDigest.update` e `String.valueOf` haviam herdado
+papéis que só são válidos para tipos específicos. Como o motor atual casa pelo
+nome final, esses nomes genéricos geravam centenas de candidatos redundantes.
+Eles foram excluídos apenas no catálogo Java, com teste de regressão.
+
+Depois: 2.085 candidatos em ~43 s no índice quente, 55% menos tempo, sem custo
+no score. Uma execução fria isolada, incluindo o índice de 5.603 arquivos,
+levou 113,66 s e produziu os mesmos 2.085 achados. A mudança grande de recall
+aparente (52,7% para 77,2%) vem da categoria correta,
+não de vulnerabilidades novas; essa distinção é justamente por que o contrato
+normalizado passou a existir.
+
+## JDTLS real: promoção certa não é resumo de retorno certo
+
+JDTLS 1.60.0 foi instalado com SHA-256 oficial verificado e executado no mesmo
+projeto Maven. Resultado estrutural: **12.937 arestas promovidas**, 2.770
+arquivos processados, duas raízes e zero erro do resolver.
+
+A primeira execução revelou um defeito semântico importante: o taint tratava
+"alvo da chamada certo" como "fluxo do retorno conhecido". Com interfaces,
+despacho virtual, estado do receptor e campos, isso não é verdade. O score
+subia artificialmente para +0,58/+0,61 ao zerar FP, mas o recall caía para
+57,9%/60,5%, apagando vulnerabilidades reais. A otimização de retorno foi
+desativada apenas para Java até existir oráculo dispatch-aware; as promoções L1
+continuam no grafo.
+
+Prova final: banco limpo L0 versus índice JDTLS, ambos com a guarda, têm os
+mesmos **2.071 sinks exatos** e **1.922 pares arquivo+categoria** (Jaccard 1,0,
+zero exclusivo dos dois lados). O L1 Java agora melhora a estrutura sem mudar
+o conjunto de vulnerabilidades reportado.
+
+---
+
+# Rodada 19 — recall de path traversal e FPR abaixo de 30% (2026-08-13)
+
+## Micro-goal 1: path traversal >= 70% de recall
+
+Os 72 FNs foram decompostos por sink e formato de fluxo. O maior grupo já
+chegava tainted ao construtor `java.io.File`, mas ele não estava no catálogo;
+o motor reportava o XSS posterior com `fileTarget` e ignorava a materialização
+do caminho. Adicionar o construtor como ponto verificável produziu:
+
+| path traversal | antes | depois |
+|---|---:|---:|
+| TP | 61 | **110** |
+| FP | 47 | 75 |
+| FN | 72 | **23** |
+| recall | 46% | **83%** |
+| score | +0,11 | **+0,27** |
+
+O ganho passou pelo gate de recall, embora o custo de 28 FPs exigisse a etapa
+seguinte. Os 23 FNs restantes envolvem principalmente origem perdida em
+iteração de cookies/coleções e não foram atacados no escuro.
+
+## Micro-goal 2: FPR < 30% sem devolver TP
+
+Os 392 FPs após o ganho foram classificados. Todos atravessavam wrappers
+`doSomething(...)`; 189 eram controle local constante (`if`, ternário ou
+`switch`) que a CFG já conseguia decidir, 166 envolviam listas/mapas/builders ou
+reflexão, e 37 envolviam sanitização HTML contextual.
+
+O resumo de retorno Java foi reativado somente para funções call-free ou com
+um conjunto mínimo de operações puras sobre constantes. Qualquer coleção,
+despacho, reflexão ou sanitizer continua conservador. Testes cobrem tanto o
+branch constante seguro quanto a lista que deve continuar propagando.
+
+| total OWASP (7 categorias) | antes | depois |
+|---|---:|---:|
+| TP | 745 | **745** |
+| FP | 392 | **203** |
+| FN | 157 | **157** |
+| TN | 404 | **593** |
+| precisão | 65,5% | **78,6%** |
+| recall | 82,6% | **82,6%** |
+| FPR | 49,2% | **25,5%** |
+| score | +0,33 | **+0,571** |
+
+Na mesma matriz, OpenTaint permanece com mais recall (90,8%), mas score +0,338,
+FPR 57,0%, 240 s e 5,12 GB. GraphCodeMap agora lidera o score sem fingir que
+encontra mais vulnerabilidades: perde 74 TPs para o concorrente e ganha no
+controle de ruído/custo.
+
+## Invariantes reais
+
+O A/B foi repetido em cinco aplicativos vulneráveis, comparando origem, sink,
+caminho, linha e argumento antes/depois de L1:
+
+| app | antes | depois | idêntico | promoções | erros |
+|---|---:|---:|---|---:|---:|
+| pygoat | 10 | 10 | sim | 17 | 0 |
+| dvpwa | 1 | 1 | sim | 566 | 0 |
+| DVNA | 6 | 6 | sim | 0 | 0 |
+| NodeGoat | 4 | 4 | sim | 209 | 0 |
+| nodejs-goof | 2 | 2 | sim | 8 | 0 |
+
+Nenhum dos 23 achados reais desapareceu. O próximo gate é FPR <20% com os
+745 TPs congelados; depois, recuperar os 23 FNs de path traversal restantes.

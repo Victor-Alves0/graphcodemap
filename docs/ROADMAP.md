@@ -1,4 +1,70 @@
-# Roadmap — precisão do motor de taint
+# Roadmap — consolidation toward v0.2
+
+## North star
+
+**GraphCodeMap v0.2 is a trustworthy structural and security context engine for
+AI coding agents on five Tier-A ecosystems: Python, JavaScript/TypeScript, Java,
+PHP and Go.** The other recognized languages remain useful, but v0.2 does not
+claim equal depth across all 46. See [Product Maturity](MATURITY.md).
+
+## Release gates
+
+1. No known fabricated `certain` edge in the adversarial L1 oracle.
+2. Every Tier-A ecosystem has a dedicated extractor, applicable flow analysis,
+   a live L1 integration test and external security evidence.
+3. OWASP results are scored by the correct vulnerability category on the same
+   source commit, not merely by whether a file was flagged.
+4. Each Tier-A security claim includes a vulnerable-versus-fixed real-application
+   comparison.
+5. The full test, package and release checks pass in CI.
+
+## Ordered execution gates
+
+### G0 — Trust the graph
+
+- [x] Reject callbacks, aliases and non-callable containers as semantic call targets.
+- [x] Prevent L1 promotion collisions and fabricated JavaScript self-edges.
+- [x] Add an executable JavaScript definition oracle, including object literals.
+- [x] Prevent visualization data from breaking out of its script container.
+- [x] Serialize lazy PageRank/community recomputation against concurrent writers.
+- [x] Remove indexed files when ignore policy changes.
+
+### G1 — Make measurements comparable
+
+- [x] Normalize every finding as tool/version/commit/category/CWE/source/sink/path.
+- [x] Require category agreement in OWASP scoring.
+- [x] Add repeatable CodeQL, OpenGrep and OpenTaint adapters; missing CLIs are
+      recorded as `unavailable`, not zero findings.
+- [x] Record time, peak memory scope, errors and unsupported cases.
+- [x] Keep the current security matrix deterministic; any future LLM-dependent
+      row is ineligible until it reports repeated runs and confidence intervals.
+
+### G2 — Finish Tier A
+
+- [x] Prove Java JDTLS on a real Maven repository and rerun OWASP; 12,937
+      promotions, zero resolver errors, and taint invariant after the Java
+      return-summary safety guard. Gradle evidence remains a follow-up.
+- [ ] Add a TypeScript vulnerable-versus-fixed real-app corpus.
+- [ ] Add an externally labeled Go security corpus.
+- [ ] Pin vulnerable and fixed revisions for Python, JavaScript and PHP apps.
+- [ ] Per-category target: recall >= 70%, then FPR < 30%, then FPR < 20%.
+
+### G3 — Harden the product surface
+
+- [ ] Add Ruff, coverage thresholds and progressive typing to CI.
+- [ ] Make package/release validation depend on the complete quality gate.
+- [ ] Version and contract-test CLI, library and MCP response schemas.
+- [ ] Split large query/dataflow modules only after behavior is characterized.
+
+### G4 — Expand only with evidence
+
+- [ ] Prove Ruby/Solargraph against RailsGoat.
+- [ ] Select the next language by user demand plus available labeled corpus.
+- [ ] Never convert generic parser coverage into a parity claim.
+
+---
+
+## Security precision track (historical detail)
 
 Documento vivo. Existe para que a próxima rodada **não redescubra** o que já foi
 medido, e para que a ordem das ações seja justificada por número, não por
@@ -15,10 +81,17 @@ OWASP Benchmark v1.2, 1.698 casos das 7 categorias de taint:
 
 | | valor |
 |---|---|
-| precisão | 65% |
-| recall (TPR) | 74% |
-| FPR | 44% |
-| score (TPR − FPR) | **+0.29** |
+| precisão | 78,6% |
+| recall (TPR) | 82,6% |
+| FPR | 25,5% |
+| score (TPR − FPR) | **+0.571** |
+
+Esta é a primeira linha medida com concordância obrigatória de **arquivo e
+categoria**, no mesmo commit do alvo. Na mesma régua, OpenTaint marcou +0.338
+(recall 90,8%, FPR 57,0%). GraphCodeMap agora lidera o score desta matriz, mas
+ainda perde 74 TPs para o OpenTaint. O objetivo imediato é FPR <20% sem
+devolver recall, seguido dos 23 FNs restantes de path traversal. Veja a matriz em
+[Security Benchmark](SECURITY_BENCHMARK.md).
 
 Em aplicações vulneráveis REAIS (não gabarito sintético):
 
@@ -41,7 +114,7 @@ Placares oficiais publicados no repositório do Benchmark
 |---|---|---|---|
 | FindBugs + FindSecBugs 1.4.6 | 96,8% | 57,7% | 39,1% |
 | SonarQube Java 3.14 | 50,4% | 17,0% | 33,3% |
-| **graphcodemap** | **74%** | **44%** | **29%** |
+| **graphcodemap (7 categorias, category-correct)** | **82,6%** | **25,5%** | **57,1%** |
 | OWASP ZAP (DAST) | 20,0% | 0,1% | 19,8% |
 
 O líder em score tem **57,7% de FPR** — mais da metade do código seguro
@@ -51,10 +124,9 @@ ferramenta usável.
 > **Alvo: o perfil do SonarQube — recall na casa dos 70% com FPR abaixo de 20%.
 > O recall já está lá. O FPR é a única coisa que falta.**
 
-Ressalvas da comparação, que puxam para lados opostos: os placares cobrem 11
-categorias e nós pontuamos 7 (a favor deles); nós medimos por ARQUIVO sem
-conferir a categoria do achado (a favor nosso, indevidamente). Não é comparação
-linha a linha — é ordem de grandeza.
+Ressalva da comparação: os placares cobrem 11 categorias e nós pontuamos 7.
+Nossa medição agora exige arquivo **e categoria**, mas ainda não é comparação
+linha a linha com scorecards que incluem quatro classes de mau uso de API.
 
 ---
 
@@ -71,17 +143,18 @@ e **quase nunca dispara**, porque só age sobre chamadas resolvidas
 semanticamente (`confidence='certain'`).
 
 Medido: das centenas de atribuições com chamada, só **13** em pygoat e **3** em
-dvpwa têm resolução `certain`. No OWASP Benchmark, **zero** — não há resolver
-de Java instalado.
+dvpwa têm resolução `certain`. No OWASP Benchmark, o JDTLS agora promove
+**12.937** arestas sem erro, mas a poda de retorno Java permanece desativada:
+alvo de chamada certo não prova fluxo de retorno em despacho virtual.
 
 | ação | estado |
 |---|---|
-| resolver L1 de Java (jdtls) | em investigação |
+| resolver L1 de Java (jdtls) | Maven real + A/B OWASP concluídos; falta Gradle |
 | resolver L1 de PHP (intelephense) | em investigação |
 | aumentar taxa de promoção em Python/JS | em investigação |
 
-Enquanto isso não andar, **nenhum outro trabalho de precisão vale a pena** —
-todos dependem de saber para qual definição uma chamada aponta.
+Path traversal passou de 46% para 83% de recall. O próximo micro-goal é reduzir
+os 203 falsos positivos restantes até FPR <20%, sem perder os 745 TPs atuais.
 
 ### 2. Causas de falso positivo ainda abertas
 

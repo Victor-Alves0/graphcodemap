@@ -41,8 +41,26 @@ FLOW_SENSITIVE: frozenset[str] = getattr(df, "FLOW_SENSITIVE", frozenset())
 # do mundo, não do código.
 L1_VALIDATED: frozenset[str] = frozenset({
     "python", "typescript", "tsx", "javascript", "go", "rust", "lua", "luau",
-    "clojure", "java",
+    "clojure", "java", "php",
 })
+
+# Validação em repo real é mais forte que um smoke test de duas funções. Só
+# entram linguagens com medição registrada em evals/RESULTS.md.
+L1_REAL_REPO: frozenset[str] = frozenset({
+    "python", "javascript", "go", "php",
+})
+
+# Evidência de segurança não é derivável do parser: exige corpus/oráculo. Apps
+# reais provam utilidade, mas não dão TN/FN exaustivos; o OWASP Java é rotulado
+# e permite matriz de confusão completa. Manter a distinção evita chamar todas
+# as linguagens com o mesmo motor de "igualmente prontas".
+SECURITY_EVIDENCE: dict[str, str] = {
+    "python": "real-app",
+    "javascript": "real-app",
+    "php": "real-app",
+    "ruby": "real-app",
+    "java": "labeled-benchmark",
+}
 
 # Rótulo de cada eixo para renderização.
 AXES = ("extract", "dataflow", "taint", "flow", "l1")
@@ -94,7 +112,15 @@ def for_language(lang: str) -> dict:
     l1map = _l1_languages()
     code = is_code(lang)
     has_df = df.supported(lang)
-    return {
+    if not code or lang not in l1map:
+        l1_evidence = "none"
+    elif lang in L1_REAL_REPO:
+        l1_evidence = "real-repo"
+    elif lang in L1_VALIDATED:
+        l1_evidence = "live-smoke"
+    else:
+        l1_evidence = "wired"
+    row = {
         "language": lang,
         "extract": tier(lang),
         "dataflow_applicable": code,
@@ -105,7 +131,28 @@ def for_language(lang: str) -> dict:
         "l1_wired": lang in l1map,
         "l1_server": l1map.get(lang),
         "l1_validated": lang in L1_VALIDATED,
+        "l1_evidence": l1_evidence,
+        "security_evidence": SECURITY_EVIDENCE.get(lang, "none"),
     }
+    row["product_level"] = _product_level(row)
+    return row
+
+
+def _product_level(row: dict) -> str:
+    """Nível de produto, não apenas presença de implementação.
+
+    ``engine`` significa que os eixos existem; ``*-validated`` exige evidência
+    externa. Esta é a diferença entre "o código suporta" e "sabemos que funciona".
+    """
+    if row["extract"] != "dedicated":
+        return "recognized"
+    if not row["dataflow_applicable"]:
+        return "structural"
+    if row["security_evidence"] == "none":
+        return "engine"
+    if row["l1_evidence"] == "real-repo":
+        return "semantic-validated"
+    return "security-validated"
 
 
 def matrix() -> list[dict]:
@@ -141,6 +188,11 @@ def gaps() -> list[dict]:
                 missing.append("resolver L1")
             elif not r["l1_validated"]:
                 missing.append("validar L1 ao vivo")
+            elif r["l1_evidence"] != "real-repo":
+                missing.append("validar L1 em repo real")
+        if (r["extract"] == "dedicated" and r["dataflow_applicable"]
+                and r["security_evidence"] == "none"):
+            missing.append("validar segurança em corpus")
         if missing:
             out.append({"language": r["language"], "missing": missing})
     return out
@@ -158,4 +210,7 @@ def summary() -> dict:
         "flow_sensitive": sum(1 for r in rows if r["flow"]),
         "l1_wired": sum(1 for r in rows if r["l1_wired"]),
         "l1_validated": sum(1 for r in rows if r["l1_validated"]),
+        "l1_real_repo": sum(1 for r in rows if r["l1_evidence"] == "real-repo"),
+        "security_validated": sum(1 for r in rows
+                                  if r["security_evidence"] != "none"),
     }

@@ -244,7 +244,8 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
         varre o repo; `entry=fqn` assume os parâmetros dessa função como
         não-confiáveis. Regras ajustáveis em .codegraph/taint.json. Achados são
         candidatos (may-taint, over-aproxima) — confirme lendo o código.
-        18 linguagens (mesmas do dataflow).
+        19 identificadores de linguagem (mesmos do dataflow); 18 usam o motor
+        flow-sensitive.
 
         Custo ~ O(fontes × ramif^depth): PREFIRA `entry=<func>` a varrer a base
         toda. `depth=None` usa o default por modo (scan raso/entry fundo);

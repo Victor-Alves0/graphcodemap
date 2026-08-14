@@ -49,9 +49,11 @@ Binary/document formats (`.pdf`, `.docx`) and structureless formats (`.sln`,
 
 ## Dataflow & taint coverage
 
-`dataflow`, `taint`, and `reaches` cover all **18 dedicated *code* languages**
-(Python, JS/TS, Java, C#, C/C++, Go, Rust, Ruby, PHP, Kotlin, Swift, Scala, Lua,
-Clojure). Markup and config languages have no dataflow, and say so.
+`dataflow`, `taint`, and `reaches` cover all **19 dedicated code-language
+identifiers** (Python, JavaScript, TypeScript/TSX, Java, C#, C/C++/CUDA, Go,
+Rust, Ruby, PHP, Kotlin, Swift, Scala, Lua/Luau and Clojure). Eighteen use the
+flow-sensitive engine; Clojure currently uses the conservative fallback.
+Markup and config languages have no dataflow, and say so.
 
 ## L1 semantic resolution (promoting edges to `certain`)
 
@@ -60,8 +62,8 @@ server (or jedi for Python) and promotes a call edge to `certain` when exactly o
 in-repo definition is found — including instance-method calls that name-based
 resolution can only ever mark `possible`.
 
-**Every dedicated language now has a resolver wired**, through one generic LSP
-client plus two special cases:
+**Every dedicated code language has a resolver wired**; markup/config languages
+do not need one. Resolution uses one generic LSP client plus two special cases:
 
 - **Python** — via [jedi](https://github.com/davidhalter/jedi), in-process (no
   subprocess), enabled by `pip install "graphcodemap[l1]"`.
@@ -86,6 +88,14 @@ taint findings unchanged.
 Java's `jdtls` is notable as the first **launcher-based** server (it runs on the
 JVM via an Eclipse launcher, `java -jar <equinox-launcher> …`, not a bare `PATH`
 binary) — proving the client generalizes beyond a single executable.
+
+Measured on the OWASP Benchmark Maven checkout (2,766 Java source files), JDTLS
+1.60.0 promoted **12,937** call edges with zero resolver errors. GraphCodeMap
+deliberately does not use those Java promotions to prune taint return flow yet:
+virtual/interface dispatch resolves the call target without proving which
+implementation returns data at runtime. A clean L0 index and the JDTLS index
+produce identical normalized security findings after this guard. Gradle is the
+remaining real-project validation gap.
 
 ### Activating a resolver
 

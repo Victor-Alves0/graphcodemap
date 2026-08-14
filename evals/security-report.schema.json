@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://graphcodemap.dev/schemas/security-report-v1.json",
+  "title": "GraphCodeMap normalized security benchmark report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "tool", "target", "invocation", "findings",
+    "summary", "warnings", "errors", "extra"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "tool": {
+      "type": "object",
+      "required": ["name", "version", "adapter_version"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "adapter_version": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": true
+    },
+    "target": {
+      "type": "object",
+      "required": ["name", "git_commit", "git_dirty", "git_remote"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "git_commit": {"type": ["string", "null"]},
+        "git_dirty": {"type": ["boolean", "null"]},
+        "git_remote": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "invocation": {
+      "type": "object",
+      "required": [
+        "status", "duration_s", "peak_rss_mb", "memory_scope", "exit_code",
+        "command", "platform", "python"
+      ],
+      "properties": {
+        "status": {"enum": ["complete", "partial", "failed", "unavailable"]},
+        "duration_s": {"type": "number", "minimum": 0},
+        "peak_rss_mb": {"type": ["number", "null"], "minimum": 0},
+        "memory_scope": {"enum": ["current-process", "root-process", "process-tree", "unavailable"]},
+        "exit_code": {"type": ["integer", "null"]},
+        "command": {
+          "type": ["array", "null"],
+          "items": {"type": "string"}
+        },
+        "platform": {"type": "string"},
+        "python": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "findings": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/finding"}
+    },
+    "summary": {
+      "type": "object",
+      "required": ["findings", "by_category", "by_cwe", "with_source"],
+      "properties": {
+        "findings": {"type": "integer", "minimum": 0},
+        "by_category": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "by_cwe": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "with_source": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "errors": {"type": "array", "items": {"type": "string"}},
+    "extra": {"type": "object"}
+  },
+  "$defs": {
+    "location": {
+      "type": "object",
+      "required": ["path", "line"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "line": {"type": ["integer", "null"], "minimum": 1},
+        "column": {"type": "integer", "minimum": 1},
+        "label": {"type": "string"},
+        "symbol": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "finding": {
+      "type": "object",
+      "required": [
+        "fingerprint", "rule_id", "category", "cwes", "severity", "message",
+        "source", "sink", "confidence", "evidence"
+      ],
+      "properties": {
+        "fingerprint": {"type": "string", "pattern": "^[0-9a-f]{24}$"},
+        "rule_id": {"type": "string", "minLength": 1},
+        "category": {"type": "string", "minLength": 1},
+        "cwes": {"type": "array", "items": {"type": "string", "pattern": "^[0-9]+$"}},
+        "severity": {"type": "string"},
+        "message": {"type": "string"},
+        "source": {"oneOf": [{"$ref": "#/$defs/location"}, {"type": "null"}]},
+        "sink": {"$ref": "#/$defs/location"},
+        "confidence": {"type": ["string", "null"]},
+        "evidence": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    }
+  }
+}

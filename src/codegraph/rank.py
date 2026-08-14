@@ -10,6 +10,8 @@ from __future__ import annotations
 import sqlite3
 from collections import defaultdict
 
+from .db import retry_on_locked
+
 DAMPING = 0.85
 ITERATIONS = 20
 
@@ -30,6 +32,25 @@ def ensure_ranks(conn: sqlite3.Connection) -> bool:
 
 
 def recompute(conn: sqlite3.Connection) -> None:
+    # Fecha qualquer marcação dirty pendente (o comportamento antigo também
+    # fazia commit no fim) e adquire o writer lock ANTES de ler o grafo. Assim
+    # watcher/refine não conseguem mudar arestas entre o snapshot e dirty=0.
+    conn.commit()
+    retry_on_locked(lambda: _recompute_once(conn))
+
+
+def _recompute_once(conn: sqlite3.Connection) -> None:
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _recompute_in_transaction(conn)
+        conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+
+
+def _recompute_in_transaction(conn: sqlite3.Connection) -> None:
     ids = [r["id"] for r in conn.execute("SELECT id FROM symbols").fetchall()]
     n = len(ids)
     if n:
@@ -59,4 +80,3 @@ def recompute(conn: sqlite3.Connection) -> None:
         "INSERT INTO meta(key, value) VALUES('rank_dirty','0') "
         "ON CONFLICT(key) DO UPDATE SET value='0'"
     )
-    conn.commit()

@@ -149,6 +149,12 @@ def default_rules() -> TaintRules:
 _CURATED: dict[str, dict[str, set[str]]] = {
     "java": {
         "sinks": {
+            # java.io.File não realiza I/O sozinho, mas materializa o caminho
+            # controlado que APIs como exists/createNewFile consomem pelo
+            # receptor. Enquanto o motor não propaga taint receiver→call, o
+            # construtor é o ponto verificável. No OWASP Benchmark ele explica
+            # o maior grupo isolado de FNs de path traversal.
+            "File",
             # JDBC / Spring JdbcTemplate
             "executeUpdate", "executeLargeUpdate", "addBatch", "batchUpdate",
             "queryForObject", "queryForList", "queryForMap", "queryForRowSet",
@@ -191,6 +197,14 @@ _CURATED: dict[str, dict[str, set[str]]] = {
             "forUri", "forUriComponent", "forXml", "forCssString",
             "forXmlContent", "forXmlAttribute",
         },
+        # Os modelos CodeQL que semeiam o catálogo são qualificados por
+        # tipo. Nosso motor hoje casa apenas o nome final; nomes extremamente
+        # genéricos viram outra API no código real. No OWASP Benchmark,
+        # `String.getBytes()` sozinho gerava 718 fluxos duplicados e
+        # `MessageDigest.update()`/`String.valueOf()` outros 256 candidatos,
+        # sem alterar um único TP/FP em nível de caso. Mantê-los seria ruído.
+        "remove_sources": {"getBytes"},
+        "remove_sinks": {"update", "valueOf"},
     },
     # --- PHP -----------------------------------------------------------------
     # O CodeQL não publica modelos MaD para PHP e o OpenTaint também não cobria,
@@ -348,6 +362,9 @@ def catalog_for(languages) -> TaintRules:
         snk |= _curated(lang, "sinks")
         san |= _curated(lang, "sanitizers")
         bare |= _curated(lang, "bare_sinks")
+        src -= _curated(lang, "remove_sources")
+        snk -= _curated(lang, "remove_sinks")
+        san -= _curated(lang, "remove_sanitizers")
     # Uma linguagem presente que declare o nome como sink NORMAL vence a
     # restrição bare-only. Empate resolvido a favor do RECALL: perder uma
     # execução de comando é pior que acusar um homônimo.

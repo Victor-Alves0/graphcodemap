@@ -266,14 +266,33 @@ class QueryEngine:
         for r in self.conn.execute("SELECT path, size, mtime FROM files"):
             indexed.add(r["path"])
             cur = on_disk.get(r["path"])
-            if cur is None:                          # sumiu do disco
+            if cur is None:                          # sumiu ou passou a ser excluído
                 stale.add(r["path"])
             elif cur[0] != r["size"] or cur[1] != r["mtime"]:
                 stale.add(r["path"])
+        # Um arquivo ainda existente pode desaparecer de ``on_disk`` quando a
+        # política de exclusão muda. Não o envie ao _repair: olhando apenas o
+        # filesystem ele pareceria fresco e continuaria vazando dados ignorados.
+        removed = indexed - set(on_disk)
+        changed = False
+        for rel in sorted(removed):
+            self.ix.remove_file(rel)
+            env.warn(
+                f"freshness: {rel} sumiu do disco ou passou a ser excluído; "
+                "removido do índice agora."
+            )
+            changed = True
+        stale -= removed
+
         # arquivos NOVOS no disco que o índice ainda não viu: a resposta vazia
         # pode ser justamente por causa de um deles. _repair os indexa.
         stale |= set(on_disk) - indexed
-        return self._repair(stale, env) if stale else False
+        if stale:
+            return self._repair(stale, env) or changed
+        if changed:
+            self.ix.resolve_edges()
+            env.fresh = False
+        return changed
 
     def _warn_partial(self, rels: set[str], env: Envelope) -> None:
         for rel in sorted(rels):
@@ -1090,6 +1109,7 @@ class QueryEngine:
                         findings.append({
                             "origin": here,
                             "sink": {"callee": af.callee, "callee_fqn": step["callee_fqn"],
+                                     "qualified": af.qualified,
                                      "site_path": sym_row["path"], "line": af.line,
                                      "arg_index": af.arg_index, "via": af.via,
                                      "func_fqn": sym_row["fqn"]},
@@ -1159,7 +1179,30 @@ class QueryEngine:
                 # ainda pode devolver dado do RECEPTOR (`sb.toString()`), e
                 # matá-lo apagaria fluxo real. Wrapper de fonte também fica de
                 # fora: ele não propaga o argumento, mas devolve dado sujo.
-                if (f.params and r["name"] not in src_funcs
+                # Sem um `return` observável não há prova de que o alvo não
+                # propaga. Em Java, JDTLS resolve despacho de interface para a
+                # declaração abstrata (`String apply(String x);`): ela tem
+                # parâmetros, mas nenhum corpo/fato. Classificá-la como
+                # non-propagating apagou 142 TPs no OWASP Benchmark. Funções
+                # realmente usadas no RHS e que retornam constante/sanitizado
+                # possuem ao menos um ReturnFact e continuam elegíveis.
+                summary_safe = True
+                if flang == "java":
+                    # JDTLS resolves the call target, but Java collection
+                    # aliases, virtual dispatch and context-specific encoders
+                    # are not return-flow proofs. The flow engine used to call
+                    # all of those "non-propagating" and erased 145 real OWASP
+                    # vulnerabilities. Accept only call-free control flow (or
+                    # a tiny set of pure operations over constants); this still
+                    # covers if/ternary/switch folding without guessing aliasing.
+                    pure_constant_calls = {
+                        "charAt", "length", "toUpperCase", "toLowerCase",
+                        "upper", "lower", "trim", "strip",
+                    }
+                    summary_safe = all(c.callee in pure_constant_calls
+                                       for c in f.calls)
+                if (summary_safe and f.params and f.returns
+                        and r["name"] not in src_funcs
                         and not df.analyze(f, set(f.params), rules.sanitizers,
                                            lang=flang).reaches_return):
                     nao_propaga_fqn.add(r["fqn"])
@@ -1535,11 +1578,11 @@ class QueryEngine:
             "SELECT DISTINCT language FROM files")}
         try:
             from .l1 import available_resolvers, missing_resolvers
-            resolvers = sorted({lang for cls in available_resolvers()
+            resolvers = sorted({lang for cls in available_resolvers(self.root)
                                 for lang in cls.languages})
             # degradação visível: linguagens do repo cujo LSP não está no PATH →
             # as arestas ficam em inferred/possible em vez de certain.
-            l1_missing = missing_resolvers(repo_langs)
+            l1_missing = missing_resolvers(repo_langs, root=self.root)
         except Exception:  # dependências L1 ausentes não devem quebrar o doctor
             resolvers = []
             l1_missing = []

@@ -124,6 +124,14 @@ def test_catalog_is_scoped_to_languages_present():
             assert algum not in go_only.sinks
 
 
+def test_type_specific_codeql_names_are_removed_when_name_only_is_ambiguous():
+    java = catalog_for({"java"})
+    assert "File" in java.sinks
+    assert "getBytes" not in java.sources
+    assert "update" not in java.sinks
+    assert "valueOf" not in java.sinks
+
+
 def test_defaults_survive_without_catalog():
     # o catálogo é aditivo: as regras universais continuam valendo
     base = default_rules()

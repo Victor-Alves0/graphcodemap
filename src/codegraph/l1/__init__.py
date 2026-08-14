@@ -53,11 +53,16 @@ def all_resolvers() -> list[type]:
             SourceKitLspResolver]
 
 
-def available_resolvers() -> list[type]:
-    return [cls for cls in all_resolvers() if cls.available()]
+def _available(cls, root=None) -> bool:
+    hook = getattr(cls, "available_for_root", None)
+    return hook(root) if root is not None and hook is not None else cls.available()
 
 
-def missing_resolvers(languages, is_available=None) -> list[dict]:
+def available_resolvers(root=None) -> list[type]:
+    return [cls for cls in all_resolvers() if _available(cls, root)]
+
+
+def missing_resolvers(languages, is_available=None, root=None) -> list[dict]:
     """Resolvers cujo LSP FALTA, restrito às linguagens presentes no repo.
 
     Torna a degradação visível: se o repo tem Go mas `gopls` não está no PATH,
@@ -66,7 +71,7 @@ def missing_resolvers(languages, is_available=None) -> list[dict]:
 
     Retorna ``[{"languages": [...], "server": "gopls", "env": "GOPLS_BIN"}]``."""
     langs = set(languages)
-    avail = is_available or (lambda cls: cls.available())
+    avail = is_available or (lambda cls: _available(cls, root))
     out: list[dict] = []
     for cls in all_resolvers():
         hit = sorted(l for l in cls.languages if l in langs)
@@ -89,7 +94,7 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
     comportamento é o de antes. `roots` conta as raízes distintas usadas."""
     from .roots import group_by_root
 
-    resolvers = available_resolvers()
+    resolvers = available_resolvers(indexer.root)
     stats = {"files": 0, "promoted": 0, "errors": 0, "roots": 0,
              "resolvers": sorted(lang for cls in resolvers
                                  for lang in cls.languages)}

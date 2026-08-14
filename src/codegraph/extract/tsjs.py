@@ -233,9 +233,49 @@ class TsJsExtractor(BaseExtractor):
                 kind = "constant" if is_const and name.isupper() else ("constant" if is_const else "variable")
                 self.add_sym(decl, kind, name, signature=None, doc=None)
                 if value is not None:
-                    self.visit(value)
+                    if value.type == "object":
+                        self._object_members(value, name)
+                    else:
+                        self.visit(value)
             elif value is not None:
                 self.visit(value)
+
+    def _object_members(self, node, owner: str) -> None:
+        """Funções dentro de object literals viram métodos endereçáveis.
+
+        ``const obj = { m: function () {}, n() {} }`` é um padrão central de
+        módulos JS. Antes só existia o símbolo ``obj``; o TypeScript encontrava
+        a definição de ``m``, mas a promoção só podia escolher a constante
+        envolvente. Modelar ``obj.m`` recupera a aresta sem mentir sobre o alvo.
+        """
+        self.scope.append((owner, "class"))
+        for member in node.named_children:
+            if member.type == "method_definition":
+                self.visit(member)
+                continue
+            if member.type != "pair":
+                self.visit(member)
+                continue
+            key = member.child_by_field_name("key")
+            value = member.child_by_field_name("value")
+            if key is None or value is None:
+                continue
+            name = self.text(key).strip("'\"")
+            if not name:
+                continue
+            if value.type in _FUNCTION_VALUES:
+                body = value.child_by_field_name("body")
+                self.add_sym(member, "method", name,
+                             signature=self.sig_of(member, body))
+                self.scope.append((name, "function"))
+                self.visit(value)
+                self.scope.pop()
+            elif value.type == "object":
+                self.add_sym(member, "field", name, signature=None)
+                self._object_members(value, name)
+            else:
+                self.visit(value)
+        self.scope.pop()
 
     def _assignment(self, node) -> None:
         """Definições por atribuição — o idioma de módulos JS clássicos:

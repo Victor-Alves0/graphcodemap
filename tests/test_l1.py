@@ -52,6 +52,30 @@ def test_external_calls_stay_unresolved(cg):
     assert row is not None and row["dst"] is None
 
 
+def test_callback_parameter_is_not_promoted_to_enclosing_function(tmp_path):
+    """Jedi resolve ``cb()`` para o parâmetro na linha do ``def``.
+
+    Mapear essa linha pelo menor símbolo envolvente fabricava uma auto-chamada
+    ``run -> run`` com confiança ``certain``.
+    """
+    p = tmp_path / "callbacks.py"
+    p.write_text("def run(cb):\n    return cb(1)\n", encoding="utf-8")
+    from codegraph import CodeGraph
+
+    g = CodeGraph(tmp_path)
+    g.index()
+    _refine(g)
+    row = g.indexer.conn.execute(
+        "SELECT e.confidence, e.resolver, e.src, e.dst FROM edges e "
+        "WHERE e.kind='calls' AND e.dst_name='cb'"
+    ).fetchone()
+    assert row is not None
+    assert row["resolver"] == "l0"
+    assert row["confidence"] != "certain"
+    assert row["src"] != row["dst"]
+    g.close()
+
+
 def test_refine_is_idempotent(cg):
     first = _refine(cg)
     second = _refine(cg)

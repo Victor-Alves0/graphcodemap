@@ -67,6 +67,29 @@ def test_target_symbol_unknown_file_is_none(tmp_path):
     g.close()
 
 
+def test_target_symbol_definition_name_must_match(tmp_path):
+    g = _homonym_repo(tmp_path)
+    assert promote.target_symbol(
+        g.indexer.conn, "a.py", 1, dname="not_process") is None
+    assert promote.target_symbol(
+        g.indexer.conn, "a.py", 1, dname="process") is not None
+    g.close()
+
+
+def test_target_symbol_rejects_non_callable_container(tmp_path):
+    """Uma definição LSP dentro de uma constante não torna a constante chamável.
+
+    JS object literals/IIFEs eram o caso real: sem símbolo para a função interna,
+    o menor span que cobria a linha era ``constant``/``file`` e recebia uma
+    aresta ``certain`` fabricada.
+    """
+    g = _graph(tmp_path, {
+        "a.js": "const obj = { value: 1 };\n",
+    })
+    assert promote.target_symbol(g.indexer.conn, "a.js", 1) is None
+    g.close()
+
+
 # ============================================================================
 # B. promote.apply — 1 alvo = certain
 # ============================================================================
@@ -98,6 +121,32 @@ def test_apply_single_target_removes_l0_possible_clones(tmp_path):
         "SELECT COUNT(*) c FROM edges WHERE kind='calls' AND dst_name='process' "
         "AND resolver='l0' AND confidence='possible'").fetchone()["c"]
     assert left == 0
+    g.close()
+
+
+def test_apply_single_target_can_reuse_sibling_clone_target(tmp_path):
+    """O alvo L1 pode já estar ocupado por outro clone ``possible`` do L0.
+
+    A limpeza precisa acontecer antes do UPDATE; do contrário o índice único
+    rejeita a promoção e o resolver aborta o restante do arquivo.
+    """
+    g = _homonym_repo(tmp_path)
+    conn = g.indexer.conn
+    rows = conn.execute(
+        "SELECT id, dst, line, col, file_id FROM edges WHERE kind='calls' "
+        "AND dst_name='process' ORDER BY id"
+    ).fetchall()
+    assert len(rows) == 2 and rows[0]["dst"] != rows[1]["dst"]
+    n = promote.apply(conn, rows[0]["file_id"], rows[0], [rows[1]["dst"]])
+    conn.commit()
+    assert n == 1
+    left = conn.execute(
+        "SELECT dst, confidence, resolver FROM edges WHERE kind='calls' "
+        "AND dst_name='process'"
+    ).fetchall()
+    assert [(r["dst"], r["confidence"], r["resolver"]) for r in left] == [
+        (rows[1]["dst"], "certain", "l1")
+    ]
     g.close()
 
 

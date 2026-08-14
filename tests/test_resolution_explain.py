@@ -190,7 +190,7 @@ def test_render_doctor_warns_on_missing_l1(tmp_path, monkeypatch):
     # força gopls ausente e confirma que o doctor renderizado avisa sobre Go
     import codegraph.l1 as l1
     monkeypatch.setattr(l1, "missing_resolvers",
-                        lambda langs, is_available=None: (
+                        lambda langs, is_available=None, root=None: (
                             [{"languages": ["go"], "server": "gopls",
                               "env": "GOPLS_BIN"}]
                             if "go" in set(langs) else []))

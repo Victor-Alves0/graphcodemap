@@ -115,3 +115,17 @@ def test_repeated_misses_still_catch_edits(cg, repo):
     rows, env = cg.find_symbol("recem_criada")       # varredura pega na hora
     assert any(r["fqn"] == "app.auth.recem_criada" for r in rows)
     assert any("re-indexado agora" in w for w in env.warnings)
+
+
+def test_new_ignore_policy_removes_existing_file_from_index(cg, repo):
+    assert cg.indexer.conn.execute(
+        "SELECT 1 FROM files WHERE path='app/db.py'"
+    ).fetchone()
+
+    (repo / ".codegraphignore").write_text("app/db.py\n", encoding="utf-8")
+    _, env = cg.find_symbol("definitely_not_present")  # miss dispara full sweep
+
+    assert cg.indexer.conn.execute(
+        "SELECT 1 FROM files WHERE path='app/db.py'"
+    ).fetchone() is None
+    assert any("passou a ser excluído" in warning for warning in env.warnings)

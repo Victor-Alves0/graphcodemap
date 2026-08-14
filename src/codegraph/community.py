@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from .db import retry_on_locked
 from .util import content_hash
 
 _MIN_IMPROVEMENT = 1e-7
@@ -170,6 +171,22 @@ def louvain(adj: dict[int, dict[int, float]]) -> dict[int, int]:
 # -- persistência -------------------------------------------------------------
 
 def recompute(conn: sqlite3.Connection) -> None:
+    conn.commit()
+    retry_on_locked(lambda: _recompute_once(conn))
+
+
+def _recompute_once(conn: sqlite3.Connection) -> None:
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _recompute_in_transaction(conn)
+        conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+
+
+def _recompute_in_transaction(conn: sqlite3.Connection) -> None:
     ids, adj = _build_graph(conn)
     conn.execute("UPDATE symbols SET community=NULL")
     if not adj:
@@ -211,4 +228,3 @@ def _finish(conn: sqlite3.Connection, members: dict[int, list[str]]) -> None:
     conn.execute(
         "INSERT INTO meta(key, value) VALUES('community_dirty','0') "
         "ON CONFLICT(key) DO UPDATE SET value='0'")
-    conn.commit()

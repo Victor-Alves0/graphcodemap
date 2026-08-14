@@ -28,13 +28,16 @@ AI agent — organized from first run to internals.
 
 - **[Languages & Resolvers](languages.md)** — the three language tiers and how L1
   (LSP) resolution promotes edges to `certain`.
+- **[Product Maturity](MATURITY.md)** — what recognized, structural, engine and
+  validated support actually promise, with the current evidence gaps.
+- **[Security Benchmark](SECURITY_BENCHMARK.md)** — the normalized CodeQL,
+  OpenGrep, OpenTaint and GraphCodeMap contract and fairness rules.
 - **[Architecture](architecture.md)** — the indexing pipeline, the SQLite schema,
   incremental re-indexing, and why the invariants hold.
 - **[FAQ & Limitations](faq.md)** — honest, quantified answers about scope,
   accuracy, scale, and benchmarks.
-- **[Roadmap](ROADMAP.md)** — where the taint engine stands against published
-  SAST scorecards, what is being worked on next and in which order, and the
-  approaches that were built, measured and *rejected* (so they are not retried).
+- **[Roadmap](ROADMAP.md)** — the v0.2 north star, measurable release gates,
+  current micro-goals, and the security experiments that must not be repeated.
 
 ## Design history
 

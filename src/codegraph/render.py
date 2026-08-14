@@ -477,11 +477,14 @@ def capabilities(rows, summ, gaps_list) -> str:
         f"{summ['dedicated']} com extractor dedicado",
         f"  dataflow/taint: {summ['dataflow']}/{summ['dataflow_applicable']} aplicáveis   "
         f"flow-sensitive: {summ['flow_sensitive']}   "
-        f"L1 wired: {summ['l1_wired']} ({summ['l1_validated']} validados ao vivo)",
+        f"L1 wired: {summ['l1_wired']} ({summ['l1_validated']} smoke, "
+        f"{summ['l1_real_repo']} em repo real)   "
+        f"segurança validada: {summ['security_validated']}",
         "",
         f"  {'linguagem':<12} {'extractor':<10} {'dataflow':<9} {'taint':<7} "
-        f"{'flow-sens':<10} {'L1':<22}",
-        f"  {'-'*12} {'-'*10} {'-'*9} {'-'*7} {'-'*10} {'-'*22}",
+        f"{'flow-sens':<10} {'L1':<22} {'evidência':<17} {'nível'}",
+        f"  {'-'*12} {'-'*10} {'-'*9} {'-'*7} {'-'*10} {'-'*22} "
+        f"{'-'*17} {'-'*20}",
     ]
     for r in rows:
         na = not r["dataflow_applicable"]
@@ -493,12 +496,16 @@ def capabilities(rows, summ, gaps_list) -> str:
         elif not r["l1_wired"]:
             l1 = "NÃO"
         else:
-            state = "validado" if r["l1_validated"] else "wired"
+            state = {"real-repo": "repo real", "live-smoke": "smoke",
+                     "wired": "wired"}.get(r["l1_evidence"], "wired")
             l1 = f"{state} ({r['l1_server']})"
+        evidence = {"real-app": "app real", "labeled-benchmark": "benchmark rotulado",
+                    "none": "nenhuma"}[r["security_evidence"]]
         lines.append(f"  {r['language']:<12} {r['extract']:<10} {dfl:<9} {tnt:<7} "
-                     f"{flw:<10} {l1:<22}")
+                     f"{flw:<10} {l1:<22} {evidence:<17} {r['product_level']}")
 
-    lines += ["", "  legenda: · = não se aplica (marcação/config não têm fluxo de dados)"]
+    lines += ["", "  legenda: · = não se aplica; engine = implementado sem corpus "
+              "de segurança; validated = possui evidência externa"]
     if gaps_list:
         lines += ["", f"  lacunas ({len(gaps_list)} linguagens):"]
         for g in gaps_list:

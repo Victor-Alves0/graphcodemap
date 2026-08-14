@@ -10,7 +10,7 @@ Symbols, call graph, references, impact, dataflow and taint over any codebase �
 [![CI](https://github.com/Victor-Alves0/graphcodemap/actions/workflows/tests.yml/badge.svg)](https://github.com/Victor-Alves0/graphcodemap/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%E2%80%93%203.12-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1377%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-1409%20passing-brightgreen)](tests/)
 [![Status](https://img.shields.io/badge/status-alpha%20v0.1-orange)](#status)
 
 [Quick start](#quick-start) ·
@@ -18,6 +18,7 @@ Symbols, call graph, references, impact, dataflow and taint over any codebase �
 [Documentation](docs/README.md) ·
 [When to use it](#when-to-use-it-and-when-not-to) ·
 [Benchmarks](evals/RESULTS.md) ·
+[Maturity](docs/MATURITY.md) ·
 [Roadmap](docs/ROADMAP.md)
 
 </div>
@@ -171,7 +172,8 @@ Python, TypeScript/TSX, JavaScript, Rust, Go, Java, Kotlin, C#, C, C++/CUDA/Meta
 PHP, Ruby, Lua/Luau, Swift, Scala, Clojure/ClojureScript, **Terraform/HCL**, and
 the web tier HTML + CSS/SCSS. A **generic tier** gives structural L0 to dozens
 more grammars (Zig, Elixir, Vue, Svelte, SQL, Bash, Dart…). Dataflow & taint
-cover all 18 dedicated *code* languages. → **[Languages & Resolvers](docs/languages.md)**
+cover all 19 dedicated code-language identifiers; 18 are flow-sensitive.
+→ **[Languages & Resolvers](docs/languages.md)**
 
 ## Documentation
 
@@ -183,15 +185,18 @@ cover all 18 dedicated *code* languages. → **[Languages & Resolvers](docs/lang
 | **[Agents & MCP](docs/mcp.md)** | The 20 MCP tools and the response envelope |
 | **[Library / Host API](docs/library.md)** | Embedding GraphCodeMap in a service |
 | **[Languages & Resolvers](docs/languages.md)** | Language tiers and L1/LSP resolution |
+| **[Product Maturity](docs/MATURITY.md)** | Evidence levels, current gaps and honest parity boundaries |
 | **[Architecture](docs/architecture.md)** | Pipeline, SQLite schema, incremental indexing |
 | **[FAQ & Limitations](docs/faq.md)** | Honest answers, benchmarks, scope |
 | [Design](docs/DESIGN.md) · [Research](docs/RESEARCH.md) | Original design contract and research notes |
 
 ## Status
 
-**Alpha (v0.1.0).** The core is feature-complete and covered by **1373 tests**
-(including a contract-test suite that locks the graph's ten load-bearing
-invariants), across a CI matrix of Linux + Windows on Python 3.10–3.12. It has
+**Alpha (v0.1.0).** The main query surfaces are implemented and covered by more
+than 1,300 tests (including contracts for the graph's load-bearing invariants),
+across a CI matrix of Linux + Windows on Python 3.10–3.12. Language depth and
+external validation are still uneven; see the honest
+[maturity matrix](docs/MATURITY.md) and the [v0.2 gates](docs/ROADMAP.md). It has
 not yet been battle-tested by broad real-world usage — expect rough edges, and
 please [open an issue](https://github.com/Victor-Alves0/graphcodemap/issues).
 

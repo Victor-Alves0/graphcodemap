@@ -314,7 +314,17 @@ def _domain_legend(conn, nodes) -> list[dict]:
 
 
 def render_html(data: dict) -> str:
-    payload = json.dumps(data, ensure_ascii=False)
+    # JSON válido não é automaticamente seguro dentro de ``<script>``:
+    # ``</script>`` encerra o elemento ainda que esteja numa string JS. Paths,
+    # headings Markdown e nomes de símbolos vêm do repo analisado e portanto
+    # são entrada não confiável. Escapes JSON preservam o valor em runtime e
+    # impedem breakout/XSS no HTML local gerado.
+    payload = (json.dumps(data, ensure_ascii=False)
+               .replace("&", "\\u0026")
+               .replace("<", "\\u003c")
+               .replace(">", "\\u003e")
+               .replace("\u2028", "\\u2028")
+               .replace("\u2029", "\\u2029"))
     shown = len(data["nodes"])
     scope = data["scope"] or "(repo inteiro)"
     seed = data.get("seed") or ""
