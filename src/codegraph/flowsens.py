@@ -34,9 +34,9 @@ import ast
 import re
 from dataclasses import dataclass, field
 
-from .dataflow import (ArgFlow, Flow, _is_tainted,
+from .dataflow import (ArgFlow, Flow, ReceiverFlow, _is_tainted,
                        assign_reads_framework_source, assign_reads_named_source,
-                       direct_source_args)
+                       direct_source_args, instance_field_name)
 
 # --- node types de controle de fluxo, por família de gramática ---------------
 # `body`: filhos que são CORPOS (executam condicionalmente); o que não é corpo
@@ -693,13 +693,15 @@ class _Eval:
     """Interpreta a CFG estruturada propagando o ambiente sujo."""
 
     def __init__(self, facts, sanitizers, sinks_out: Flow, sources=frozenset(),
-                 nonprop=frozenset()):
+                 nonprop=frozenset(), source_spans=frozenset()):
         self.sanitizers = sanitizers
         self.sources = sources
         # LINHAS cuja chamada foi resolvida SEMANTICAMENTE (L1) e cujo alvo
         # comprovadamente não devolve o argumento recebido
         self.nonprop = nonprop
+        self.source_spans = source_spans
         self.flow = sinks_out
+        self.facts = facts
         # todos os fatos ordenados por posição, para o casamento por span
         self.assigns = sorted(facts.assigns, key=lambda a: (a.span or (0, 0))[0])
         self.calls = sorted(facts.calls, key=lambda c: (c.span or (0, 0))[0])
@@ -717,9 +719,10 @@ class _Eval:
         # a própria semente da varredura: `x = input()` tem RHS sem ids, então
         # cairia no kill — o bug que a bateria de recall pegou.
         from_source = not sanitized and (
-            assign_reads_named_source(a, self.sources)
+            assign_reads_named_source(a, self.sources, self.sanitizers)
             # fonte de FRAMEWORK: `x = request.POST.get(..)` / `x = req.query.q`
-            or assign_reads_framework_source(a, self.sanitizers))
+            or assign_reads_framework_source(a, self.sanitizers)
+            or a.span in self.source_spans)
         rhs_hit = (not sanitized) and any(_is_tainted(p, env) for p in a.rhs_ids)
         aug_hit = a.is_aug and any(_is_tainted(t, env) for t in a.targets)
         if from_source or rhs_hit or aug_hit:
@@ -743,6 +746,14 @@ class _Eval:
                 self.flow.arg_flows.append(
                     ArgFlow(c.callee, idx, c.line, direto[idx], c.qualified,
                             direto[idx], c.span))
+        if c.receiver_kind in {"implicit_this", "explicit_this"}:
+            fields = frozenset(
+                name for path in env
+                if (name := instance_field_name(self.facts, path)) is not None
+            )
+            if fields:
+                self.flow.receiver_flows.append(ReceiverFlow(
+                    c.callee, c.line, fields, c.qualified, c.span))
 
     def _clear_validated_file_constructors(
             self, candidate: tuple[str, ...], guard_start: int) -> None:
@@ -836,13 +847,13 @@ class _Eval:
         events = []
         for a in self.assigns:
             if self._in(a, sp.start, sp.end):
-                events.append(((a.span or (0, 0))[0], 0, a))
+                events.append(((a.span or (0, 0))[1], 0, a))
         for c in self.calls:
             if self._in(c, sp.start, sp.end):
-                events.append(((c.span or (0, 0))[0], 1, c))
+                events.append(((c.span or (0, 0))[1], 1, c))
         for r in self.returns:
             if self._in(r, sp.start, sp.end):
-                events.append(((r.span or (0, 0))[0], 2, r))
+                events.append(((r.span or (0, 0))[1], 2, r))
         # ordem de código; num mesmo ponto a chamada é avaliada ANTES do assign
         # completar (`x = f(sujo)` lê o argumento com o ambiente de entrada)
         events.sort(key=lambda e: (e[0], -e[1]))
@@ -899,7 +910,7 @@ class _Eval:
 
 
 def analyze_flow(facts, tainted_init, sanitizers=frozenset(), sources=frozenset(),
-                 nonprop=frozenset()):
+                 nonprop=frozenset(), source_spans=frozenset()):
     """Versão flow-sensitive de `dataflow.analyze_facts`.
 
     Usa `facts.regions`, a CFG estruturada montada na EXTRAÇÃO (estrutura pura
@@ -918,7 +929,7 @@ def analyze_flow(facts, tainted_init, sanitizers=frozenset(), sources=frozenset(
         return None                      # extractor ainda não popula spans
     env = {p if isinstance(p, tuple) else (p,) for p in tainted_init}
     flow = Flow()
-    ev = _Eval(facts, sanitizers, flow, sources, nonprop)
+    ev = _Eval(facts, sanitizers, flow, sources, nonprop, source_spans)
     ev.run(regions, env)
     # dedupe: o fixpoint de laço pode registrar o mesmo arg_flow 2x
     seen, uniq = set(), []
@@ -928,4 +939,11 @@ def analyze_flow(facts, tainted_init, sanitizers=frozenset(), sources=frozenset(
             seen.add(key)
             uniq.append(af)
     flow.arg_flows = uniq
+    seen_receiver, receiver_uniq = set(), []
+    for receiver_flow in flow.receiver_flows:
+        key = (receiver_flow.callee, receiver_flow.line, receiver_flow.fields)
+        if key not in seen_receiver:
+            seen_receiver.add(key)
+            receiver_uniq.append(receiver_flow)
+    flow.receiver_flows = receiver_uniq
     return flow

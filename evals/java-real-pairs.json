@@ -33,7 +33,8 @@
       "expected_category": "path-traversal",
       "match": {
         "source_path_suffix": "src/fitnesse/responders/testHistory/HistoryComparerResponder.java",
-        "source_symbol_contains": ".HistoryComparerResponder.composeFileName",
+        "source_label": "composeFileName()",
+        "source_symbol_contains": ".HistoryComparerResponder.makeResponse",
         "sink_path_suffix": "src/fitnesse/responders/testHistory/HistoryComparerResponder.java",
         "sink_label": "File",
         "sink_symbol_contains": ".HistoryComparerResponder.filesExist"

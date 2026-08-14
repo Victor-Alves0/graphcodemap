@@ -152,11 +152,17 @@ _CURATED: dict[str, dict[str, set[str]]] = {
             # Type-qualified on purpose: these standard Java I/O APIs return
             # external text, while application domain objects may also expose
             # an unrelated `readLine` method.
-            "BufferedReader.readLine",
-            "Console.readLine",
-            "DataInputStream.readLine",
-            "LineNumberReader.readLine",
-            "RandomAccessFile.readLine",
+            "java.io.BufferedReader.readLine",
+            "java.io.Console.readLine",
+            "java.io.DataInputStream.readLine",
+            "java.io.LineNumberReader.readLine",
+            "java.io.RandomAccessFile.readLine",
+            # FitNesse request data.  These deliberately require the declared
+            # receiver type: bare ``getResource``/``getMap`` are widespread
+            # domain APIs and would create benchmark-independent false
+            # positives (especially once Map.get propagation is involved).
+            "fitnesse.http.Request.getResource",
+            "fitnesse.http.Request.getMap",
             # Qualified on purpose: arbitrary domain objects commonly expose
             # `getProperty`, but JVM system properties are process-controlled
             # input and can influence path construction.

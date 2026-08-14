@@ -95,10 +95,12 @@ recall e o FPR total ficou abaixo de 12%.
 
 O holdout independente NIST Juliet CWE-23 impede transformar isso em uma
 declaração universal: nele o GraphCodeMap teve precisão 100% e FPR 0%, mas
-recall de **51,4%**. O primeiro gate externo (recall >=50%, FPR <=5%) foi
+recall de **54,5%**. O primeiro gate externo (recall >=50%, FPR <=5%) foi
 atingido por modelagem de fontes Java qualificada por tipo, sem regra específica
-para nomes do corpus. O próximo gate é transporte interprocedural e
-sensibilidade ao patch em pares reais, não continuar ajustando o corpus OWASP.
+para nomes do corpus. O transporte atual encontra 3/3 vulnerabilidades Java
+reais, mas só um dos três patches elimina o oráculo. O próximo gate é resumir
+sanitização/efeitos de heap entre métodos e levar a mesma evidência às demais
+linguagens Tier A, não continuar ajustando o corpus OWASP.
 Veja [Security Benchmark](SECURITY_BENCHMARK.md).
 
 Em aplicações vulneráveis REAIS (não gabarito sintético):
@@ -129,8 +131,9 @@ O líder em score tem **57,7% de FPR** — mais da metade do código seguro
 acusado. Ninguém revisa um relatório assim; o score alto não se traduz em
 ferramenta usável.
 
-> **Os gates OWASP e o primeiro gate Juliet foram atingidos. O próximo gate é
-> externo: distinguir revisões vulneráveis e corrigidas em projetos reais.**
+> **Os gates OWASP, Juliet e descoberta nos primeiros pares reais foram
+> atingidos. O próximo gate é distinguir mais patches e elevar as demais
+> linguagens Tier A à mesma evidência externa.**
 
 Ressalva da comparação: os placares cobrem 11 categorias e nós pontuamos 7.
 Nossa medição agora exige arquivo **e categoria**, mas ainda não é comparação
@@ -159,11 +162,11 @@ domínios fechados de List/Map local com índice/chave constante.
 | ação | estado |
 |---|---|
 | resolver L1 de Java (jdtls) | Maven real + A/B OWASP concluídos; falta Gradle |
-| resolver L1 de PHP (intelephense) | em investigação |
+| resolver L1 de PHP (intelephense) | DVWA real concluído: 659 arestas `certain`, achados de taint invariantes |
 | aumentar taxa de promoção em Python/JS | em investigação |
 
 Path traversal passou de 46% para **100% de recall**. O micro-goal de FPR <20%
-foi superado em 11,6%, com 868 TPs totais. No Juliet CWE-23 ainda há 216 FNs,
+foi superado em 11,6%, com 868 TPs totais. No Juliet CWE-23 ainda há 202 FNs,
 concentrados em argumentos/campos entre métodos, containers, serialização e
 dispatch abstrato/virtual.
 

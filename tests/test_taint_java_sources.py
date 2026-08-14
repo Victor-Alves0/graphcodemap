@@ -110,3 +110,62 @@ def test_domain_object_get_property_is_not_a_source(tmp_path):
         """,
     )
     assert "FileInputStream" not in sinks
+
+
+def test_constructor_receiver_resolves_the_exact_source_wrapper(tmp_path):
+    sinks = _path_sinks(
+        tmp_path,
+        """
+        class App {
+            void handle(javax.servlet.http.HttpServletRequest request) {
+                String path = new RequestSource().readPath(request);
+                new java.io.FileInputStream(path);
+            }
+        }
+        class RequestSource {
+            String readPath(javax.servlet.http.HttpServletRequest request) {
+                return request.getParameter("path");
+            }
+        }
+        class HarmlessSource {
+            String readPath(javax.servlet.http.HttpServletRequest request) {
+                return "bundled.txt";
+            }
+        }
+        """,
+    )
+    assert "FileInputStream" in sinks
+
+
+def test_source_nested_in_constructor_taints_the_created_container(tmp_path):
+    sinks = _path_sinks(
+        tmp_path,
+        """
+        class App {
+            void handle(javax.servlet.http.HttpServletRequest request) {
+                java.util.StringTokenizer tokens = new java.util.StringTokenizer(
+                    request.getQueryString(), "&");
+                String path = tokens.nextToken().substring(3);
+                new java.io.FileInputStream(path);
+            }
+        }
+        """,
+    )
+    assert "FileInputStream" in sinks
+
+
+def test_sanitizer_cuts_a_source_nested_inside_constructor(tmp_path):
+    sinks = _path_sinks(
+        tmp_path,
+        """
+        class App {
+            void handle(javax.servlet.http.HttpServletRequest request) {
+                java.util.StringTokenizer tokens = new java.util.StringTokenizer(
+                    escape(request.getQueryString()), "&");
+                String path = tokens.nextToken().substring(3);
+                new java.io.FileInputStream(path);
+            }
+        }
+        """,
+    )
+    assert "FileInputStream" not in sinks

@@ -14,14 +14,9 @@ shortest route is ``Request.getResource()`` inside ``composeFileName``'s return
 expression, assigned to an instance field and consumed by ``filesExist``.  A
 second, longer route starts at ``Request.getMap()`` and crosses key iteration
 and more instance fields.  Map propagation and the sink are already supported.
-The missing primitives are source classification, nested return-source
-promotion, and cross-method instance-field flow.
-
-Do not name a local map ``values`` in source-discovery tests.  ``values.get``
-currently collides with the framework shortcut for Flask/Django
-``request.values.get``; the dedicated precision characterization below keeps
-that independent bug visible instead of letting it fake ``Request.getMap``
-support.
+Receiver-qualified source classification and nested return-source promotion
+are covered here together with their precision guards.  Cross-method instance-
+field flow remains the independently characterized next primitive.
 """
 
 from __future__ import annotations
@@ -168,13 +163,6 @@ def test_qualified_override_models_request_get_map_and_container_read(tmp_path):
     assert findings
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "missing primitive: fitnesse.http.Request.getResource is not a curated, "
-        "receiver-qualified HTTP source"
-    ),
-)
 def test_fitnesse_get_resource_is_discovered_without_project_override(tmp_path):
     findings = _file_findings(
         tmp_path,
@@ -196,13 +184,6 @@ def test_fitnesse_get_resource_is_discovered_without_project_override(tmp_path):
     assert findings
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "missing primitive: fitnesse.http.Request.getMap is not a curated, "
-        "receiver-qualified HTTP source"
-    ),
-)
 def test_fitnesse_get_map_is_discovered_without_project_override(tmp_path):
     findings = _file_findings(
         tmp_path,
@@ -225,13 +206,65 @@ def test_fitnesse_get_map_is_discovered_without_project_override(tmp_path):
     assert findings
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "precision gap: a local variable named values makes values.get look "
-        "like the qualified web source request.values.get"
-    ),
-)
+def test_explicit_fitnesse_request_import_resolves_to_qualified_source(tmp_path):
+    findings = _file_findings(
+        tmp_path,
+        """
+        package example.web;
+
+        import fitnesse.http.Request;
+
+        class App {
+            void handle(Request request) {
+                String path = request.getResource();
+                new java.io.File(path);
+            }
+        }
+        """,
+    )
+    assert findings
+
+
+def test_homonymous_request_type_in_another_package_is_not_a_source(tmp_path):
+    findings = _file_findings(
+        tmp_path,
+        """
+        package com.acme;
+
+        interface Request {
+            String getResource();
+            java.util.Map<String, String> getMap();
+        }
+
+        class App {
+            void handle(Request request) {
+                String resource = request.getResource();
+                new java.io.File(resource);
+                java.util.Map<String, String> entries = request.getMap();
+                new java.io.File(entries.get("download"));
+            }
+        }
+        """,
+    )
+    assert not findings
+
+
+def test_unresolved_simple_request_type_fails_closed(tmp_path):
+    findings = _file_findings(
+        tmp_path,
+        """
+        interface Request { String getResource(); }
+        class App {
+            void handle(Request request) {
+                String path = request.getResource();
+                new java.io.File(path);
+            }
+        }
+        """,
+    )
+    assert not findings
+
+
 def test_values_get_is_not_a_framework_source_without_request_receiver(tmp_path):
     findings = _file_findings(
         tmp_path,
@@ -247,13 +280,6 @@ def test_values_get_is_not_a_framework_source_without_request_receiver(tmp_path)
     assert not findings
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "missing primitive: a configured source nested directly in a helper's "
-        "return expression does not promote the helper return"
-    ),
-)
 def test_source_nested_in_helper_return_reaches_caller(tmp_path):
     findings = _file_findings(
         tmp_path,
@@ -276,6 +302,168 @@ def test_source_nested_in_helper_return_reaches_caller(tmp_path):
         sources=("Request.getResource",),
     )
     assert findings
+
+
+def test_nested_return_source_respects_ancestor_sanitizer(tmp_path):
+    findings = _file_findings(
+        tmp_path,
+        """
+        package fitnesse.http;
+
+        interface Request {
+            String getResource();
+        }
+
+        class App {
+            String allowListedPath(String input) {
+                return "safe.txt";
+            }
+
+            String compose(Request request) {
+                return "root/" + allowListedPath(request.getResource());
+            }
+
+            void handle(Request request) {
+                String path = compose(request);
+                new java.io.File(path);
+            }
+        }
+        """,
+    )
+    assert findings
+
+    # Project configuration is the contract that makes a domain validator a
+    # sanitizer.  Re-run in a fresh directory because _file_findings owns its
+    # graph and configuration lifecycle.
+    clean_dir = tmp_path / "sanitized"
+    clean_dir.mkdir()
+    (clean_dir / "App.java").write_text(
+        """
+        package fitnesse.http;
+        interface Request { String getResource(); }
+        class App {
+            String allowListedPath(String input) { return "safe.txt"; }
+            String compose(Request request) {
+                return "root/" + allowListedPath(request.getResource());
+            }
+            void handle(Request request) {
+                String path = compose(request);
+                new java.io.File(path);
+            }
+        }
+        """.strip(),
+        encoding="utf-8",
+    )
+    config_dir = clean_dir / ".codegraph"
+    config_dir.mkdir()
+    (config_dir / "taint.json").write_text(
+        json.dumps({"sanitizers": ["allowListedPath"]}),
+        encoding="utf-8",
+    )
+    graph = CodeGraph(clean_dir)
+    try:
+        graph.index()
+        data, _env = graph.taint(max_findings=100)
+        assert not [
+            finding for finding in data["findings"]
+            if finding["sink"]["callee"] == "File"
+        ]
+    finally:
+        graph.close()
+
+
+def test_nested_source_inside_non_sanitizing_wrapper_stays_tainted(tmp_path):
+    findings = _file_findings(
+        tmp_path,
+        """
+        package fitnesse.http;
+
+        interface Request { String getResource(); }
+        class App {
+            String decorate(String input) { return "[" + input + "]"; }
+            String compose(Request request) {
+                return "root/" + decorate(request.getResource());
+            }
+            void handle(Request request) {
+                String path = compose(request);
+                new java.io.File(path);
+            }
+        }
+        """,
+    )
+    assert findings
+
+
+def test_source_wrapper_name_is_not_promoted_globally(tmp_path):
+    findings = _file_findings(
+        tmp_path,
+        """
+        package fitnesse.http;
+
+        interface Request { String getResource(); }
+
+        class DirtyComposer {
+            String compose(Request request) {
+                return request.getResource();
+            }
+        }
+
+        class CleanComposer {
+            String compose(Request request) {
+                return "safe.txt";
+            }
+        }
+
+        class App {
+            void handle(Request request, CleanComposer clean) {
+                String path = clean.compose(request);
+                new java.io.File(path);
+            }
+        }
+        """,
+    )
+    assert not findings
+
+
+def test_curated_fitnesse_names_do_not_taint_other_receiver_types(tmp_path):
+    findings = _file_findings(
+        tmp_path,
+        """
+        class AssetStore { String getResource() { return "logo.svg"; } }
+        class Settings {
+            java.util.Map<String, String> getMap() {
+                return new java.util.HashMap<>();
+            }
+        }
+        class App {
+            void handle(AssetStore assets, Settings settings) {
+                String bundledAsset = assets.getResource();
+                new java.io.File(bundledAsset);
+                java.util.Map<String, String> entries = settings.getMap();
+                new java.io.File(entries.get("download"));
+            }
+        }
+        """,
+    )
+    assert not findings
+
+
+def test_request_values_get_remains_a_framework_source(tmp_path):
+    (tmp_path / "app.py").write_text(
+        """
+def handle(request):
+    path = request.values.get("download")
+    open(path)
+        """.strip(),
+        encoding="utf-8",
+    )
+    graph = CodeGraph(tmp_path)
+    try:
+        graph.index()
+        data, _env = graph.taint(max_findings=100)
+        assert any(f["sink"]["callee"] == "open" for f in data["findings"])
+    finally:
+        graph.close()
 
 
 @pytest.mark.xfail(
@@ -310,13 +498,6 @@ def test_instance_field_taint_crosses_method_boundaries(tmp_path):
     assert findings
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "the shortest CVE chain still needs both nested return-source promotion "
-        "and cross-method instance-field flow after Request.getResource is modeled"
-    ),
-)
 def test_shortest_fitnesse_chain_with_explicit_source_oracle(tmp_path):
     findings = _file_findings(
         tmp_path,

@@ -46,7 +46,7 @@ Run `codegraph capabilities [language]` for the machine-readable current view.
 | Graph and freshness | Strong incremental core; policy-change cleanup now covered | Multiprocess stress and no known stale-read path |
 | L0 extraction | Broad and well unit-tested | Real call-edge oracles for every Tier-A language |
 | L1 resolution | Broadly wired, unevenly proven | Live integration plus real-repo evidence for Tier A |
-| Dataflow and taint | OWASP recall 96.2% with FPR 11.6%; Juliet CWE-23 holdout recall 51.4% with FPR 0%; three pinned Java vulnerable/fixed pairs expose limited patch sensitivity | Model interprocedural fields/containers/dispatch and make fixed revisions clear their vulnerable oracle |
+| Dataflow and taint | OWASP recall 96.2% with FPR 11.6%; Juliet CWE-23 holdout recall 54.5% with FPR 0%; all three pinned Java vulnerabilities are found and one patch clears its oracle | Add sanitizer/heap summaries, containers/dispatch and clear the FitNesse/OpenRefine patches without hiding vulnerable flows |
 | CLI, library and MCP | Main surfaces implemented | Versioned response schemas and parity contract tests |
 | Visualization | Functional; script-breakout regression covered | Large-graph performance budget and browser smoke suite |
 | L3 descriptions | Experimental and optional | Provider-neutral quality/cost evaluation; not a v0.2 blocker |

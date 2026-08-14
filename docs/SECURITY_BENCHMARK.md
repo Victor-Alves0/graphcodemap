@@ -198,15 +198,17 @@ The pinned ZIP SHA-256 is
 
 | tool / corpus | TP / FP / FN / TN | precision | recall | FPR | score |
 |---|---:|---:|---:|---:|---:|
-| GraphCodeMap 0.1.0 / Juliet CWE-23 | 228 / 0 / 216 / 444 | 100% | 51.4% | 0% | +0.514 |
+| GraphCodeMap 0.1.0 / Juliet CWE-23 | 242 / 0 / 202 / 444 | 100% | 54.5% | 0% | +0.545 |
 | CodeQL `default` / manual database | 222 / 6 / 222 / 438 | 97.37% | 50.0% | 1.35% | +0.486 |
 | CodeQL `security-extended` / manual database | 222 / 6 / 222 / 438 | 97.37% | 50.0% | 1.35% | +0.486 |
 
 GraphCodeMap crosses the original recall gate after adding type-aware Java
-sources and preserving the concrete bad/good class label used by Juliet's
-abstract `action` dispatch. Type qualification is intentionally fail-closed:
+sources, concrete `new Type().wrapper()` resolution and sanitizer-aware sources
+nested inside assignments. Type qualification is intentionally fail-closed:
 standard input readers such as `BufferedReader.readLine` are sources, while an
-unrelated domain object's same-named method is not.
+unrelated domain object's same-named method is not. The remaining
+`PropertiesFile` family is not promoted merely because another class has a
+homonymous source wrapper.
 
 The CodeQL database was built manually from 732 source files and 744 compiled
 classes. Both official suites produced the same score, and the finding
@@ -225,9 +227,9 @@ at the fixed revision tests whether the engine understands the security guard.
 | pair | vulnerable flow | baseline cleared | current cleared | current outcome |
 |---|---:|---:|---:|---|
 | OpenRefine CVE-2024-49760 | yes | no | no | trusted base cannot be proved from inherited dependency state |
-| FitNesse CVE-2024-42499 | no | no | no | missed across request/helper/instance-field transport |
+| FitNesse CVE-2024-42499 | **yes** | no | no | 2 vulnerable matches; canonical guard in helper still survives fixed |
 | openHAB CVE-2024-42468 | yes | no | **yes** | **3 vulnerable matches → 0 fixed** |
-| **aggregate** | **2 / 3** | **0 / 3** | **1 / 3** | **one patch distinguished without benchmark regression** |
+| **aggregate** | **3 / 3** | **0 / 3** | **1 / 3** | **all vulnerable flows found; one patch distinguished** |
 
 Round 24 recognizes narrow, rejecting Java path-containment guards using
 normalized `Path.startsWith` or canonical paths plus `File.separator`.
@@ -236,10 +238,16 @@ text-prefix checks, use before validation, aliases, nested constructors and
 unproved canonical bases fail closed. This clears the openHAB patch while the
 vulnerable revision retains all three oracle matches. OpenRefine remains open:
 its base comes from a map field inherited from a dependency, so L0 cannot prove
-that a tainted lookup key does not taint the selected module path. FitNesse
-still requires nested-return, cross-method instance-field and call-order flow.
+that a tainted lookup key does not taint the selected module path.
 
-The guard change is neutral on both labeled gates: OWASP remains
-868 / 92 / 34 / 704 and Juliet remains 228 / 0 / 216 / 444. The distinction is
-therefore evidence of general patch sensitivity, not a benchmark-specific
-trade-off.
+Round 25 closes the FitNesse discovery miss with qualified
+`fitnesse.http.Request` sources, source wrappers resolved by concrete symbol,
+and call-order-sensitive transport of direct `this` fields into a later helper
+on the same receiver. Homonymous request types, other receivers, local field
+shadows and calls before the write remain clean. Callee-written field effects
+are deliberately deferred to an explicit heap summary.
+
+The final change is neutral on the OWASP gate at 868 / 92 / 34 / 704, while
+Juliet improves to 242 / 0 / 202 / 444. The real-pair aggregate moves from
+2/3 vulnerable flows detected to 3/3; patch distinction remains 1/3 because
+FitNesse's canonical containment guard is inside the promoted source wrapper.

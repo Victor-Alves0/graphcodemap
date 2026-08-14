@@ -47,7 +47,7 @@ L1_VALIDATED: frozenset[str] = frozenset({
 # Validação em repo real é mais forte que um smoke test de duas funções. Só
 # entram linguagens com medição registrada em evals/RESULTS.md.
 L1_REAL_REPO: frozenset[str] = frozenset({
-    "python", "javascript", "go", "php",
+    "python", "javascript", "go", "java", "php",
 })
 
 # Evidência de segurança não é derivável do parser: exige corpus/oráculo. Apps

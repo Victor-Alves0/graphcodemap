@@ -941,6 +941,90 @@ class QueryEngine:
         cache[chave] = frozenset(out)
         return cache[chave]
 
+    def _source_wrapper_spans(self, sym_row, facts, wrapper_fqns):
+        """Assignments whose RHS resolves uniquely to a source-wrapper FQN."""
+        if not wrapper_fqns:
+            return frozenset()
+        out = set()
+        for assignment in facts.assigns:
+            if assignment.rhs_call is None:
+                continue
+            same_this = any(
+                call.span is not None and assignment.span is not None
+                and assignment.span[0] <= call.span[0]
+                and call.span[1] <= assignment.span[1]
+                and call.callee == assignment.rhs_call
+                and call.receiver_kind in {"implicit_this", "explicit_this"}
+                for call in facts.calls
+            )
+            if same_this and sym_row.get("parent_id") is not None:
+                local = self.conn.execute(
+                    "SELECT id, fqn FROM symbols WHERE parent_id=? AND name=?",
+                    (sym_row["parent_id"], assignment.rhs_call),
+                ).fetchall()
+                local_targets = {row["id"]: row["fqn"] for row in local}
+                if (len(local_targets) == 1
+                        and next(iter(local_targets.values())) in wrapper_fqns):
+                    out.add(assignment.span)
+                    continue
+            # ``new ConcreteType().wrapper()`` carries an exact receiver type
+            # in Java syntax.  Resolve it against the wrapper's enclosing type
+            # instead of falling back to a globally ambiguous method name.
+            # FQNs are matched by suffix because Java symbols retain the source
+            # root prefix (for example ``Java.src.com.acme.Type``).
+            receiver_type = assignment.rhs_receiver_type
+            if receiver_type:
+                receiver_simple = receiver_type.rsplit(".", 1)[-1]
+                constructors = self.conn.execute(
+                    "SELECT DISTINCT e.dst FROM edges e "
+                    "JOIN symbols c ON e.dst=c.id "
+                    "WHERE e.src=? AND e.kind='calls' AND e.line=? "
+                    "AND e.dst IS NOT NULL AND c.name=? "
+                    "AND c.kind IN ('class','struct','type')",
+                    (sym_row["id"], assignment.line, receiver_simple),
+                ).fetchall()
+                class_ids = {row["dst"] for row in constructors}
+                typed = []
+                if len(class_ids) == 1:
+                    typed = self.conn.execute(
+                        "SELECT id, fqn FROM symbols "
+                        "WHERE parent_id=? AND name=?",
+                        (next(iter(class_ids)), assignment.rhs_call),
+                    ).fetchall()
+                typed_targets = {row["id"]: row["fqn"] for row in typed}
+                if (len(typed_targets) == 1
+                        and next(iter(typed_targets.values())) in wrapper_fqns):
+                    out.add(assignment.span)
+                    continue
+            rows = self.conn.execute(
+                "SELECT DISTINCT e.dst, s.fqn FROM edges e "
+                "JOIN symbols s ON e.dst=s.id "
+                "WHERE e.src=? AND e.kind='calls' AND e.line=? "
+                "AND e.dst IS NOT NULL AND s.name=?",
+                (sym_row["id"], assignment.line, assignment.rhs_call),
+            ).fetchall()
+            if len(rows) == 1 and rows[0]["fqn"] in wrapper_fqns:
+                out.add(assignment.span)
+        return frozenset(out)
+
+    def _df_resolve_same_this_call(self, sym_row, receiver_flow):
+        """Unique call target on the same concrete enclosing class."""
+        parent_id = sym_row.get("parent_id")
+        if parent_id is None:
+            return None
+        rows = self.conn.execute(
+            "SELECT DISTINCT e.dst, e.confidence, s.fqn, s.kind, "
+            "s.start_line, s.parent_id, f.path, f.language "
+            "FROM edges e JOIN symbols s ON e.dst=s.id "
+            "JOIN files f ON s.file_id=f.id "
+            "WHERE e.src=? AND e.kind='calls' AND e.line=? "
+            "AND e.dst IS NOT NULL AND s.name=? AND s.parent_id=?",
+            (sym_row["id"], receiver_flow.line, receiver_flow.callee,
+             parent_id),
+        ).fetchall()
+        targets = {row["dst"]: dict(row) for row in rows}
+        return next(iter(targets.values())) if len(targets) == 1 else None
+
     def _crow(self, sym_id):
         r = self.conn.execute(
             "SELECT s.*, f.path FROM symbols s JOIN files f ON s.file_id=f.id "
@@ -1054,7 +1138,8 @@ class QueryEngine:
             return a if order[a] <= order[b] else b
 
         def trace(sym_row, tainted, origin, steps, d, visited, path_conf,
-                  path_flow="flow-sensitive", seed_map=None):
+                  path_flow="flow-sensitive", seed_map=None,
+                  source_spans=frozenset()):
             if budget.hit():
                 return
             budget.tick()
@@ -1069,11 +1154,13 @@ class QueryEngine:
             nonprop_lines = self._nonprop_lines(
                 sym_row, f, nao_propaga_fqn, nonprop_cache)
             flow = df.analyze(f, tainted, rules.sanitizers, lang=flang,
-                              sources=eff_src, nonprop=nonprop_lines)
+                              sources=eff_src, nonprop=nonprop_lines,
+                              source_spans=source_spans)
             if flang == "java":
                 collection_flow = df.analyze_java_constant_collections(
                     f, tainted, rules.sanitizers, sources=eff_src,
-                    nonprop=nonprop_lines, allow_unrelated_calls=True)
+                    nonprop=nonprop_lines, source_spans=source_spans,
+                    allow_unrelated_calls=True)
                 if collection_flow is not None:
                     flow = collection_flow
             for af in flow.arg_flows:
@@ -1137,6 +1224,45 @@ class QueryEngine:
                             trace(crow, {cf.params[af.arg_index]}, here,
                                   steps + [step], d + 1, visited, cur_conf,
                                   path_flow)
+            for receiver_flow in flow.receiver_flows:
+                if budget.hit() or d >= depth:
+                    return
+                callee = self._df_resolve_same_this_call(
+                    sym_row, receiver_flow)
+                if callee is None:
+                    continue
+                crow = self._crow(callee["dst"])
+                cf, _ = self._df_facts(crow, cache) if crow else (None, None)
+                if cf is None:
+                    continue
+                fields = frozenset(
+                    receiver_flow.fields & cf.instance_fields)
+                if not fields:
+                    continue
+                key = (callee["dst"], "this", tuple(sorted(fields)))
+                if key in visited or key in explored:
+                    continue
+                field_seeds = {("this", field) for field in fields}
+                field_seeds |= {
+                    (field,) for field in fields if field not in cf.local_names
+                }
+                step = {
+                    "func_fqn": sym_row["fqn"],
+                    "callee": receiver_flow.callee,
+                    "callee_fqn": callee["fqn"],
+                    "site_path": sym_row["path"],
+                    "line": receiver_flow.line,
+                    "arg_index": -2,
+                    "via": ", ".join(f"this.{field}"
+                                     for field in sorted(fields)),
+                    "confidence": callee["confidence"],
+                    "resolved": True,
+                }
+                cur_conf = conf_min(path_conf, callee["confidence"])
+                visited.add(key)
+                explored.add(key)
+                trace(crow, field_seeds, origin, steps + [step], d + 1,
+                      visited, cur_conf, path_flow)
 
         if entry:
             sym = self._resolve_fresh(entry, env)
@@ -1165,7 +1291,7 @@ class QueryEngine:
             # 1ª passada: funções que RETORNAM dado de fonte viram elas próprias
             # fontes (pega o idioma comum do wrapper `x = get_input()`)
             collected: list = []
-            src_funcs: set[str] = set()
+            src_func_fqns: set[str] = set()
             for r in rows:
                 if budget.hit():
                     break
@@ -1173,11 +1299,16 @@ class QueryEngine:
                 if f is None:
                     continue
                 collected.append((dict(r), f))
-                direct = any(rt.top_call in rules.sources for rt in f.returns)
+                direct = any(
+                    rt.top_call in rules.sources
+                    or df.return_reads_named_source(
+                        rt, rules.sources, rules.sanitizers)
+                    for rt in f.returns
+                )
                 seed = df.source_vars(f, rules.sources, rules.sanitizers)
                 if direct or (seed and df.analyze(
                         f, seed, lang=flang, sources=eff_src).reaches_return):
-                    src_funcs.add(r["name"])
+                    src_func_fqns.add(r["fqn"])
                 # SUMÁRIO DE RETORNO: esta função devolve o que recebe?
                 # Só funções COM parâmetros — `x = obj.metodo()` sem argumento
                 # ainda pode devolver dado do RECEPTOR (`sb.toString()`), e
@@ -1211,19 +1342,20 @@ class QueryEngine:
                             f, set(f.params), rules.sanitizers)
                         summary_safe = summary_flow is not None
                 if (summary_safe and f.params and f.returns
-                        and r["name"] not in src_funcs
+                        and r["fqn"] not in src_func_fqns
                         and not (summary_flow or df.analyze(
                             f, set(f.params), rules.sanitizers,
                             lang=flang)).reaches_return):
                     nao_propaga_fqn.add(r["fqn"])
-            eff_sources = rules.sources | src_funcs
-            eff_src |= src_funcs               # o motor flow-sensitive também vê
             scanned = 0
             for r, f in collected:
                 if budget.hit():
                     break
                 scanned += 1
-                seeds = df.source_sites(f, eff_sources, rules.sanitizers)
+                wrapper_spans = self._source_wrapper_spans(
+                    r, f, src_func_fqns)
+                seeds = df.source_sites(
+                    f, rules.sources, rules.sanitizers, wrapper_spans)
                 # a fonte também pode estar escrita DENTRO do argumento, sem
                 # passar por variável — aí não há semente, mas há vulnerabilidade
                 # (`eval(req.body.x)`). Sem esta linha a função nem seria varrida.
@@ -1239,8 +1371,12 @@ class QueryEngine:
                                 "path": r["path"], "line": direto[0],
                                 "what": direto[1]})
                 seed_map = {".".join(p): (ln, rot) for p, ln, rot in seeds}
-                trace(r, names, origin, [], 1, {(r["id"], -2)}, None,
-                      seed_map=seed_map)
+                # Flow-sensitive engines generate each source at its actual
+                # assignment. Seeding at function entry would let a later
+                # source write travel backwards across an earlier call.
+                initial = set() if f.regions is not None else names
+                trace(r, initial, origin, [], 1, {(r["id"], -2)}, None,
+                      seed_map=seed_map, source_spans=wrapper_spans)
                 if len(findings) >= max_findings:
                     budget.note("findings")
                     break

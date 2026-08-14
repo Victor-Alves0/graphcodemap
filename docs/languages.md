@@ -97,9 +97,12 @@ operations with constant indices/keys. Enhanced-for now propagates iterable
 taint to its element. Alias, escape, dynamic key, uncertain branch/loop,
 virtual/interface dispatch and reflection remain conservative.
 
-The independent Juliet Java 1.3 CWE-23 holdout measures 100% precision but only
-27% recall. That makes interprocedural variants and missing source models the
-next Java gap; Gradle remains the real-project resolver validation gap.
+The independent Juliet Java 1.3 CWE-23 holdout measures 100% precision and
+54.5% recall. Round 25 added concrete constructor-wrapper resolution and
+sanitizer-aware nested sources without changing the OWASP gate or adding
+corpus-specific source/sink names. Deeper interprocedural variants remain the
+next Java gap; Gradle remains the build-system validation follow-up after the
+real Maven/JDTLS run.
 
 ### Activating a resolver
 

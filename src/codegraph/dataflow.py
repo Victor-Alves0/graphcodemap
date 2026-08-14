@@ -14,8 +14,9 @@ Duas partes:
   basta.
 
 INTER-procedural fica no query.py, compondo estes sumários ao longo do call
-graph. Computado sob demanda do código no disco (sempre fresco). Suporte:
-Python e JavaScript/TypeScript.
+graph. Computado sob demanda do código no disco (sempre fresco). Python,
+JavaScript/TypeScript e Java têm validação em repositórios reais; Java inclui
+um primeiro domínio de estado de campos no mesmo receptor.
 """
 
 from __future__ import annotations
@@ -224,11 +225,33 @@ def is_framework_source_path(path) -> bool:
             or path[0] in _BARE_SOURCE_NAMES)
 
 
-def is_framework_source_call(qualified: str | None) -> bool:
-    return qualified is not None and qualified in FRAMEWORK_SOURCE_CALLS
+def is_framework_source_call(qualified: str | None, paths=()) -> bool:
+    """A qualified framework call backed by a full request access path.
+
+    ``values.get`` alone is not enough evidence: ``values`` is also a common
+    local ``Map`` name.  The extracted paths retain the missing outer receiver
+    in real calls such as ``request.values.get(...)``, so require that evidence
+    instead of trusting the lossy two-segment spelling.
+    """
+    return (qualified is not None and qualified in FRAMEWORK_SOURCE_CALLS
+            and any(is_framework_source_path(path) for path in paths))
 
 
-def assign_reads_named_source(a, sources=frozenset()) -> bool:
+def _nested_named_source(call, sources, sanitizers=frozenset()) -> str | None:
+    """Return the exact configured source nested in a call, if unsanitized."""
+    typed = (f"{call.receiver_type}.{call.callee}"
+             if call.receiver_type else None)
+    label = (typed if typed in sources
+             else call.qualified if call.qualified in sources
+             else call.callee if call.callee in sources
+             else None)
+    if label is None or any(guard in sanitizers for guard in call.guards):
+        return None
+    return label
+
+
+def assign_reads_named_source(a, sources=frozenset(),
+                              sanitizers=frozenset()) -> bool:
     """Assignment RHS is a configured source, simple or receiver-qualified.
 
     Exact qualified names let catalogs model APIs such as `System.getProperty`.
@@ -241,10 +264,13 @@ def assign_reads_named_source(a, sources=frozenset()) -> bool:
                  and getattr(a, "rhs_call", None) is not None)
              else None)
     return ((getattr(a, "rhs_call", None) is not None
-             and a.rhs_call in sources)
+             and a.rhs_call in sources
+             and a.rhs_call not in sanitizers)
             or (getattr(a, "rhs_qualified", None) is not None
                 and a.rhs_qualified in sources)
-            or (typed is not None and typed in sources))
+            or (typed is not None and typed in sources)
+            or any(_nested_named_source(call, sources, sanitizers) is not None
+                   for call in getattr(a, "nested_calls", ())))
 
 
 def assign_reads_framework_source(a, sanitizers=frozenset()) -> bool:
@@ -258,7 +284,8 @@ def assign_reads_framework_source(a, sanitizers=frozenset()) -> bool:
     if getattr(a, "rhs_call", None) is not None and a.rhs_call in sanitizers:
         return False
     return (getattr(a, "rhs_framework_source", False)
-            or is_framework_source_call(getattr(a, "rhs_qualified", None))
+            or is_framework_source_call(getattr(a, "rhs_qualified", None),
+                                        getattr(a, "rhs_ids", ()))
             or any(is_framework_source_path(p) for p in a.rhs_ids))
 
 
@@ -322,7 +349,7 @@ def uses_flow_sensitive(facts, lang: str | None) -> bool:
 
 
 def analyze(facts, tainted, sanitizers=frozenset(), lang: str | None = None,
-            sources=frozenset(), nonprop=frozenset()):
+            sources=frozenset(), nonprop=frozenset(), source_spans=frozenset()):
     """Ponto único de entrada do motor de taint.
 
     Usa o motor FLOW-SENSITIVE quando a linguagem suporta e os fatos têm CFG;
@@ -332,10 +359,11 @@ def analyze(facts, tainted, sanitizers=frozenset(), lang: str | None = None,
     if lang in FLOW_SENSITIVE:
         from .flowsens import analyze_flow
 
-        flow = analyze_flow(facts, tainted, sanitizers, sources, nonprop)
+        flow = analyze_flow(facts, tainted, sanitizers, sources, nonprop,
+                            source_spans)
         if flow is not None:
             return flow
-    return analyze_facts(facts, tainted, sanitizers, nonprop)
+    return analyze_facts(facts, tainted, sanitizers, nonprop, source_spans)
 
 
 def _build_regions(body_node, family: str, source=None, assigns=None):
@@ -524,6 +552,10 @@ class Assign:
     # resolve it. Java uses this to distinguish standard input readers from
     # unrelated domain objects exposing the same method name.
     rhs_receiver_type: str | None = None
+    # All calls inside the RHS, including their sanitizer ancestry.  A source
+    # passed to a constructor/container still taints the assigned object; a
+    # source below ``sanitize(...)`` does not.
+    nested_calls: list[NestedCall] = field(default_factory=list)
 
 
 @dataclass
@@ -551,6 +583,24 @@ class CallSite:
     # `list.remove(0)` / `list.get(1)`. Sem ambos, um resumo de retorno teria de
     # tratar toda coleção como propagadora ou, pior, adivinhar o índice.
     arg_values: dict[int, str] = field(default_factory=dict)
+    # Java receiver identity used by the first heap-sensitive boundary.  Only
+    # literal/implicit ``this`` is safe to transport instance-field state.
+    receiver_kind: str = "unknown"
+
+
+@dataclass
+class NestedCall:
+    """Call nested in an assignment or return, with its enclosing call chain.
+
+    ``guards`` contains only outer calls.  It lets source-wrapper discovery
+    distinguish ``return prefix + request.getX()`` from
+    ``return sanitize(request.getX())`` without retaining tree-sitter nodes in
+    the facts cache.
+    """
+    callee: str
+    qualified: str | None = None
+    receiver_type: str | None = None
+    guards: tuple[str, ...] = ()
 
 
 @dataclass
@@ -558,6 +608,7 @@ class ReturnExpr:
     ids: set[str]
     top_call: str | None
     span: tuple[int, int] | None = None
+    nested_calls: list[NestedCall] = field(default_factory=list)
 
 
 @dataclass
@@ -569,6 +620,10 @@ class FnFacts:
     # CFG estruturada (flowsens.Seq) quando a linguagem suporta flow-sensitivity;
     # montada na extração para não reter nós tree-sitter no cache de fatos.
     regions: object | None = None
+    # Direct, non-static fields of the enclosing Java class and names that can
+    # shadow an unqualified field access inside this method.
+    instance_fields: frozenset[str] = frozenset()
+    local_names: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -591,8 +646,19 @@ class ArgFlow:
 
 
 @dataclass
+class ReceiverFlow:
+    """Tainted ``this`` fields visible at a same-receiver call site."""
+    callee: str
+    line: int
+    fields: frozenset[str]
+    qualified: str | None = None
+    span: tuple[int, int] | None = None
+
+
+@dataclass
 class Flow:
     arg_flows: list[ArgFlow] = field(default_factory=list)
+    receiver_flows: list[ReceiverFlow] = field(default_factory=list)
     reaches_return: bool = False
 
 
@@ -608,7 +674,8 @@ _JAVA_COLLECTION_SENTINEL = ("__graphcodemap_collection_taint__",)
 
 def analyze_java_constant_collections(
         facts: FnFacts, tainted, sanitizers=frozenset(), sources=frozenset(),
-        nonprop=frozenset(), *, allow_unrelated_calls: bool = False):
+        nonprop=frozenset(), source_spans=frozenset(), *,
+        allow_unrelated_calls: bool = False):
     """Refina Java com listas e mapas locais de operações determinísticas.
 
     O analisador escalar é conservador sobre aliasing: `map.put(key, value)`
@@ -864,7 +931,7 @@ def analyze_java_constant_collections(
                       returns=cloned_returns)
     initial = set(tainted) | {_JAVA_COLLECTION_SENTINEL}
     return analyze(refined, initial, sanitizers, lang="java", sources=sources,
-                   nonprop=nonprop)
+                   nonprop=nonprop, source_spans=source_spans)
 
 
 def analyze_java_constant_list(facts: FnFacts, tainted,
@@ -1024,7 +1091,77 @@ def _rhs_receiver_type(source: bytes, node, call_types,
         return declared_types.get(receiver)
     if re.fullmatch(r"(?:this|super)\.[A-Za-z_$][\w$]*", receiver):
         return declared_types.get(receiver.rsplit(".", 1)[-1])
+    # A constructor receiver is stronger evidence than an unresolved call-graph
+    # edge: ``new ConcreteSource().read()`` names the concrete runtime class in
+    # the syntax itself.  Keep this lexical and fail closed (casts, factories,
+    # conditional receivers and arbitrary call chains remain unresolved).
+    created = obj
+    while created.type == "parenthesized_expression":
+        named = created.named_children
+        if len(named) != 1:
+            return None
+        created = named[0]
+    if created.type == "object_creation_expression":
+        typ = created.child_by_field_name("type")
+        if typ is None:
+            return None
+        raw = _text(source, typ).strip().split("<", 1)[0].strip()
+        if not re.fullmatch(
+                r"[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*", raw):
+            return None
+        name = re.sub(r"\s+", "", raw)
+        if "." in name:
+            return name
+        text = source.decode("utf-8", "replace")
+        explicit = re.findall(
+            rf"(?m)^\s*import\s+(?!static\b)"
+            rf"([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\.{re.escape(name)})\s*;",
+            text,
+        )
+        if len(set(explicit)) == 1:
+            return explicit[0]
+        package = re.search(
+            r"(?m)^\s*package\s+"
+            r"([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*;",
+            text,
+        )
+        return f"{package.group(1)}.{name}" if package else name
     return None
+
+
+def _java_receiver_kind(source: bytes, node) -> str:
+    """Classify only receiver forms whose object identity is syntactic."""
+    if node is None:
+        return "unknown"
+    if node.type == "object_creation_expression":
+        return "other"
+    obj = node.child_by_field_name("object")
+    if obj is None:
+        return "implicit_this"
+    return ("explicit_this"
+            if _text(source, obj).strip() == "this" else "other")
+
+
+def _nested_calls(source: bytes, node, call_types, idset,
+                  declared_types: dict[str, str], guards=()) -> list[NestedCall]:
+    """Collect calls inside an expression and remember sanitizer ancestry."""
+    if node is None:
+        return []
+    out: list[NestedCall] = []
+    child_guards = guards
+    if node.type in call_types:
+        callee = _callee_of(source, node, idset)
+        out.append(NestedCall(
+            callee,
+            _rhs_qualified(source, node, call_types),
+            _rhs_receiver_type(source, node, call_types, declared_types),
+            tuple(guards),
+        ))
+        child_guards = guards + (callee,)
+    for child in node.named_children:
+        out.extend(_nested_calls(source, child, call_types, idset,
+                                 declared_types, child_guards))
+    return out
 
 
 def _receiver_last(source: bytes, call_node) -> str | None:
@@ -1381,6 +1518,8 @@ def _gen_chain(source, node, idset):
     if node is None:
         return None
     t = node.type
+    if t in {"this", "this_expression"}:
+        return ("this",)
     if t in idset or t in _NAMEISH:
         return (_text(source, node),)
     spec = _GEN_MEMBER.get(t)
@@ -1554,13 +1693,60 @@ def _java_declared_types(source: bytes, fn, body, stop) -> dict[str, str]:
     """
     candidates: dict[str, set[str]] = {}
 
+    text = source.decode("utf-8", "replace")
+    package_match = re.search(
+        r"(?m)^\s*package\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*;",
+        text,
+    )
+    package_name = package_match.group(1) if package_match else None
+    imported: dict[str, set[str]] = {}
+    for match in re.finditer(
+            r"(?m)^\s*import\s+(?!static\b)"
+            r"([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)\s*;",
+            text):
+        fqn = match.group(1)
+        imported.setdefault(fqn.rsplit(".", 1)[-1], set()).add(fqn)
+    explicit_imports = {
+        simple: next(iter(fqns))
+        for simple, fqns in imported.items()
+        if len(fqns) == 1
+    }
+    wildcard_imports = set(re.findall(
+        r"(?m)^\s*import\s+(?!static\b)"
+        r"([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\.\*\s*;",
+        text,
+    ))
+    # Only source-relevant JDK classes are inferred through a wildcard.  This
+    # is intentionally not a generic wildcard resolver: arbitrary packages or
+    # application classes remain ambiguous without the semantic index.
+    java_io_types = {
+        "BufferedReader", "Console", "DataInputStream",
+        "LineNumberReader", "RandomAccessFile",
+    }
+
     def normalized(node) -> str | None:
         if node is None:
             return None
         raw = _text(source, node).strip().split("<", 1)[0].strip()
         raw = raw.replace("[]", "").strip()
-        match = re.search(r"([A-Za-z_$][\w$]*)$", raw)
-        return match.group(1) if match else None
+        match = re.search(
+            r"([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)$",
+            raw,
+        )
+        if match is None:
+            return None
+        name = re.sub(r"\s+", "", match.group(1))
+        if "." in name:
+            return name
+        if name in explicit_imports:
+            return explicit_imports[name]
+        if "java.io" in wildcard_imports and name in java_io_types:
+            return f"java.io.{name}"
+        # A simple name in a named package resolves to that package unless an
+        # explicit single-type import above proves otherwise.  Wildcard
+        # imports are intentionally not guessed: a security source requiring
+        # an FQN must fail closed when lexical evidence cannot disambiguate it.
+        return f"{package_name}.{name}" if package_name else name
 
     def add(name_node, type_node):
         if name_node is None:
@@ -1607,6 +1793,73 @@ def _java_declared_types(source: bytes, fn, body, stop) -> dict[str, str]:
             if len(types) == 1}
 
 
+def _java_instance_scope(source: bytes, fn, body, stop):
+    """Return direct instance fields and method-local names, fail-closed."""
+    fields: set[str] = set()
+    locals_: set[str] = set()
+
+    def name_of(node) -> str | None:
+        if node is None:
+            return None
+        name = _text(source, node).strip()
+        return name if re.fullmatch(r"[A-Za-z_$][\w$]*", name) else None
+
+    params = fn.child_by_field_name("parameters")
+    if params is not None:
+        for param in params.named_children:
+            name = name_of(param.child_by_field_name("name"))
+            if name:
+                locals_.add(name)
+
+    class_body = fn.parent
+    while class_body is not None and class_body.type != "class_body":
+        class_body = class_body.parent
+    if class_body is not None:
+        for declaration in class_body.named_children:
+            if declaration.type != "field_declaration":
+                continue
+            raw = _text(source, declaration)
+            if re.search(r"\bstatic\b", raw.split("=", 1)[0]):
+                continue
+            for child in declaration.named_children:
+                if child.type == "variable_declarator":
+                    name = name_of(child.child_by_field_name("name"))
+                    if name:
+                        fields.add(name)
+
+    declarations: list = []
+    _walk(body, {"local_variable_declaration", "resource",
+                 "enhanced_for_statement", "catch_formal_parameter"},
+          stop, declarations)
+    for declaration in declarations:
+        if declaration.type == "local_variable_declaration":
+            candidates = [
+                child.child_by_field_name("name")
+                for child in declaration.named_children
+                if child.type == "variable_declarator"
+            ]
+        else:
+            candidates = [declaration.child_by_field_name("name")]
+        for candidate in candidates:
+            name = name_of(candidate)
+            if name:
+                locals_.add(name)
+    return frozenset(fields), frozenset(locals_)
+
+
+def instance_field_name(facts: FnFacts, path) -> str | None:
+    """Canonical field name for an access proven to refer to ``this``."""
+    if not isinstance(path, tuple):
+        return None
+    if (len(path) == 2 and path[0] == "this"
+            and path[1] in facts.instance_fields):
+        return path[1]
+    if (len(path) == 1 and path[0] in facts.instance_fields
+            and path[0] not in facts.local_names):
+        return path[0]
+    return None
+
+
 def _facts_generic(source, fn, lang) -> FnFacts:
     # fontes que só são fontes NESTA linguagem (`params` do Rails)
     nuas = lang_bare_sources(lang)
@@ -1620,6 +1873,10 @@ def _facts_generic(source, fn, lang) -> FnFacts:
     stop = _scope_stop(lang)
     declared_types = (_java_declared_types(source, fn, body, stop)
                       if lang == "java" else {})
+    if lang == "java":
+        fields, locals_ = _java_instance_scope(source, fn, body, stop)
+        facts.instance_fields = fields
+        facts.local_names = locals_
 
     # atribuições
     assign_types: set[str] = set()
@@ -1677,7 +1934,9 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                                              lambda n: _gen_colher(source, n, idset)),
                                     any(len(q) == 1 and q[0] in nuas for q in rids),
                                     _rhs_receiver_type(source, rhs_node, calls_t,
-                                                       declared_types)))
+                                                       declared_types),
+                                    _nested_calls(source, rhs_node, calls_t,
+                                                  idset, declared_types)))
 
     # Iteration is also a data-flow assignment: in `for (T item : values)`,
     # every value observed through `item` came from `values`.  Tree-sitter
@@ -1714,6 +1973,8 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                 any(len(q) == 1 and q[0] in nuas for q in rids),
                 _rhs_receiver_type(source, value_node, calls_t,
                                    declared_types),
+                _nested_calls(source, value_node, calls_t, idset,
+                              declared_types),
             ))
         facts.assigns.extend(loop_assigns)
 
@@ -1726,7 +1987,10 @@ def _facts_generic(source, fn, lang) -> FnFacts:
         recv = _receiver_last(source, call)
         cs = CallSite(callee, _callee_site(call).start_point[0] + 1, [],
                       (call.start_byte, call.end_byte),
-                      f"{recv}.{callee}" if recv else None)
+                      f"{recv}.{callee}" if recv else None,
+                      receiver_kind=(
+                          _java_receiver_kind(source, call)
+                          if lang == "java" else "unknown"))
         if args is not None:
             pos = 0
             for arg in args.named_children:
@@ -1757,7 +2021,10 @@ def _facts_generic(source, fn, lang) -> FnFacts:
         child = r.named_children[0] if r.named_children else None
         top = (_rhs_call(source, child, calls_t, idset)
                if child is not None else None)
-        facts.returns.append(ReturnExpr(ids, top, (r.start_byte, r.end_byte)))
+        facts.returns.append(ReturnExpr(
+            ids, top, (r.start_byte, r.end_byte),
+            _nested_calls(source, child, calls_t, idset, declared_types),
+        ))
     # expressão-cauda (Rust/Scala/Ruby/Kotlin/Swift): última expr do corpo
     if cfg.get("tail"):
         last = None
@@ -1776,9 +2043,11 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                 # span OBRIGATÓRIO: sem ele o motor flow-sensitive nunca situa
                 # este fato numa região e o retorno implícito some (regressão
                 # pega pela suíte em Rust/Ruby/Scala, as linguagens com cauda).
-                facts.returns.append(
-                    ReturnExpr(ids, _rhs_call(source, last, calls_t, idset),
-                               (last.start_byte, last.end_byte)))
+                facts.returns.append(ReturnExpr(
+                    ids, _rhs_call(source, last, calls_t, idset),
+                    (last.start_byte, last.end_byte),
+                    _nested_calls(source, last, calls_t, idset, declared_types),
+                ))
     facts.regions = _build_regions(body, lang, source, facts.assigns)
     return facts
 
@@ -1928,7 +2197,7 @@ def extract_facts(source: bytes, fn_node, lang: str) -> FnFacts:
 # -- motor de taint (compartilhado) -------------------------------------------
 
 def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset(),
-                  nonprop=frozenset()) -> Flow:
+                  nonprop=frozenset(), source_spans=frozenset()) -> Flow:
     """Fixpoint may-taint FIELD-SENSITIVE. O conjunto sujo guarda *caminhos de
     acesso* (tuplas); ler um caminho está sujo se ele ou qualquer prefixo seu
     estiver sujo (`_is_tainted`). `tainted_init` deve conter caminhos — um nome
@@ -1943,7 +2212,7 @@ def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset(),
                 continue  # sanitizado, ou chamada que não devolve o argumento
             rhs_hit = any(_is_tainted(p, tainted) for p in a.rhs_ids)
             aug_hit = a.is_aug and any(_is_tainted(t, tainted) for t in a.targets)
-            if rhs_hit or aug_hit:
+            if rhs_hit or aug_hit or a.span in source_spans:
                 for t in a.targets:
                     if t not in tainted:
                         tainted.add(t)
@@ -1971,29 +2240,50 @@ def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset(),
     return flow
 
 
-def source_vars(facts: FnFacts, sources, sanitizers=frozenset()) -> set:
+def source_vars(facts: FnFacts, sources, sanitizers=frozenset(),
+                source_spans=frozenset()) -> set:
     """Caminhos cujo valor nasce de uma chamada a uma fonte (input não-confiável)."""
     out: set = set()
     for a in facts.assigns:
-        if (assign_reads_named_source(a, sources)
-                or assign_reads_framework_source(a, sanitizers)):
+        if (assign_reads_named_source(a, sources, sanitizers)
+                or assign_reads_framework_source(a, sanitizers)
+                or a.span in source_spans):
             out |= a.targets
     return out
 
 
-def source_sites(facts: FnFacts, sources, sanitizers=frozenset()) -> list[tuple]:
+def return_reads_named_source(returned: ReturnExpr, sources,
+                              sanitizers=frozenset()) -> bool:
+    """Whether a return expression contains a configured, unsanitized source."""
+    for call in returned.nested_calls:
+        typed = (f"{call.receiver_type}.{call.callee}"
+                 if call.receiver_type else None)
+        if (call.callee in sources or call.qualified in sources
+                or typed in sources):
+            if not any(guard in sanitizers for guard in call.guards):
+                return True
+    return False
+
+
+def source_sites(facts: FnFacts, sources, sanitizers=frozenset(),
+                 source_spans=frozenset()) -> list[tuple]:
     """(caminho, linha, fonte) para cada atribuição a partir de uma fonte.
     O caminho é uma tupla (semente para o motor); renderize com '.'.join()."""
     out = []
     for a in facts.assigns:
         rotulo = None
-        if assign_reads_named_source(a, sources):
+        if assign_reads_named_source(a, sources, sanitizers):
             rotulo = (a.rhs_qualified if a.rhs_qualified in sources
-                      else a.rhs_call)
+                      else next((label for call in a.nested_calls
+                                 if (label := _nested_named_source(
+                                     call, sources, sanitizers)) is not None),
+                                a.rhs_call))
         elif assign_reads_framework_source(a, sanitizers):
             rotulo = a.rhs_qualified or next(
                 (".".join(p) for p in sorted(a.rhs_ids)
                  if is_framework_source_path(p)), "request")
+        elif a.span in source_spans:
+            rotulo = a.rhs_call or "source-wrapper"
         if rotulo is None:
             continue
         for t in sorted(a.targets):

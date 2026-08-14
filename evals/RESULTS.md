@@ -1703,7 +1703,7 @@ pontua os 444 companions `good()` como negativos.
 
 | corpus | TP | FP | FN | TN | precisão | recall | FPR | score |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| GraphCodeMap / Juliet CWE-23 | 228 | 0 | 216 | 444 | **100%** | **51,4%** | **0%** | +0,514 |
+| GraphCodeMap / Juliet CWE-23 | 242 | 0 | 202 | 444 | **100%** | **54,5%** | **0%** | +0,545 |
 | CodeQL `default` / DB manual | 222 | 6 | 222 | 438 | 97,37% | 50,0% | 1,35% | +0,486 |
 | CodeQL `security-extended` / DB manual | 222 | 6 | 222 | 438 | 97,37% | 50,0% | 1,35% | +0,486 |
 
@@ -1788,3 +1788,45 @@ matriz Linux/Windows em Python 3.10–3.12, build/twine e smoke do wheel instala
 em ambiente limpo. O warmup LSP passou a esperar preferencialmente por uma
 referência qualificada cross-file; o teste real do `rust-analyzer`, antes
 intermitente, passou cinco execuções consecutivas após a correção.
+
+---
+
+# Rodada 25 — transporte Java no mesmo receiver (2026-08-14)
+
+O micro-goal partiu do miss real FitNesse CVE-2024-42499 e foi fechado como
+semântica geral, sem nomes do corpus. Fontes `fitnesse.http.Request` exigem o
+tipo qualificado; wrappers de fonte são guardados por FQN e resolvidos apenas
+para o mesmo `this`, uma aresta única, ou o tipo concreto de
+`new Type().wrapper()`. Fontes aninhadas em construtores/containers propagam
+para o alvo da atribuição e respeitam sanitizers ancestrais.
+
+O primeiro transporte de heap é deliberadamente estreito: campos de instância
+diretos, sem shadow local, são capturados no ponto da chamada e entram apenas
+num helper posterior da mesma classe e do mesmo receiver. Outro objeto, chamada
+antes da escrita, overwrite limpo e ambiguidade de overload falham fechados.
+Efeitos escritos pelo callee e devolvidos ao caller continuam fora do domínio e
+permanecem em `xfail` estrito como próximo `HeapSummary`.
+
+Uma revisão adversarial independente encontrou e bloqueou sete regressões antes
+do fechamento: marcador de wrapper compartilhado por linha, ordem incorreta da
+chamada no RHS, estado de `this` vazando para `new App()`, perda do marcador no
+domínio List/Map e `java.io.*` não resolvido. Cada reprodução virou teste.
+
+| gate | TP | FP | FN | TN | precisão | recall | FPR | score |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| OWASP Benchmark | 868 | 92 | 34 | 704 | 90,4% | 96,2% | 11,6% | +0,847 |
+| NIST Juliet CWE-23 | 242 | 0 | 202 | 444 | 100% | 54,5% | 0% | +0,545 |
+
+O OWASP ficou bit a bit nas métricas. No Juliet, o ganho 228 → 242 TP não veio
+de reabrir nomes globais: o antigo resultado incluía colisões entre wrappers
+homônimos; a rodada recupera os fluxos por tipo concreto e adiciona
+`getQueryString` aninhado. A família `PropertiesFile` continua ausente até
+existir prova de `Properties.load` no mesmo receiver, em vez de transformar
+todo `Properties.getProperty` em fonte.
+
+Nos pares reais, o FitNesse passa de miss para **2 matches vulneráveis**. A
+revisão corrigida ainda conserva **1 match**: o containment canônico está dentro
+do wrapper `composeFileName`, e o motor ainda não exporta um sumário
+sanitizante desse helper. O agregado, portanto, é **3/3 vulnerabilidades
+detectadas e 1/3 patches distinguidos**; o resultado não é promovido a
+`detected-and-cleared` artificialmente.
