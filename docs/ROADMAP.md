@@ -117,6 +117,19 @@ Veja [Security Benchmark](SECURITY_BENCHMARK.md).
   compatibilidade para bancos/seletores antigos e overloads ambíguos.
 - Gate local: **1.845 passed, 28 skipped**.
 
+### Checkpoint Round 30 — semântica Spring conservadora
+
+- Entry points de controller, `@Bean` e callbacks event/scheduled usam aresta
+  `framework/inferred/l0`; não aparecem como callers nem viram `certain`.
+- Parâmetros MVC explicitamente ligados à request alimentam o taint em scan
+  mode. Tipos declarados resolvem injeção/repositório; métodos gerados ausentes
+  continuam dangling/possible.
+- Contraexemplos cobrem annotation homônima, classe não gerenciada, `@Async`
+  isolado, overload por span e remoção incremental.
+- `INDEXER_VERSION=38`; gate local: **1.852 passed, 28 skipped**.
+- A penúltima etapa Java está fechada. A última é o portfólio pinado de quatro
+  repositórios Maven/Gradle/multi-module/Spring.
+
 ### Checkpoint Round 27
 
 - Gate final: **1.778 passed, 27 skipped**, sem xfail.

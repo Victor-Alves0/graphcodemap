@@ -110,14 +110,21 @@ The first fresh run exposed a false post-shutdown handshake failure and Juliet
 project-root diagnostics. Both were fixed rather than suppressed: the corrected
 overlay used source root `src`, the four official bundled JARs and the official
 `antbuild` exclusion, then completed 732/732 files with 4,408 `certain`
-promotions and zero warnings/errors. Arbitrary JVM object graphs, reflection,
-concurrency and broader framework evidence remain conservative boundaries.
+promotions and zero warnings/errors. Arbitrary JVM object graphs, reflection
+and concurrency remain conservative boundaries.
 
 The Round 29 operational gate closes Spring PetClinic at 49/49 Java files and
 345 `certain`, twice with zero warning/error. A versioned persistent JDTLS
 workspace reduced wall time from 73.114 s cold to 60.829 s warm without changing
 the exact edge hash. Java symbols now persist declared-package FQNs under
 `INDEXER_VERSION=37`; legacy path-based databases and selectors remain readable.
+
+Round 30 adds syntax-proven Spring controller, bean and callback wiring as
+`framework/inferred/l0` edges and treats explicitly request-bound MVC parameters
+as taint sources. It deliberately does not infer custom meta-annotations,
+generated repository methods, AOP/proxy targets or configuration-driven wiring.
+These semantics use `INDEXER_VERSION=38`; the remaining Java release gate is the
+representative four-repository portfolio.
 
 ### Activating a resolver
 

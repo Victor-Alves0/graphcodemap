@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-23T16:51:37-03:00",
+  "scope": "Penultimate Java gate: conservative Spring framework semantics",
+  "engine": {
+    "commit": "84cb961ef75b20f49af3292fd0ad065c133915fe",
+    "indexer_version": "38",
+    "worktree_clean_before_report": true,
+    "local_suite": {
+      "passed": 1852,
+      "skipped": 28,
+      "duration_seconds": 153.20
+    },
+    "focused_contract": {
+      "file": "tests/test_java_spring_framework_contracts.py",
+      "passed": 7,
+      "duration_seconds": 1.23
+    }
+  },
+  "acceptance": {
+    "controller_entry": "explicit Spring controller plus mapping produces framework/inferred/l0; callers remains empty; impact includes the owner",
+    "mvc_taint": "explicit request-bound MVC parameter is a scan-mode source with exact annotation provenance",
+    "typed_injection": "declared repository method resolves through the typed receiver; undeclared generated method remains possible/dangling",
+    "bean_entry": "Bean in an explicit Configuration is framework wiring",
+    "callback_entry": "event/transactional-event/scheduled method in an explicit Spring component is framework wiring; Async alone is not",
+    "overloads": "the annotated declaration is selected by file and exact span, not ambiguous FQN",
+    "freshness": "removing framework annotations removes the edge through read-repair"
+  },
+  "negative_oracles": [
+    "same-named non-Spring annotations create no wiring and no taint source",
+    "mapping on an unmanaged class creates no entry",
+    "EventListener on an unmanaged class creates no entry",
+    "Async without EventListener or Scheduled creates no entry",
+    "unmapped helper parameter is not a scan-mode source",
+    "undeclared Spring Data derived method is not fabricated"
+  ],
+  "known_boundaries": [
+    "custom and composed meta-annotations",
+    "wildcard-only annotation imports",
+    "Spring Data generated method bodies and targets",
+    "AOP and proxy target selection",
+    "reflection and configuration-driven bean wiring",
+    "arbitrary runtime event publication reachability"
+  ],
+  "remaining_java_gate": "Pinned clean portfolio of at least four repositories covering Maven, Gradle, multi-module and Spring with setup-build-index-refine-doctor manifests and sampled precision",
+  "claim_boundary": "This proves the named local Spring contracts. It is not whole-Spring, whole-JVM, universal SAST or CodeQL superiority evidence."
+}

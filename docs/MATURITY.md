@@ -89,6 +89,13 @@ with an identical edge hash. The local gate is **1,845 passed, 28 skipped** and
 the [Round 29 manifest](../evals/round29-java-operational-gates-manifest.json)
 records the bounded evidence.
 
+Round 30 closes the penultimate Java gate with conservative Spring semantics.
+Explicit controller/bean/callback declarations are navigable without becoming
+fabricated call edges, MVC-bound parameters seed taint, and typed
+injection/repository dispatch fails closed when the target is undeclared. The
+local gate is **1,852 passed, 28 skipped**. The only final Java promotion gate
+is now the pinned four-repository Maven/Gradle/multi-module/Spring portfolio.
+
 ## Rule for adding scope
 
 A new language or major feature must declare a target maturity level, an oracle,

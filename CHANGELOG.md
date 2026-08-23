@@ -6,6 +6,18 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ## [Unreleased]
 
+### Added — semântica Spring conservadora
+
+- Controllers, `@Bean` e callbacks event/scheduled explicitamente importados
+  geram arestas `framework/inferred/l0`, navegáveis por references/impact sem
+  fabricar callers ou promover runtime wiring a `certain`.
+- Parâmetros Spring MVC explicitamente ligados à request agora são fontes de
+  taint em scan mode. Injeção/repositórios usam o tipo Java declarado; método
+  gerado não declarado permanece dangling/possible.
+- Contratos adversariais cobrem anotações customizadas homônimas, classe não
+  gerenciada, `@Async` isolado, overload exato por span e read-repair. O índice
+  derivado sobe para `INDEXER_VERSION=38`; gate: **1.852 passed, 28 skipped**.
+
 ### Changed — Java operacional completo e identidade canônica
 
 - `INDEXER_VERSION=37` persiste símbolos Java pelo pacote declarado

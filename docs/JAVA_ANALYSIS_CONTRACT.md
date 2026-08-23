@@ -1,6 +1,7 @@
 # Java analysis behavioral contract
 
-Status: **Round 27 semantic reference plus Round 29 operational closure.**
+Status: **Round 27 semantic reference, Round 29 operational closure and Round
+30 conservative Spring semantics.**
 Semantic, health, incremental-L1 and reporting invariants below have executable
 evidence. The result is bounded evidence, not a claim of whole-JVM completeness.
 
@@ -32,25 +33,32 @@ a red semantic or health contract.
    `doctor`. An unresolved definition alone remains L0 and does not make a
    healthy pass partial. JDTLS workspaces are exclusive, versioned, invalidated
    by build-model changes, crash-recoverable and reusable only after clean exit.
+8. **Framework semantics:** proven Spring controller, bean and event/scheduled
+   declarations are navigable as `framework/inferred/l0`, never fabricated
+   `calls`. Explicit MVC request-bound parameters seed taint at method entry;
+   typed injection dispatches only to declared targets, and unmodeled runtime
+   wiring remains possible/dangling rather than certain.
 
 ## Requirement-to-evidence matrix
 
 | Area | Current implementation | Executable evidence | Current gap |
 |---|---|---|---|
-| L0 identity | Java extraction retains declared-package owners, overload IDs, receiver types, line/column and byte spans. Lexical block scopes and same-line resolution are carried through flow lookup. | Former same-line and disjoint-scope regressions are ordinary passing tests; the current project suite is 1,845 passed. | Factory/reflection typing still degrades conservatively without semantic proof. |
+| L0 identity | Java extraction retains declared-package owners, overload IDs, receiver types, line/column and byte spans. Lexical block scopes and same-line resolution are carried through flow lookup. | Former same-line and disjoint-scope regressions are ordinary passing tests; the current project suite is 1,852 passed. | Factory/reflection typing still degrades conservatively without semantic proof. |
 | L1 identity | JDTLS uses project roots, UTF-16 conversion, target selection ranges, semantic fan-out and incremental provenance invalidation. Build markers trigger project-root revalidation, including creation/removal in monorepos. | Corrected Juliet overlay: 732/732 files, 4,408 `certain`, complete with zero warnings/errors. Incremental override, marker and late-diagnostic contracts pass. | Language-server availability and project build health remain operational prerequisites. |
 | CFG and provenance | Structured flow models ordered branches, finite loop convergence, mandatory `finally`, invoked/deferred lambdas and source provenance through multiple tainted argument candidates. | Former strict characterizations for `finally`, loop convergence, invoked lambdas, source attribution and source/sink same-line identity now pass. OpenRefine reports the exact `getParameterValues("lang")` source at line 83. | Unsupported reflection/native behavior still degrades conservatively; broader real-project control-flow diversity remains necessary. |
 | Heap and dispatch | Receiver summaries separate may-dirty effects from must-clean overwrites; fan-out unions dirty state and intersects kills; aliases/escape block unsafe kills. Static/process state and ordered property reads/writes are modeled by the current Java contracts. | Focused heap, alias, dispatch and global-state contracts are green; FitNesse and openHAB fixed revisions clear their oracles. | This is not a whole-JVM points-to analysis: arbitrary object graphs, reflection, concurrency and framework-managed state remain conservative. |
 | Rules | Rules are receiver/type/category/argument-role aware. Sanitizer effects are context-compatible instead of one universal kill set. | The semantic OWASP gate scores 902/0/0/796; Juliet CWE-23 scores 444/0/0/444. | These corpora cover a bounded category and coding-style surface; independent projects and more vulnerability families are still required. |
+| Spring framework | Explicit Spring imports/FQNs prove controller mappings, `@Bean`, event/transactional-event and scheduled entry declarations. MVC-bound parameters are exact taint sources. Typed injection/repository calls reuse Java receiver evidence. | Seven focused contracts cover positive wiring plus unmanaged classes, `@Async` alone, homonymous custom annotations, undeclared repository methods, overload spans and incremental removal. The broad gate is 1,852 passed. | Custom/meta-annotations, wildcard-only imports, generated Spring Data methods, AOP/proxy targets and configuration-driven wiring remain conservative. |
 | Reporting | Source, sink and steps preserve column/span; allowed request-parameter literals are explicit; fingerprints and dedupe retain site/provenance distinctions; subject, engine and resolver health participate in report validity. Contradictory/partial/SARIF-aborted evidence fails closed. | Hardened scorer reports 3/3 vulnerable revisions detected and 3/3 fixes clear; path, subject and invocation adversarials pass. | Dirty engine worktrees are identified by a source-tree hash; release evidence is repinned after commit. |
-| Real-repository operation | Java persists declared-package identity and retains bidirectional legacy selectors. JDTLS has separate server/project runtimes, configurable budgets, a project-internal cross-file readiness probe, explicit pinned setup and a locked/versioned/invalidation-aware persistent workspace. Open documents close and diagnostics settle before shutdown. | Operational regressions cover timeout, process death, lock contention, build invalidation, runtime versioning, bounded cleanup, crash recovery, setup safety and canonical/legacy FQNs. Spring PetClinic completed twice from separate processes with 345 `certain`, zero warnings/errors and identical edge hash; warm time improved 73.114 s → 60.829 s. | Broader Spring/runtime-wiring and multi-repository evidence remains open; no reflection/framework call is promoted without semantic proof. |
+| Real-repository operation | Java persists declared-package identity and retains bidirectional legacy selectors. JDTLS has separate server/project runtimes, configurable budgets, a project-internal cross-file readiness probe, explicit pinned setup and a locked/versioned/invalidation-aware persistent workspace. Open documents close and diagnostics settle before shutdown. | Operational regressions cover timeout, process death, lock contention, build invalidation, runtime versioning, bounded cleanup, crash recovery, setup safety and canonical/legacy FQNs. Spring PetClinic completed twice from separate processes with 345 `certain`, zero warnings/errors and identical edge hash; warm time improved 73.114 s → 60.829 s. | The representative multi-repository portfolio remains open; no reflection/framework call is promoted without semantic proof. |
 
 ## Verified Round 27 evidence
 
 ### Local contracts
 
-- The Round 27 semantic gate was **1,778 passed, 27 skipped**; the current Round
-  29 operational gate is **1,845 passed, 28 skipped** in 167.52 s.
+- The Round 27 semantic gate was **1,778 passed, 27 skipped**; Round 29 reached
+  **1,845 passed, 28 skipped**, and the current Round 30 gate is **1,852 passed,
+  28 skipped** in 153.20 s.
 - The focused P1/contract regressions pass inside the broad project gate.
 - No previously documented strict Java characterization remains an advertised
   feature gap. A future regression must be recorded as a new executable
@@ -103,6 +111,21 @@ Both produced edge SHA-256
 The versioned evidence is in
 [Round 29 Java operational gates](../evals/round29-java-operational-gates-manifest.json).
 
+### Round 30 Spring framework closure
+
+The penultimate Java gate is closed by syntax-proven framework evidence shared
+between extraction and dataflow. Controller mappings, configuration beans and
+managed event/scheduled callbacks create a distinct `framework` edge. It is
+included by `references`, `ego_graph` and `impact`, but never by `callers` and
+never promoted to `certain` by JDTLS. Overload targets are selected by exact
+declaration span rather than FQN alone.
+
+Spring MVC parameters explicitly annotated as request-bound sources seed scan
+mode taint at method entry. The negative contracts reject same-named custom
+annotations, unmanaged classes, `@Async` without a callback annotation,
+unmapped helper methods and undeclared/generated repository methods. See the
+[Round 30 manifest](../evals/round30-java-spring-framework-manifest.json).
+
 ### What remains before Java is “redondinho”
 
 The first three Round 28 gates are now complete:
@@ -113,11 +136,11 @@ The first three Round 28 gates are now complete:
 - canonical persisted identity: `INDEXER_VERSION=37`, legacy DB and selector
   compatibility, including overload ambiguity.
 
-Only Java-specific open gates remain in this list:
+The Spring-specific penultimate gate is complete. Only the final Java-specific
+gate remains:
 
 | Remaining gate | Acceptance condition |
 |---|---|
-| Spring framework semantics | Executable fixtures cover controller entry points, dependency injection, bean/repository dispatch and async/event callbacks without fabricating calls. Unmodeled runtime wiring remains explicitly non-`certain`. |
 | Representative Java portfolio | At least four pinned clean real repos cover Maven, Gradle, multi-module and Spring; each has a manifest with setup→build→index→refine→doctor, resolver health and sampled precision. One completed PetClinic repository is not enough. |
 
 OWASP/Juliet benchmark recall is not on this remaining list: the measured Java
@@ -148,16 +171,18 @@ operational tooling. Neither table justifies a universal superiority claim.
 | CFG, loop, lambda, sanitizer and global-state characterizations formerly listed in Round 26 | Promoted to passing contracts |
 | Hardened real-pair oracle | Complete: 3/3 vulnerable, 3/3 fixes clear |
 | Semantic OWASP/Juliet score | Complete for the measured `INDEXER_VERSION=35` profile |
-| Broad final project regression | Complete: 1,845 passed, 28 skipped |
+| Broad final project regression | Complete: 1,852 passed, 28 skipped |
 | JDTLS overlay health | Complete: 732/732, 4,408 certain, zero warnings/errors |
 | Explicit Java environment setup | Complete: JDK 21/JDTLS discovery, pinned JDTLS archive with SHA-256, persisted user-local paths and opt-in consent |
 | Spring PetClinic semantic completion | Complete: two clean process runs, 345 `certain`, zero warning/error, stable output hash |
 | Persistent JDTLS workspace | Complete: lock, schema/runtime/build key, invalidation, bounded cleanup, crash recovery and measured warm reuse |
 | Canonical persisted Java identity | Complete in `INDEXER_VERSION=37`, with old-DB and old-selector bridges |
-| Broader independent Java evidence | Pending additional CVEs, frameworks and vulnerability families |
+| Conservative Spring framework semantics | Complete in `INDEXER_VERSION=38`: framework edges, MVC parameter sources, typed dispatch and adversarial negative contracts |
+| Representative Java portfolio | Pending three additional pinned clean repos covering the declared Maven/Gradle/multi-module/Spring matrix |
 | Whole-product parity with CodeQL | Not claimed |
 
 Canonical details live in [Security Benchmark](SECURITY_BENCHMARK.md), the
 [Round 27 gate manifest](../evals/round27-java-gates-manifest.json), the
 [real-pair result](../evals/java-real-pairs-round27-results.json), and the
-historical log in [evals/RESULTS.md](../evals/RESULTS.md).
+[Round 30 Spring manifest](../evals/round30-java-spring-framework-manifest.json).
+Historical detail remains in [evals/RESULTS.md](../evals/RESULTS.md).
