@@ -10,7 +10,10 @@ from codegraph.languages import get_parser
 
 
 def _extract(source: str, module: str = "app"):
-    data = textwrap.dedent(source).encode()
+    source = textwrap.dedent(source)
+    if "package " not in source:
+        source = f"package {module};" + source
+    data = source.encode()
     return extract("java", data, module, get_parser("java").parse(data))
 
 

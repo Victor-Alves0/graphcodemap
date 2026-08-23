@@ -48,9 +48,7 @@ def test_java_canonical_fqn_locates_find_info_and_callers(tmp_path):
         stored = graph.indexer.conn.execute(
             "SELECT fqn FROM symbols WHERE name='save'"
         ).fetchone()["fqn"]
-        assert stored == (
-            "src.main.java.com.acme.orders.OrderService.OrderService.save"
-        )
+        assert stored == canonical
 
         found, _env = graph.find_symbol(canonical)
         assert [row["fqn"] for row in found if row["name"] == "save"] == [stored]
@@ -115,5 +113,50 @@ def test_java_alias_does_not_override_exact_identity_from_other_language(tmp_pat
         info, _env = graph.symbol_info("com.acme.orders.OrderService.save")
         assert info["symbol"]["fqn"] == "com.acme.orders.OrderService.save"
         assert info["symbol"]["path"].endswith("OrderService.py")
+    finally:
+        graph.close()
+
+
+def test_java_canonical_identity_uses_declared_package_not_source_root(tmp_path):
+    _write(
+        tmp_path,
+        "unusual/generated/location/WrongName.java",
+        """
+        package actual.api;
+        class Outer {
+            class Inner {
+                Inner() {}
+                void run() {}
+                void run(String value) {}
+            }
+        }
+        """,
+    )
+    graph = CodeGraph(tmp_path)
+    try:
+        graph.index()
+        rows = graph.indexer.conn.execute(
+            "SELECT fqn FROM symbols WHERE kind != 'file' ORDER BY fqn"
+        ).fetchall()
+        fqns = [row["fqn"] for row in rows]
+        assert "actual.api.Outer" in fqns
+        assert "actual.api.Outer.Inner" in fqns
+        assert fqns.count("actual.api.Outer.Inner.run") == 2
+        assert all("unusual.generated" not in fqn for fqn in fqns)
+        with pytest.raises(AmbiguousSymbol):
+            graph.symbol_info("actual.api.Outer.Inner.run")
+    finally:
+        graph.close()
+
+
+def test_java_default_package_identity_has_no_path_prefix(tmp_path):
+    _write(tmp_path, "generated/source/Main.java", "class Main { void run() {} }")
+    graph = CodeGraph(tmp_path)
+    try:
+        graph.index()
+        rows = graph.indexer.conn.execute(
+            "SELECT fqn FROM symbols WHERE kind != 'file' ORDER BY fqn"
+        ).fetchall()
+        assert [row["fqn"] for row in rows] == ["Main", "Main.run"]
     finally:
         graph.close()

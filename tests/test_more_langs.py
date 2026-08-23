@@ -155,16 +155,16 @@ def test_all_parsed_clean(cg3):
 
 def test_java_symbols_and_inherits(cg3):
     rows, _ = cg3.find_symbol("App.Scheduler.execute")
-    assert "App.Scheduler.execute" in fqns(rows)
+    assert "Scheduler.execute" in fqns(rows)
     sym, rows, _ = cg3.references("App.Base", kind="inherits")
-    assert any(r["src_fqn"] == "App.Scheduler" for r in rows)
+    assert any(r["src_fqn"] == "Scheduler" for r in rows)
 
 
 def test_java_call_and_new(cg3):
     sym, rows, _ = cg3.callers("App.Scheduler.process")
-    assert any(r["other_fqn"] == "App.Scheduler.execute" for r in rows)
+    assert any(r["other_fqn"] == "Scheduler.execute" for r in rows)
     sym, rows, _ = cg3.callers("App.Task")  # new Task()
-    assert any(r["other_fqn"] == "App.Scheduler.execute" for r in rows)
+    assert any(r["other_fqn"] == "Scheduler.execute" for r in rows)
 
 
 # -- Kotlin -------------------------------------------------------------------

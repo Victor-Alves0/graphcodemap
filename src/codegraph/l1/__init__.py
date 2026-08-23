@@ -292,7 +292,8 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
             "resolver", "files", "promoted", "status",
             "attempted_promotions", "rolled_back",
             "sites", "resolved_sites", "warmup_timed_out", "io_timed_out",
-            "ready_timeout_s", "io_timeout_s") if key in run}
+            "ready_timeout_s", "io_timeout_s", "workspace_reused",
+            "workspace_recovered", "workspace_invalidated") if key in run}
             for run in stats["runs"]]
         safe_warnings = list(missing_warnings)
         for run in safe_runs:
@@ -428,7 +429,9 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
                 else:
                     run.update({key: health[key] for key in (
                         "sites", "resolved_sites", "warmup_timed_out",
-                        "io_timed_out", "ready_timeout_s", "io_timeout_s")
+                        "io_timed_out", "ready_timeout_s", "io_timeout_s",
+                        "workspace_reused", "workspace_recovered",
+                        "workspace_invalidated")
                                 if key in health})
                     run["warnings"].extend(health.get("warnings", ()))
                     run["errors"].extend(health.get("errors", ()))

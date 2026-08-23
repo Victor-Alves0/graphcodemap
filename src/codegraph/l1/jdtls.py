@@ -19,11 +19,12 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
+import time
 import zipfile
 from pathlib import Path
 
 from .lsp_base import LspResolver
+from .jdtls_workspace import JdtlsWorkspace
 
 
 class JdtlsResolver(LspResolver):
@@ -42,6 +43,7 @@ class JdtlsResolver(LspResolver):
     # passada acabava com 0 promocoes. O deadline total de _request continua
     # limitado, agora coerente com o contrato de readiness desta subclasse.
     io_timeout = 120.0
+    shutdown_timeout = 6.0
     timeout_is_partial = True
     # habilita o autobuild do "invisible project" p/ arquivos sem build tool.
     init_options = {"settings": {"java": {"autobuild": {"enabled": True}}}}
@@ -213,9 +215,9 @@ class JdtlsResolver(LspResolver):
         try:
             super().__init__(root, project_root)
         except Exception:
-            data = getattr(self, "_data", None)
-            if data is not None:
-                shutil.rmtree(data, ignore_errors=True)
+            workspace = getattr(self, "_workspace", None)
+            if workspace is not None:
+                workspace.release(clean=False)
             raise
 
     @staticmethod
@@ -246,8 +248,9 @@ class JdtlsResolver(LspResolver):
             found = "desconhecido" if current is None else str(current)
             raise RuntimeError(
                 f"JDTLS requer Java {required}+, runtime encontrado: {found}")
-        # workspace `-data` isolado por instância (evita lock entre execuções).
-        self._data = Path(tempfile.mkdtemp(prefix="cg-jdtls-"))
+        self._workspace = JdtlsWorkspace(
+            self.project_root, home, jar, cfg, java, current).acquire()
+        self._data = self._workspace.data
         return [java,
                 "-Declipse.application=org.eclipse.jdt.ls.core.id1",
                 "-Dosgi.bundles.defaultStartLevel=4",
@@ -261,7 +264,40 @@ class JdtlsResolver(LspResolver):
                 "-data", str(self._data)]
 
     def close(self) -> None:
-        super().close()
-        data = getattr(self, "_data", None)
-        if data is not None:
-            shutil.rmtree(data, ignore_errors=True)
+        proc = getattr(self, "proc", None)
+        started_clean = bool(getattr(self, "_ok", False)
+                             and not getattr(self, "_dead", False)
+                             and proc is not None and proc.poll() is None)
+        try:
+            super().close()
+        finally:
+            workspace = getattr(self, "_workspace", None)
+            if workspace is not None:
+                workspace.release(clean=(
+                    started_clean
+                    and bool(getattr(self, "_shutdown_completed", False))))
+
+    def _before_shutdown(self) -> None:
+        """Dá aos jobs de diagnostics uma janela para terminar após didClose.
+
+        A fila é drenada durante a espera, portanto erros reais publicados nesse
+        intervalo continuam fail-closed. A saída ocorre após 750 ms sem mensagens
+        e nunca consome mais de 3 s do orçamento de shutdown desta subclasse.
+        """
+        started = time.monotonic()
+        self._last_message_at = started
+        while time.monotonic() - started < 3.0:
+            self._drain_pending(0.1)
+            if time.monotonic() - self._last_message_at >= 0.75:
+                break
+
+    def health_report(self) -> dict:
+        report = super().health_report()
+        workspace = getattr(self, "_workspace", None)
+        if workspace is not None:
+            report.update({
+                "workspace_reused": workspace.reused,
+                "workspace_recovered": workspace.recovered,
+                "workspace_invalidated": workspace.invalidated,
+            })
+        return report

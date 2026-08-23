@@ -38,6 +38,26 @@ class JavaExtractor(BaseExtractor):
         # implicitamente public)
         self._iface: list[bool] = []
 
+    def run(self, tree):
+        """Use o pacote declarado como identidade, independentemente do layout.
+
+        O caminho continua identificando o arquivo no índice, mas não faz parte
+        do nome Java. Assim ``src/main/java/com/acme/Svc.java`` e um source root
+        não convencional persistem igualmente ``com.acme.Svc``. Arquivos no
+        default package usam apenas o escopo léxico.
+        """
+        package = next(
+            (node for node in tree.root_node.named_children
+             if node.type == "package_declaration"), None)
+        if package is not None:
+            name = next(
+                (node for node in package.named_children
+                 if node.type in ("identifier", "scoped_identifier")), None)
+            self.module_fqn = self.text(name) if name is not None else ""
+        else:
+            self.module_fqn = ""
+        return super().run(tree)
+
     def _lookup_type(self, var: str) -> str | None:
         for scope in reversed(self._types):
             if var in scope:
@@ -60,8 +80,7 @@ class JavaExtractor(BaseExtractor):
         simple = _simple_type(raw)
         if simple is None or "|" in raw:  # multi-catch não tem receptor único
             return None
-        # Agora o resolver L0 entende o nome Java canônico contra FQNs baseados
-        # em path; preservar import/FQN evita colisões entre tipos homônimos.
+        # Preservar import/FQN evita colisões entre tipos homônimos.
         if "." in raw:
             return raw
         return self.aliases.get(simple, simple)
@@ -475,10 +494,9 @@ class JavaExtractor(BaseExtractor):
 
     def _inherits(self, node) -> None:
         """extends de classe (`superclass`), implements (`interfaces`) e extends
-        de interface (`extends_interfaces`). Emite o NOME SIMPLES, não o fqn do
-        import: o fqn de símbolo é baseado em caminho e duplica a classe
-        (`app.Base.Base`), então o import qualificado `app.Base` nunca casaria —
-        o nome nu resolve por nome+kind, como as chamadas."""
+        de interface (`extends_interfaces`). O nome simples mantém a resolução
+        conservadora para tipos do mesmo pacote e imports wildcard; o L1 elimina
+        a ambiguidade quando o L0 não tem evidência suficiente."""
         sup = node.child_by_field_name("superclass")
         if sup is not None:
             for c in sup.named_children:

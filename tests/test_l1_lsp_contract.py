@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 from codegraph.l1 import lsp_base
+from codegraph import CodeGraph
 
 
 def _bare_resolver(tmp_path):
@@ -16,6 +17,24 @@ def _bare_resolver(tmp_path):
     r._defcache = {}
     r._lines = {}
     return r
+
+
+def test_readiness_probe_uses_cross_file_edge_when_project_is_repo_root(tmp_path):
+    (tmp_path / "Calc.java").write_text(
+        "class Calc { static int compute() { return 1; } }", encoding="utf-8")
+    (tmp_path / "Main.java").write_text(
+        "class Main { int run() { return Calc.compute(); } }", encoding="utf-8")
+    graph = CodeGraph(tmp_path)
+    try:
+        graph.index()
+        resolver = _bare_resolver(tmp_path)
+        resolver.languages = ("java",)
+        probe = resolver._project_readiness_probe(graph.indexer.conn)
+        assert probe is not None
+        assert probe["rel"] == "Main.java"
+        assert probe["dst_name"] == "Calc.compute"
+    finally:
+        graph.close()
 
 
 def test_uri_conversion_rejects_non_file_and_decodes_once():
@@ -253,16 +272,16 @@ def test_refine_isolates_resolver_start_failure(tmp_path, monkeypatch):
     assert stats["runs"][0]["errors"] == ["OSError: spawn failed"]
 
 
-def test_jdtls_removes_workspace_when_spawn_fails(tmp_path, monkeypatch):
+def test_jdtls_marks_workspace_interrupted_when_spawn_fails(tmp_path, monkeypatch):
     from codegraph.l1 import jdtls
 
     home = tmp_path / "jdtls"
     (home / "plugins").mkdir(parents=True)
     (home / "plugins" / "org.eclipse.equinox.launcher_1.0.0.jar").touch()
     (home / ("config_win" if os.name == "nt" else "config_linux")).mkdir()
-    data = tmp_path / "workspace"
+    cache = tmp_path / "cache"
     monkeypatch.setenv("CODEGRAPH_JDTLS", str(home))
-    monkeypatch.setattr(jdtls.tempfile, "mkdtemp", lambda **_k: str(data))
+    monkeypatch.setenv("CODEGRAPH_JDTLS_WORKSPACES", str(cache))
     monkeypatch.setattr(lsp_base.subprocess, "Popen",
                         lambda *_a, **_k: (_ for _ in ()).throw(OSError("boom")))
     try:
@@ -271,7 +290,9 @@ def test_jdtls_removes_workspace_when_spawn_fails(tmp_path, monkeypatch):
         pass
     else:
         raise AssertionError("spawn deveria falhar")
-    assert not data.exists()
+    states = list((cache / "workspaces").glob("*/state.json"))
+    assert len(states) == 1
+    assert '"status": "running"' in states[0].read_text(encoding="utf-8")
 
 
 def test_jdtls_chooses_newest_launcher_version(tmp_path):

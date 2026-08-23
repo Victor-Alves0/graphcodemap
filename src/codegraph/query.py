@@ -381,6 +381,9 @@ class QueryEngine:
             take(self._java_canonical_rows(
                 query, kind, limit - len(seen), only_code=only_code))
         if len(seen) < limit:
+            take(self._java_legacy_rows(
+                query, kind, limit - len(seen), only_code=only_code))
+        if len(seen) < limit:
             take(self.conn.execute(
                 base.format("s.fqn LIKE ? ESCAPE '\\'") + order + " LIMIT ?",
                 [f"%.{like_escape(query)}", *args_kind, limit]).fetchall())
@@ -454,13 +457,13 @@ class QueryEngine:
 
     @staticmethod
     def _java_canonical_fqn(row: dict, package: str) -> str | None:
-        """Alias Java de consulta: pacote declarado + escopo após o módulo.
+        """Ponte de leitura para identidades Java path-based de bancos antigos.
 
-        A identidade L0 é deliberadamente baseada no caminho e inclui o nome
-        do arquivo como módulo. Em layouts Maven/Gradle isso gera, por exemplo,
+        Desde INDEXER_VERSION 37 o extrator persiste o pacote declarado. Bancos
+        criados por versões anteriores podem guardar, por exemplo,
         ``src.main.java.com.acme.Svc.Svc.run``. O nome que ferramentas Java e
-        usuários conhecem é ``com.acme.Svc.run``. O alias remove apenas o
-        prefixo de módulo calculado para *aquele arquivo*; nada é persistido.
+        usuários conhecem é ``com.acme.Svc.run``. Esta função remove apenas o
+        módulo calculado para aquele arquivo, preservando compatibilidade.
         """
         if row["kind"] == "file":
             return None
@@ -479,7 +482,7 @@ class QueryEngine:
     def _java_canonical_rows(self, selector: str, kind: str | None,
                              limit: int | None = None, *,
                              only_code: bool = False) -> list[dict]:
-        """Localiza aliases canônicos somente entre símbolos de arquivos Java."""
+        """Localiza aliases legados somente entre símbolos de arquivos Java."""
         if "." not in selector:
             return []
         terminal = selector.rsplit(".", 1)[-1]
@@ -533,19 +536,83 @@ class QueryEngine:
                     break
         return matched
 
+    def _java_legacy_rows(self, selector: str, kind: str | None,
+                          limit: int | None = None, *,
+                          only_code: bool = False) -> list[dict]:
+        """Aceita seletores path-based emitidos antes do INDEXER_VERSION 37."""
+        if "." not in selector:
+            return []
+        terminal = selector.rsplit(".", 1)[-1]
+        where = ["f.language='java'", "s.name=?", "s.kind!='file'"]
+        args: list = [terminal]
+        if kind:
+            where.append("s.kind=?")
+            args.append(kind)
+        if only_code:
+            where.append(
+                "s.kind NOT IN (" + ",".join("?" * len(LOW_INFO_KINDS)) + ")"
+            )
+            args.extend(LOW_INFO_KINDS)
+        rows = self.conn.execute(
+            "SELECT s.*, f.path, f.parse_status FROM symbols s "
+            "JOIN files f ON s.file_id=f.id WHERE " + " AND ".join(where)
+            + " ORDER BY (s.kind='file'), s.rank DESC, s.fqn",
+            args,
+        ).fetchall()
+        package_re = re.compile(
+            r"(?m)^\s*package\s+"
+            r"([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*;"
+        )
+        comments_re = re.compile(r"//[^\r\n]*|/\*.*?\*/", re.DOTALL)
+        matched: list[dict] = []
+        for raw in rows:
+            row = dict(raw)
+            try:
+                rel = _repo_rel(self.root, row["path"])
+                source = (self.root / rel).read_text(
+                    encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                continue
+            match = package_re.search(comments_re.sub("", source))
+            package = match.group(1) if match else ""
+            canonical = row["fqn"]
+            prefix = f"{package}." if package else ""
+            if prefix and not canonical.startswith(prefix):
+                continue
+            declaration = canonical[len(prefix):] if prefix else canonical
+            module = row["path"].rsplit(".", 1)[0].replace("/", ".")
+            if selector == f"{module}.{declaration}":
+                matched.append(row)
+                if limit is not None and len(matched) >= limit:
+                    break
+        return matched
+
     def _resolve_selector(self, selector: str) -> dict:
         exact = self.conn.execute(
-            "SELECT s.*, f.path FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.fqn=?",
+            "SELECT s.*, f.path, f.language FROM symbols s "
+            "JOIN files f ON s.file_id=f.id WHERE s.fqn=?",
             (selector,)).fetchall()
         if len(exact) == 1:
             return dict(exact[0])
         if len(exact) > 1:
+            # Compatibilidade com o contrato anterior à identidade Java
+            # canônica: um alias Java não eclipsava uma identidade exata de
+            # outra linguagem. Preserve esse resultado quando existe um único
+            # símbolo não-Java; overloads Java continuam ambíguos.
+            non_java = [row for row in exact if row["language"] != "java"]
+            if len(non_java) == 1:
+                return dict(non_java[0])
             raise AmbiguousSymbol(selector, [dict(r) for r in exact])
         canonical = self._java_canonical_rows(selector, None, 9)
         if len(canonical) == 1:
             return canonical[0]
         if len(canonical) > 1:
             raise AmbiguousSymbol(selector, canonical)
+        legacy = self._java_legacy_rows(selector, None, 9)
+        if len(legacy) == 1:
+            return legacy[0]
+        if len(legacy) > 1:
+            raise AmbiguousSymbol(selector, legacy)
         for where, arg in (("s.fqn LIKE ? ESCAPE '\\'", f"%.{like_escape(selector)}"),
                            ("s.name=?", selector)):
             rows = self.conn.execute(

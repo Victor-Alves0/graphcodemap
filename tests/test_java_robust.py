@@ -14,15 +14,16 @@ from __future__ import annotations
 
 import textwrap
 
-import pytest
-
 from codegraph import CodeGraph
 from codegraph.extract import extract
 from codegraph.languages import get_parser
 
 
 def _extract(src: str, module="app"):
-    src_b = textwrap.dedent(src).encode("utf-8")
+    src = textwrap.dedent(src)
+    if "package " not in src:
+        src = f"package {module};" + src
+    src_b = src.encode("utf-8")
     tree = get_parser("java").parse(src_b)
     return extract("java", src_b, module, tree)
 

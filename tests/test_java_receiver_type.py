@@ -92,21 +92,21 @@ def cg(tmp_path):
 def test_field_typed_receiver_resolves_uniquely(cg):
     # campo `private PacienteService service` → a chamada é do PacienteService,
     # e SÓ dele: nenhuma aresta espúria para Medico
-    edges = _edges(cg, "PacienteController.PacienteController.alterar")
+    edges = _edges(cg, "app.PacienteController.alterar")
     dsts = [d for d, _ in edges]
     assert any(d and d.endswith("PacienteService.atualizarInformacoes") for d in dsts)
     assert not any(d and d.endswith("Medico.atualizarInformacoes") for d in dsts)
 
 
 def test_field_typed_receiver_is_inferred_not_possible(cg):
-    edges = _edges(cg, "PacienteController.PacienteController.alterar")
+    edges = _edges(cg, "app.PacienteController.alterar")
     resolved = [(d, c) for d, c in edges if d]
     assert resolved and all(c == "inferred" for _, c in resolved)
 
 
 def test_parameter_typed_receiver_resolves(cg):
     # parâmetro `PacienteService service` funciona igual a campo
-    dsts = [d for d, _ in _edges(cg, "Handler.Handler.run")]
+    dsts = [d for d, _ in _edges(cg, "app.Handler.run")]
     assert any(d and d.endswith("PacienteService.atualizarInformacoes") for d in dsts)
     assert not any(d and d.endswith("Medico.atualizarInformacoes") for d in dsts)
 
@@ -114,7 +114,7 @@ def test_parameter_typed_receiver_resolves(cg):
 def test_var_receiver_stays_possible(cg):
     # `var medico = repository.getReferenceById(...)` esconde o tipo: o L0 não
     # pode saber que é Medico. Fica ambíguo (possible) — é o limite honesto.
-    edges = _edges(cg, "MedicoController.MedicoController.atualizar")
+    edges = _edges(cg, "app.MedicoController.atualizar")
     dsts = {d for d, _ in edges if d}
     assert any(d.endswith("Medico.atualizarInformacoes") for d in dsts)
     assert all(c == "possible" for _, c in edges if c)
@@ -123,5 +123,5 @@ def test_var_receiver_stays_possible(cg):
 def test_var_receiver_is_not_over_pruned(cg):
     # o fan-out do var ainda inclui o alvo CORRETO (Medico) — a mudança não pode
     # ter passado a esconder a aresta certa junto com a espúria
-    dsts = {d for d, _ in _edges(cg, "MedicoController.MedicoController.atualizar") if d}
+    dsts = {d for d, _ in _edges(cg, "app.MedicoController.atualizar") if d}
     assert any(d.endswith("Medico.atualizarInformacoes") for d in dsts)

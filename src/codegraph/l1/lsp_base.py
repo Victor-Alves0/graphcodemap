@@ -172,7 +172,9 @@ class LspResolver:
         # saúde da análise; falhas ocorridas antes de ``close`` continuam
         # visíveis por ``_ok``/``_dead`` e pelos diagnósticos observados.
         self._shutdown_started_healthy = False
+        self._shutdown_completed = False
         self._active_deadline: float | None = None
+        self._last_message_at = time.monotonic()
         # thread leitora dedicada + fila: dá timeout a cada leitura sem depender
         # de select() (indisponível em pipe no Windows). Um servidor travado é
         # detectado pelo timeout da fila, não bloqueia a thread principal.
@@ -339,6 +341,8 @@ class LspResolver:
         servidor pode continuar resolvendo parte do projeto, mas nao ha modelo
         completo para declarar a passada saudavel.
         """
+        if hasattr(self, "_last_message_at"):
+            self._last_message_at = time.monotonic()
         if msg.get("error"):
             self._record_health("error", msg["error"])
             return
@@ -557,6 +561,16 @@ class LspResolver:
             self._drain_pending()
             return
         try:
+            # didOpen cria working copies e pode agendar diagnósticos. Fechá-las
+            # antes do workspace evita que jobs atrasados tentem publicar depois
+            # de shutdown/exit (observado no JDTLS como Publish Diagnostics).
+            opened = getattr(self, "_opened", None)
+            for rel in sorted(opened or ()):
+                self._notify("textDocument/didClose", {"textDocument": {
+                    "uri": (self.root / rel).as_uri()}})
+            if opened is not None:
+                opened.clear()
+            self._before_shutdown()
             remaining = max(0.0, deadline - time.monotonic())
             self._request("shutdown", None, timeout_msgs=50,
                           timeout=remaining)
@@ -564,10 +578,14 @@ class LspResolver:
                 self._notify("exit", None)
                 remaining = max(0.0, deadline - time.monotonic())
                 self.proc.wait(timeout=remaining)
+            self._shutdown_completed = self.proc.poll() is not None
         except Exception:
             self._kill()
         finally:
             self._drain_pending(max(0.0, deadline - time.monotonic()))
+
+    def _before_shutdown(self) -> None:
+        """Hook para servidores que precisam assentar jobs após didClose."""
 
     # -- resolução ------------------------------------------------------------
 
@@ -614,10 +632,17 @@ class LspResolver:
         """
         if not edges:
             return
-        e = next((edge for edge in edges
-                  if any(sep in (edge["dst_name"] or "")
-                         for sep in ("::", ".", "->"))), edges[0])
-        col = self._query_col(rel, e["line"], e["col"], e["dst_name"])
+        def score(edge) -> tuple[bool, bool]:
+            keys = edge.keys() if hasattr(edge, "keys") else edge
+            internal = "dst" in keys and edge["dst"] is not None
+            qualified = any(sep in (edge["dst_name"] or "")
+                            for sep in ("::", ".", "->"))
+            return internal, qualified
+
+        # Readiness não pode depender de uma única chamada externa ou de um
+        # guess L0 incorreto. Tente primeiro até oito sites já ligados dentro do
+        # repo, mantendo qualificação como desempate, e depois os demais.
+        probes = sorted(edges, key=score, reverse=True)[:8]
         deadline = time.monotonic() + self.ready_timeout
         ready = False
         previous_deadline = getattr(self, "_active_deadline", None)
@@ -630,13 +655,17 @@ class LspResolver:
                 if (remaining <= 0 or getattr(self, "_dead", False)
                         or (proc is not None and proc.poll() is not None)):
                     break
-                if self._definition(rel, e["line"] - 1, col):
-                    ready = True
+                for probe in probes:
+                    col = self._query_col(
+                        rel, probe["line"], probe["col"], probe["dst_name"])
+                    if self._definition(rel, probe["line"] - 1, col):
+                        ready = True
+                        break
+                    # resposta VAZIA durante o warmup é "ainda indexando", não
+                    # "não existe" — não memorize o resultado provisório.
+                    self._defcache.pop((rel, probe["line"] - 1, col), None)
+                if ready:
                     break
-                # resposta VAZIA durante o warmup é "ainda indexando", não "não
-                # existe" — e não pode ficar no memo, senão a própria espera relê o
-                # "ainda não" cacheado e nunca vê o servidor ficar pronto.
-                self._defcache.pop((rel, e["line"] - 1, col), None)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or getattr(self, "_dead", False):
                     break
@@ -687,12 +716,42 @@ class LspResolver:
             return None
         return _byte_col_from_lsp(lines[line0], char0)
 
+    def _project_readiness_probe(self, conn: sqlite3.Connection):
+        """Uma chamada cross-file interna na mesma raiz é o melhor probe LSP.
+
+        O primeiro arquivo em ordem lexical pode conter somente framework calls;
+        esperar uma delas por todo o timeout confundia "externa" com "servidor
+        importando". O destino L0 serve apenas para escolher o site — a resposta
+        semântica continua vindo exclusivamente do language server.
+        """
+        try:
+            prefix = self.project_root.relative_to(self.root).as_posix().strip("/")
+        except ValueError:
+            prefix = ""
+        if prefix == ".":
+            prefix = ""
+        placeholders = ",".join("?" * len(self.languages))
+        rows = conn.execute(
+            "SELECT e.id, e.line, e.col, e.dst_name, e.dst, f.path AS rel "
+            "FROM edges e JOIN files f ON f.id=e.file_id "
+            "JOIN symbols target ON target.id=e.dst "
+            "WHERE e.kind='calls' AND e.resolver='l0' AND e.col IS NOT NULL "
+            f"AND f.language IN ({placeholders}) AND target.file_id!=f.id "
+            "ORDER BY (instr(e.dst_name, '.') > 0) DESC, f.path, e.line, e.col",
+            list(self.languages),
+        )
+        for row in rows:
+            rel = row["rel"]
+            if not prefix or rel == prefix or rel.startswith(prefix + "/"):
+                return row
+        return None
+
     def refine_file(self, conn: sqlite3.Connection, root: Path,
                     rel: str, file_id: int) -> int:
         if not self._ok:
             return 0
         edges = conn.execute(
-            "SELECT id, line, col, dst_name FROM edges "
+            "SELECT id, line, col, dst_name, dst FROM edges "
             "WHERE file_id=? AND kind='calls' AND resolver='l0' AND col IS NOT NULL "
             "ORDER BY line, col, id",
             (file_id,)).fetchall()
@@ -700,7 +759,13 @@ class LspResolver:
             return 0
         self._open(rel)
         if not self._ready:
-            self._warmup(rel, edges)
+            probe = self._project_readiness_probe(conn)
+            if probe is not None:
+                probe_rel = probe["rel"]
+                self._open(probe_rel)
+                self._warmup(probe_rel, [probe])
+            else:
+                self._warmup(rel, edges)
         if self._dead or self.proc.poll() is not None:
             return 0
         promoted = 0

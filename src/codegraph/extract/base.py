@@ -57,7 +57,8 @@ class BaseExtractor:
     def enclosing_fqn(self) -> str | None:
         if not self.scope:
             return None
-        return ".".join([self.module_fqn, *(n for n, _ in self.scope)])
+        return ".".join(p for p in (
+            self.module_fqn, *(n for n, _ in self.scope)) if p)
 
     def in_class(self) -> bool:
         return bool(self.scope) and self.scope[-1][1] == "class"

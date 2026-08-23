@@ -98,7 +98,7 @@ STYLE_DEF_KINDS = ("css_class", "html_id")
 
 # Versão da lógica de extração/resolução: mudou → força re-index completo,
 # mesmo com content-hashes iguais (o índice é derivado de código+extractor).
-INDEXER_VERSION = "36"
+INDEXER_VERSION = "37"
 
 DEFAULT_IGNORES = [
     ".git/", ".codegraph/", "__pycache__/", ".venv/", "venv/", "node_modules/",
@@ -1103,9 +1103,9 @@ class Indexer:
             return list(out.values())
 
         def _java_canonical_match(candidate, guess: str) -> bool:
-            """Casa nome Java canônico com o FQN path-based do índice.
+            """Casa nome Java canônico com FQN path-based de banco legado.
 
-            `src/main/java/a/b/Widget.java` produz o símbolo interno
+            Antes da versão 37, `src/main/java/a/b/Widget.java` produzia
             `src.main.java.a.b.Widget.Widget.run`; Java, porém, referencia
             `a.b.Widget.run`. O scope começa repetindo o basename do arquivo.
             Removemos só essa duplicação comprovada e testamos os sufixos do
