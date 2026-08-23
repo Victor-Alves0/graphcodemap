@@ -98,7 +98,7 @@ STYLE_DEF_KINDS = ("css_class", "html_id")
 
 # Versão da lógica de extração/resolução: mudou → força re-index completo,
 # mesmo com content-hashes iguais (o índice é derivado de código+extractor).
-INDEXER_VERSION = "37"
+INDEXER_VERSION = "38"
 
 DEFAULT_IGNORES = [
     ".git/", ".codegraph/", "__pycache__/", ".venv/", "venv/", "node_modules/",
@@ -958,6 +958,7 @@ class Indexer:
         file_sym: dict[str, str] = {}
         symbol_rows = cur.execute(
                 "SELECT s.id, s.file_id, s.parent_id, s.fqn, s.name, s.kind, "
+                "s.start_line, s.start_col, s.end_line, s.end_col, "
                 "f.language FROM symbols s JOIN files f ON s.file_id=f.id "
                 "ORDER BY s.id").fetchall()
         by_id = {r["id"]: r for r in symbol_rows}
@@ -1193,7 +1194,19 @@ class Indexer:
                      if (kinds is None or c["kind"] in kinds)
                      and (kinds is None or c["language"] == lang)
                      and (c["fqn"] == guess or c["fqn"].endswith(suffix))),
-                    by_symbol=java_call)
+                    by_symbol=(java_call or e["kind"] == "framework"))
+                if e["kind"] == "framework":
+                    # Framework wiring targets the annotated declaration at
+                    # this exact site. FQN alone cannot distinguish Java
+                    # overloads and would wire an unannotated sibling too.
+                    point = (e["line"], e["col"])
+                    cands = [
+                        c for c in cands
+                        if c["file_id"] == e["file_id"]
+                        and c["kind"] in CALLABLE_KINDS
+                        and (c["start_line"], c["start_col"]) <= point
+                        <= (c["end_line"], c["end_col"])
+                    ]
                 if (not cands and lang == "java"
                         and e["kind"] in ("calls", "inherits")):
                     java_kinds = (CALLABLE_KINDS if e["kind"] == "calls"

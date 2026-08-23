@@ -49,8 +49,9 @@ locks down.
 ### Edges
 
 An **edge** is a typed relationship: `calls`, `imports`, `inherits`, `implements`,
-`references`, `reads`, `writes`. The crucial ownership rules that make incremental
-re-indexing correct:
+`references`, or conservative implicit `framework` wiring. Framework edges do
+not claim that a runtime call occurred and therefore stay out of `callers()`.
+The crucial ownership rules that make incremental re-indexing correct:
 
 - **Symbols belong to the file that defines them; edges belong to the file where
   the *reference* occurs.**

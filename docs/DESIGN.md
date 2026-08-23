@@ -59,7 +59,7 @@ CREATE VIRTUAL TABLE symbols_fts USING fts5(name, fqn, doc, content='symbols', c
 
 CREATE TABLE edges (
   id         INTEGER PRIMARY KEY,
-  kind       TEXT NOT NULL,                   -- calls|imports|inherits|implements|references|reads|writes
+  kind       TEXT NOT NULL,                   -- calls|imports|inherits|implements|references|framework|reads|writes
   src        TEXT REFERENCES symbols(id) ON DELETE CASCADE,
   dst        TEXT REFERENCES symbols(id) ON DELETE SET NULL,  -- NULL = não resolvido/alvo sumiu
   dst_name   TEXT NOT NULL,                   -- alvo textual, SEMPRE preenchido (permite re-resolução)
@@ -99,6 +99,13 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
 | `certain` | Resolvido por semântica real | L1 (LSP/SCIP) |
 | `inferred` | Rastreado por import com alvo único | L0 (heurística de import) |
 | `possible` | Match por nome, ≥1 candidato | L0 (léxico); até 5 candidatos viram 5 arestas `possible` |
+
+`framework` é uma ligação implícita comprovada por uma declaração de framework,
+não uma chamada observada. Por exemplo, um método Spring `@GetMapping` dentro de
+um `@RestController` explicitamente importado recebe uma aresta
+`framework/inferred/l0`; ele não aparece em `callers()` e não é promovido a
+`certain` pelo LSP. Isso mantém visíveis entry points e callbacks sem inventar
+execução em runtime.
 
 Consultas transitivas (impact, callers com depth>1) propagam a **mínima** confiança do caminho.
 

@@ -121,7 +121,7 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
 
     @mcp.tool()
     def references(symbol: str, kind: str | None = None) -> agent.Response:
-        """Usos do símbolo (kind: calls|imports|inherits)."""
+        """Usos do símbolo (kind: calls|imports|inherits|references|framework)."""
         def run():
             sym, rows, env = engine.references(symbol, kind=kind)
             return agent.build(render.refs(sym, rows, env), env, results=rows)

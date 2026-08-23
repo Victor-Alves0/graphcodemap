@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from .base import BaseExtractor
+from ..java_framework import (SPRING_COMPONENTS, annotation_fqns,
+                              spring_entry_kind)
+from .base import BaseExtractor, Ref
 
 _ACCESS = ("public", "private", "protected")
-
 
 def _simple_name(text: str) -> str:
     """Nome de tipo cru → nome simples: strip de genérico e pacote.
@@ -37,6 +38,9 @@ class JavaExtractor(BaseExtractor):
         # marca se o tipo-recipiente atual é interface (membro sem modificador é
         # implicitamente public)
         self._iface: list[bool] = []
+        # Anotações Spring comprovadas do tipo léxico atual. Não herdamos o
+        # estado da classe externa: uma nested class é um bean separado.
+        self._spring_roles: list[frozenset[str]] = []
 
     def run(self, tree):
         """Use o pacote declarado como identidade, independentemente do layout.
@@ -89,6 +93,35 @@ class JavaExtractor(BaseExtractor):
     def _modifiers(node) -> list[str]:
         m = next((c for c in node.children if c.type == "modifiers"), None)
         return m.text.decode("utf-8", "replace").split() if m is not None else []
+
+    def _annotations(self, node) -> frozenset[str]:
+        """Return annotation FQNs only when imports/source prove their owner."""
+        return annotation_fqns(self.source, node, self.aliases)
+
+    def _spring_entry(self, node, name_node, name: str) -> None:
+        """Record proven Spring runtime wiring as a reference, never a call.
+
+        L0 can prove that a recognized annotation wires a method into Spring,
+        but it cannot prove an actual runtime invocation.  The distinct edge
+        kind keeps ``callers()`` honest and remains ``inferred/l0`` even after
+        JDTLS refinement, which only promotes real Java call sites.
+        """
+        if not self._spring_roles:
+            return
+        roles = self._spring_roles[-1]
+        annotations = self._annotations(node)
+        if spring_entry_kind(roles, annotations) is None:
+            return
+        owner = self.enclosing_fqn()
+        if owner is None:
+            return
+        self.refs.append(Ref(
+            kind="framework",
+            src_fqn=owner,
+            dst_name=f"{owner}.{name}",
+            line=name_node.start_point[0] + 1,
+            col=name_node.start_point[1],
+        ))
 
     def _visibility(self, node, default: str = "package") -> str:
         for a in _ACCESS:
@@ -473,10 +506,13 @@ class JavaExtractor(BaseExtractor):
             return
         name = self.text(name_node)
         body = node.child_by_field_name("body")
+        spring_roles = frozenset(
+            self._annotations(node).intersection(SPRING_COMPONENTS))
         self.add_sym(node, kind, name, signature=self.sig_of(node, body),
                      doc=self._doc(node), visibility=self._visibility(node))
         self.scope.append((name, "class"))
         self._iface.append(node.type == "interface_declaration")
+        self._spring_roles.append(spring_roles)
         # campos + componentes de record alimentam o type-tracking (topo da pilha)
         types = self._fields(body)
         if node.type == "record_declaration":
@@ -489,6 +525,7 @@ class JavaExtractor(BaseExtractor):
             for c in body.children:
                 self.visit(c)
         self._types.pop()
+        self._spring_roles.pop()
         self._iface.pop()
         self.scope.pop()
 
@@ -521,6 +558,7 @@ class JavaExtractor(BaseExtractor):
         self.add_sym(node, "method" if self.in_class() else "function", name,
                      signature=self.sig_of(node, body), doc=self._doc(node),
                      visibility=self._visibility(node, default))
+        self._spring_entry(node, name_node, name)
         self.scope.append((name, "function"))
         self._types.append(self._parameter_types(node))
         if body is not None:

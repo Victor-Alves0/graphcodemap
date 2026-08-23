@@ -21,7 +21,7 @@ _MAX_NODES = 250
 # modos SEMEADOS por um símbolo (ou pelos arquivos alterados): subgrafo focado,
 # não o repo inteiro — é o que troca "mapa decorativo" por "ferramenta".
 _SEEDED = ("neighborhood", "callers", "callees", "impact")
-_IMPACT_KINDS = ("calls", "imports", "inherits", "references")
+_IMPACT_KINDS = ("calls", "imports", "inherits", "references", "framework")
 _CONF_RANK = {"possible": 0, "inferred": 1, "certain": 2}
 
 # aliases para os dois modos legados (compat com level="file"/"symbol")

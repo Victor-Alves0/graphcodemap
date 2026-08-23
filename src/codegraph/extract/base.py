@@ -26,7 +26,7 @@ class Sym:
 
 @dataclass
 class Ref:
-    kind: str          # calls|imports|inherits|references
+    kind: str          # calls|imports|inherits|references|framework
     src_fqn: str | None  # símbolo que contém o site da referência; None = nível de módulo
     dst_name: str      # alvo textual (guess) — SEMPRE preenchido
     line: int          # 1-based

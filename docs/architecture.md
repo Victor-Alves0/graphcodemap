@@ -31,7 +31,8 @@ is the only writer.
 ## The layers
 
 - **L0 — structural.** tree-sitter parses each file; extractors emit symbols and
-  `calls`/`imports`/`inherits` edges. Runs on any repo, no configuration.
+  `calls`/`imports`/`inherits` edges plus conservative `framework` wiring. Runs
+  on any repo, no configuration.
 - **L1 — semantic.** An async LSP/jedi resolver promotes edges to `certain`.
   Optional; see [Languages & Resolvers](languages.md).
 - **L2 — graph metrics.** PageRank (centrality) and Louvain (communities),
@@ -52,7 +53,7 @@ The essential tables:
   (containment), `kind`, `name`, `fqn`, `signature`, `doc`, span, `body_hash`
   (invalidates L3), `visibility`, `rank` (PageRank). Plus a `symbols_fts` FTS5
   index over name/fqn/doc.
-- **`edges`** — `kind` (`calls`/`imports`/`inherits`/`implements`/`references`/
+- **`edges`** — `kind` (`calls`/`imports`/`inherits`/`implements`/`references`/`framework`/
   `reads`/`writes`), `src`, `dst` (nullable — `NULL` = dangling), `dst_name`
   (the textual target, **always** filled so an edge can be re-resolved), `file_id`
   (the file where the *reference* occurs — the edge's owner), `line`, `confidence`,

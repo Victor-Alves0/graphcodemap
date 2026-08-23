@@ -29,7 +29,7 @@ LOW_INFO_KINDS = ("css_class", "css_id", "html_id", "file")
 # o FTS não conhece rank; buscar com folga evita que o corte dele decida o
 # resultado antes da ordenação
 FTS_OVERFETCH = 4
-IMPACT_KINDS = ("calls", "imports", "inherits", "references")
+IMPACT_KINDS = ("calls", "imports", "inherits", "references", "framework")
 _CONF_ORD = {"certain": 2, "inferred": 1, "possible": 0}
 _MISS = object()          # sentinela p/ cache LRU (distingue "None cacheado" de ausente)
 
@@ -2256,7 +2256,11 @@ class QueryEngine:
                         ".".join(site.path): site.evidence
                         for site in seeds
                     }
-                    initial = set() if f.regions is not None else names
+                    # Request-bound controller parameters are dirty at method
+                    # entry. Source calls inside a structured region must be
+                    # introduced at their ordered call site instead.
+                    initial = (names if f.framework_source_sites
+                               else set() if f.regions is not None else names)
                     trace(
                         r, initial, origin, [], 1,
                         {(profile, r["id"], -2)}, None,

@@ -792,6 +792,9 @@ class FnFacts:
     # Deferred Java lambdas proven local and non-escaping.  They are evaluated
     # only at a matching invocation event by the structured flow engine.
     lambda_units: tuple = ()
+    # Parameters explicitly bound from an external framework request. These
+    # are entry-time seeds, unlike source calls that occur inside the body.
+    framework_source_sites: tuple[SourceSite, ...] = ()
 
 
 @dataclass
@@ -3062,6 +3065,20 @@ def _facts_generic(source, fn, lang) -> FnFacts:
     idset = cfg["id"]
     calls_t = cfg["calls"]
     facts = FnFacts(params=_params_generic(source, fn, cfg, idset))
+    if lang == "java":
+        from .java_framework import spring_web_parameter_sources
+
+        facts.framework_source_sites = tuple(
+            SourceSite(
+                (name,),
+                SourceEvidence(
+                    f"SpringMVC.{annotation.rsplit('.', 1)[-1]}",
+                    line, col, span,
+                ),
+            )
+            for name, annotation, line, col, span
+            in spring_web_parameter_sources(source, fn)
+        )
     body = _body_of(fn)
     if body is None:
         return facts
@@ -3501,7 +3518,7 @@ def source_site_evidence(
         source_spans=frozenset(), trusted_source_literals=()
 ) -> list[SourceSite]:
     """Return taint seeds with exact source-call provenance when available."""
-    out: list[SourceSite] = []
+    out: list[SourceSite] = list(facts.framework_source_sites)
     for a in facts.assigns:
         evidence = None
         if assign_reads_named_source(
