@@ -2020,3 +2020,28 @@ Esse resultado comprova o contrato **fail-closed** e a recuperação operacional
 não comprova semântica Java completa nesse replay nem superioridade geral sobre
 outros analisadores. Comandos, versões, hashes e resultados estão fixados no
 [`manifesto Round 28`](round28-real-world-feedback-manifest.json).
+
+# Rodada 29 — fechamento operacional Java (2026-08-23)
+
+Os três gates seguintes ao feedback foram fechados no motor
+`e07e6e68d3b5e6f595033645fb1c102aae279cc3`:
+
+1. o PetClinic termina `complete` e publica 345 `certain` sem warning/error;
+2. o workspace JDTLS é persistente, exclusivo, versionado, invalidável,
+   recuperável após crash e sujeito a limpeza limitada;
+3. `INDEXER_VERSION=37` persiste o FQN Java declarado, preservando bancos e
+   seletores path-based antigos, inclusive ambiguidade de overload.
+
+O log preservado mostrou que o antigo Publish Diagnostics era um job tardio
+acessando o Eclipse workspace após `shutdown`/`exit`. O cliente passou a enviar
+`didClose`, drenar diagnostics e exigir saída concluída antes de publicar a
+cache como limpa. Nenhum erro foi filtrado. Readiness também deixou de depender
+da primeira chamada externa e usa um site cross-file interno da raiz semântica.
+
+No mesmo PetClinic `88e37c1`, a passada fria levou 73,114 s e a quente 60,829 s
+(16,8% de ganho). Ambas resolveram 345/1.575 sites. As listas ordenadas de
+arestas antes/depois têm o mesmo SHA-256
+`36d3388d6c602ba8d1bb1003bb6c064445c2a7e2ebcf13df6337a7d7652c0eaa`.
+O gate local final é **1.845 passed, 28 skipped**. Ambiente, hashes e limites da
+alegação estão no
+[`manifesto Round 29`](round29-java-operational-gates-manifest.json).

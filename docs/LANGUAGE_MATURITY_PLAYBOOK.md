@@ -117,21 +117,30 @@ A release-quality resolver must cover:
   changed or deleted;
 - revalidation of untouched callers in the affected semantic project;
 - no stale L1 proof surviving an unavailable or failed revalidation.
+- persistent workspace isolation: exclusive lock, tool/build version key,
+  invalidation, crash recovery and bounded cleanup;
+- protocol-complete teardown (`didClose` before shutdown) with late diagnostics
+  drained before declaring the workspace reusable.
 
 The first user journey must be tested from a clean installation to the first
 `certain` edge. The test must verify error messages and remediation commands,
 not just the happy-path protocol handshake.
 
-Java exposed four operational traps that apply to every future resolver:
+Java exposed six operational traps that apply to every future resolver:
 
 1. opening above the real source root produced misleading diagnostics;
 2. sampling health after shutdown produced a false handshake result;
 3. a fixed readiness budget could return zero promotions on a real Spring
    import while still appearing active;
-4. a temporary workspace made every run pay the full cold-import cost.
+4. choosing readiness from the first file could probe an external call even
+   when the project contained known cross-file sites;
+5. omitting `didClose` let a diagnostics job run after the Eclipse workspace
+   had closed, producing a real teardown exception;
+6. a temporary workspace made every run pay the full cold-import cost.
 
-The first three are correctness issues. Workspace reuse is an optimization and
-must not weaken isolation, freshness or cleanup.
+The first five are correctness issues. Workspace reuse is an optimization and
+must not weaken isolation, freshness or cleanup. A workspace becomes reusable
+only after completed protocol shutdown; an interrupted lease is rebuilt.
 
 #### L1 health truth table
 

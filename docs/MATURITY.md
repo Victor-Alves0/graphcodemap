@@ -54,7 +54,7 @@ readable view.
 |---|---|---|
 | Graph and freshness | Strong incremental core; policy-change cleanup now covered | Multiprocess stress and no known stale-read path |
 | L0 extraction | Broad and well unit-tested | Real call-edge oracles for every Tier-A language |
-| L1 resolution | Broadly wired, unevenly proven | Live integration plus real-repo evidence for Tier A |
+| L1 resolution | Broadly wired; Java now has locked warm workspace and clean PetClinic evidence | Live integration plus a multi-repository portfolio for every Tier A language |
 | Dataflow and taint | Round 27 Java: OWASP 902/0/0/796, Juliet CWE-23 444/0/0/444; all three pinned Java vulnerabilities are found and all three fixes clear | Add independent CVEs/frameworks rather than treating two perfect corpora as universal proof |
 | CLI, library and MCP | Main surfaces implemented | Versioned response schemas and parity contract tests |
 | Visualization | Functional; script-breakout regression covered | Large-graph performance budget and browser smoke suite |
@@ -80,6 +80,14 @@ distinguished shutdown bookkeeping from real diagnostics and completed with
 pre-report analysis took 280.036 s on OWASP and 23.095 s on Juliet. The
 [Round 27 manifest](../evals/round27-java-gates-manifest.json) pins the engine,
 targets, package/report hashes and overlay-health record.
+
+Round 29 closes Java's three operational gates without changing the Round 27
+semantic scores. `INDEXER_VERSION=37` persists declared-package FQNs with legacy
+bridges. PetClinic completes 345 `certain` edges twice with zero warning/error;
+the locked persistent JDTLS workspace reduces 73.114 s cold to 60.829 s warm
+with an identical edge hash. The local gate is **1,845 passed, 28 skipped** and
+the [Round 29 manifest](../evals/round29-java-operational-gates-manifest.json)
+records the bounded evidence.
 
 ## Rule for adding scope
 

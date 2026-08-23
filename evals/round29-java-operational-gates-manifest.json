@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-08-23T15:16:06-03:00",
+  "scope": "Java operational gates 1-3: healthy PetClinic JDTLS, persistent warm workspace, canonical persisted identity",
+  "engine": {
+    "commit": "e07e6e68d3b5e6f595033645fb1c102aae279cc3",
+    "indexer_version": "37",
+    "local_suite": {
+      "passed": 1845,
+      "skipped": 28,
+      "duration_seconds": 167.52
+    }
+  },
+  "target": {
+    "repository": "https://github.com/spring-projects/spring-petclinic.git",
+    "commit": "88e37c15cf6fc8490b01bc3e8e2c800cec1ac272",
+    "worktree_clean": true,
+    "recognized_files": 87,
+    "java_files": 49
+  },
+  "toolchain": {
+    "jdtls": "1.60.0-SNAPSHOT (OSGi 1.60.0.202606262232, commit 57ed41b)",
+    "jdtls_runtime": "Oracle JDK 21.0.11",
+    "project_runtime": "Eclipse Temurin 17.0.20+8",
+    "workspace_schema": 2
+  },
+  "commands": {
+    "project_build": "gradlew.bat classes --no-daemon",
+    "index": "codegraph --root <petclinic> --db <isolated.db> index",
+    "cold_refine": "codegraph --root <petclinic> --db <isolated.db> refine --jdtls-ready-timeout 300 --jdtls-io-timeout 360",
+    "warm_refine_new_process": "codegraph --root <petclinic> --db <isolated.db> refine --jdtls-ready-timeout 300 --jdtls-io-timeout 360",
+    "doctor": "codegraph --root <petclinic> --db <isolated.db> doctor"
+  },
+  "cold_run": {
+    "wall_seconds": 73.114,
+    "resolver_seconds": 72.41,
+    "status": "complete",
+    "warnings": [],
+    "errors": [],
+    "sites": 1575,
+    "resolved_sites": 345,
+    "promoted": 345,
+    "workspace_reused": false
+  },
+  "warm_run": {
+    "wall_seconds": 60.829,
+    "resolver_seconds": 60.19,
+    "speedup_percent": 16.8,
+    "status": "complete",
+    "warnings": [],
+    "errors": [],
+    "sites": 1575,
+    "resolved_sites": 345,
+    "promoted": 345,
+    "workspace_reused": true,
+    "workspace_recovered": false,
+    "workspace_invalidated": false
+  },
+  "output_parity": {
+    "certain_edges_before": 345,
+    "certain_edges_after": 345,
+    "certain_edges_sha256_before": "36d3388d6c602ba8d1bb1003bb6c064445c2a7e2ebcf13df6337a7d7652c0eaa",
+    "certain_edges_sha256_after": "36d3388d6c602ba8d1bb1003bb6c064445c2a7e2ebcf13df6337a7d7652c0eaa"
+  },
+  "artifacts": {
+    "database_sha256": "36751fbd5f39c43cd6c165ffc70c243197c8a49460a7ddfa4ad4dfe3ae14da31",
+    "jdtls_log_sha256": "eab0de055a5a23dff7ce5f9ffe0848a2549cd922e45a7bbd524db75ac1b235fd"
+  },
+  "root_cause": {
+    "historical_error": "Publish Diagnostics job accessed the Eclipse workspace after shutdown/exit",
+    "fix": "send didClose, drain diagnostics to quiescence, require completed server exit before cache reuse",
+    "suppressed": false
+  },
+  "remaining_java_gates": [
+    "Spring framework/runtime wiring fixtures without fabricated certainty",
+    "Pinned Maven, Gradle, multi-module and Spring real-repository portfolio"
+  ],
+  "claim_boundary": "This proves the three named operational gates on one pinned real repository; it is not universal Java, SAST or CodeQL superiority evidence."
+}

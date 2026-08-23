@@ -6,6 +6,25 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ## [Unreleased]
 
+### Changed — Java operacional completo e identidade canônica
+
+- `INDEXER_VERSION=37` persiste símbolos Java pelo pacote declarado
+  (`com.acme.Type.method`), sem `src.main.java` nem owner duplicado. Consultas
+  continuam aceitando bancos path-based e seletores emitidos antes da migração;
+  overloads permanecem ambíguos em vez de escolher um alvo arbitrário.
+- O workspace `-data` do JDTLS agora é persistente por projeto/runtime, com lock
+  entre processos, schema/version key, fingerprint do build model, invalidação,
+  recuperação de crash e limpeza limitada. Mudança de fonte reutiliza o índice;
+  mudança de Maven/Gradle/JDTLS/Java o reinicializa com segurança.
+- O lifecycle LSP envia `didClose` antes de `shutdown`/`exit` e aguarda os jobs de
+  diagnostics. Isso elimina a falha tardia `Publish Diagnostics` que ocorria
+  depois de o workspace Eclipse já estar fechado, sem filtrar erros reais.
+- Readiness prefere uma chamada cross-file interna da mesma raiz, não uma chamada
+  externa escolhida pela ordem do primeiro arquivo. No Spring PetClinic pinado,
+  a execução fria fechou em 73,114 s e a quente em 60,829 s (16,8% mais rápida),
+  ambas `complete`, com 345 `certain`, zero warnings/errors e o mesmo SHA-256 de
+  arestas. O gate local fecha em **1.845 passed, 28 skipped**.
+
 ### Added — setup explícito de toolchains
 
 - `codegraph setup [linguagem] --install` detecta primeiro o que já existe e
@@ -18,8 +37,8 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 - Java foi validado de uma configuração vazia até JDK 21 + JDTLS 1.60.0
   descobertos em um novo processo. MCP 1.29.0 foi instalado pelo próprio setup
   em um wheel/venv limpo e o FastMCP foi reconhecido no mesmo fluxo.
-- O gate do projeto passa com **1.835 testes e 28 skips**, Ruff, mypy, build,
-  Twine e smoke do wheel. As cinco pendências estritamente Java estão isoladas
+- O gate daquele checkpoint passou com **1.835 testes e 28 skips**, Ruff, mypy,
+  build, Twine e smoke do wheel. As pendências estritamente Java foram isoladas
   em `docs/JAVA_ANALYSIS_CONTRACT.md`.
 
 ### Added / Changed — consolidação de segurança e entrega

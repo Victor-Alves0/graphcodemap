@@ -107,6 +107,16 @@ universal. O próximo gate é ampliar a evidência para outros frameworks, CVEs 
 linguagens Tier A.
 Veja [Security Benchmark](SECURITY_BENCHMARK.md).
 
+### Checkpoint Round 29 — operação Java
+
+- PetClinic pinado: 49 arquivos Java, 1.575 sites, 345 `certain`, `complete` e
+  zero warning/error em duas execuções separadas.
+- Workspace JDTLS persistente: cold 73,114 s → warm 60,829 s (16,8%), com lock,
+  versionamento, invalidação de build, recuperação de crash e limpeza limitada.
+- Identidade Java persistida pelo pacote declarado em `INDEXER_VERSION=37`, com
+  compatibilidade para bancos/seletores antigos e overloads ambíguos.
+- Gate local: **1.845 passed, 28 skipped**.
+
 ### Checkpoint Round 27
 
 - Gate final: **1.778 passed, 27 skipped**, sem xfail.

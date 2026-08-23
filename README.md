@@ -199,17 +199,17 @@ cover all 19 dedicated code-language identifiers; 18 are flow-sensitive.
 | **[Languages & Resolvers](docs/languages.md)** | Language tiers and L1/LSP resolution |
 | **[Product Maturity](docs/MATURITY.md)** | Evidence levels, current gaps and honest parity boundaries |
 | **[Language Maturity Playbook](docs/LANGUAGE_MATURITY_PLAYBOOK.md)** | Reusable Java lessons and gates for adapting each next language |
-| **[Round 28 Real-world Feedback](docs/REAL_WORLD_FEEDBACK_ROUND28.md)** | Aethros/PetClinic findings, fixes, evidence and remaining work |
+| **[Round 28 Real-world Feedback](docs/REAL_WORLD_FEEDBACK_ROUND28.md)** | Aethros/PetClinic findings and their Round 29 operational closure |
 | **[Architecture](docs/architecture.md)** | Pipeline, SQLite schema, incremental indexing |
 | **[FAQ & Limitations](docs/faq.md)** | Honest answers, benchmarks, scope |
 | [Design](docs/DESIGN.md) · [Research](docs/RESEARCH.md) | Original design contract and research notes |
 
 ## Status
 
-**Alpha (v0.1.0).** The main query surfaces are implemented. The Round 28
-real-world-feedback/setup gate is **1,835 passed, 28 skipped**, with no expected
-failures. The separately versioned Round 27 release evidence remains **1,778
-passed, 27 skipped**, and its corrected JDTLS overlay is healthy. CI spans Linux and Windows on
+**Alpha (v0.1.0).** The main query surfaces are implemented. The Round 29 Java
+operational gate is **1,845 passed, 28 skipped**, with no expected failures;
+PetClinic completes cold and warm JDTLS runs with stable output. The separately
+versioned Round 27 semantic evidence remains **1,778 passed, 27 skipped**. CI spans Linux and Windows on
 Python 3.10–3.12. Language depth and
 external validation are still uneven; see the honest
 [maturity matrix](docs/MATURITY.md) and the [v0.2 gates](docs/ROADMAP.md). It has

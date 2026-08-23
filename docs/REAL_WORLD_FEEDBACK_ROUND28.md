@@ -21,12 +21,13 @@ State labels in this ledger are deliberately strict:
   commands, versions, health, duration and artifact hashes;
 - **deferred** names an acceptance criterion and remains open.
 
-Round 28 plus the pinned setup follow-up is locally verified by 1,835 passing
+Round 28 plus the pinned setup follow-up was locally verified by 1,835 passing
 tests, 28 skips,
 Ruff, configured mypy, build, Twine and an installed-wheel smoke. The
 Aethros and PetClinic numbers below are external exploratory observations, not
-yet `V4` release evidence. Round 27 remains the latest clean Java release
-manifest.
+yet `V4` release evidence. At that checkpoint, Round 27 was the latest clean
+Java release manifest. Round 29 subsequently closes the three operational gaps with 1,845
+passing tests and a clean pinned PetClinic manifest, as documented below.
 
 ## Disposition
 
@@ -77,12 +78,33 @@ records the engine/target commits, exact command, JDTLS/JDK versions, duration,
 health, rollback and artifact hashes. It is valid evidence of fail-closed
 operation, but not V4 semantic evidence because the resolver run is partial.
 
+### Round 29 closure
+
+The preserved workspace log proved the historical message was not a semantic
+NPE. A delayed diagnostics job ran after `shutdown`/`exit` and found the Eclipse
+workspace already closed. GraphCodeMap now sends `didClose` for every opened
+document, drains late diagnostics before shutdown, and only publishes a reusable
+workspace after a completed server exit. Real errors observed before or during
+that drain still make the run `partial`.
+
+The JDTLS `-data` workspace is now project/runtime keyed and persistent, with an
+exclusive cross-process lock, build fingerprint invalidation, crash recovery and
+bounded cleanup. Readiness selects a known internal cross-file site from the
+whole semantic root, avoiding the old dependence on an external call in the
+first file.
+
+At the same pinned PetClinic commit, final cold/warm runs completed with 345
+`certain`, zero warning/error and an identical edge SHA-256. Wall time improved
+from 73.114 s to 60.829 s. Java symbols are also persisted by declared package in
+`INDEXER_VERSION=37`; the old query alias remains as a compatibility bridge.
+See [the Round 29 manifest](../evals/round29-java-operational-gates-manifest.json).
+
 ## What this feedback changed in the language process
 
 The reports demonstrated that extractor and benchmark quality are necessary but
 not sufficient. Every next Tier-A language now needs four independent reviews:
 
-1. semantic identity and flow on minimal adversarial fixtures;
+1. semantic identity (persisted and queried) and flow on minimal adversarial fixtures;
 2. a clean-install journey to the first `certain` edge;
 3. a representative framework/build repository;
 4. query/reporting review using the names and commands a real developer knows.
