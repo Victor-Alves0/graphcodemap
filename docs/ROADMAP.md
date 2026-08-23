@@ -112,7 +112,7 @@ Veja [Security Benchmark](SECURITY_BENCHMARK.md).
 - Gate final: **1.778 passed, 27 skipped**, sem xfail.
 - OWASP semântico com `INDEXER_VERSION=35`: **902/0/0/796**; Juliet CWE-23: **444/0/0/444**.
 - Pares reais: OpenRefine 1 → 0, FitNesse 2 → 0 e openHAB 3 → 0.
-- Performance final: **224,707 s** OWASP e **19,039 s** Juliet.
+- Performance final: **280,036 s** OWASP e **23,095 s** Juliet.
 - Overlay JDTLS: 732/732, 4.408 `certain`, zero warnings/errors.
 
 ### Checkpoint Round 26 (histórico preservado)

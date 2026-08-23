@@ -1,0 +1,104 @@
+{
+  "schema_version": "1.0",
+  "run": {
+    "date": "2026-08-23",
+    "platform": "Windows 11",
+    "python": "3.12.10",
+    "graphcodemap": "0.1.0",
+    "indexer_version": 35,
+    "engine_commit": "29000c6d61a916b8ec31a9d613a61deff5ac7a62",
+    "engine_git_dirty": false,
+    "engine_source_tree_sha256": "ea95110a7c67b27f6359518aef9dfa6157de6fe49829a6c0ffb0c3f877568720"
+  },
+  "local_gates": {
+    "pytest": {
+      "passed": 1778,
+      "skipped": 27,
+      "xfailed": 0,
+      "duration_s": 148.12
+    },
+    "coverage_percent_branch_aware": 83,
+    "coverage_run_duration_s": 178.38,
+    "ruff": "passed",
+    "configured_mypy": "passed",
+    "diff_check": "passed",
+    "build": "passed",
+    "twine": "passed",
+    "installed_wheel_smoke": "passed",
+    "packages": {
+      "graphcodemap-0.1.0-py3-none-any.whl": {
+        "bytes": 304883,
+        "sha256": "1d55075603d1bd88b404bbe94521f66663515ad6f3ec0c4e31efc2312b2ae925"
+      },
+      "graphcodemap-0.1.0.tar.gz": {
+        "bytes": 676905,
+        "sha256": "42e15020c907b378d62eb89703f99a756bf93797f9402cafe680eaf55ed598d5"
+      }
+    }
+  },
+  "java_l1": {
+    "jdtls_version": "1.60.0",
+    "jdtls_home": "D:\\Tools\\GraphCodeMap\\jdtls-1.60.0",
+    "recorded_runtime": "Oracle JDK 21.0.11",
+    "project_toolchain_is_separate": true,
+    "juliet_overlay": {
+      "target": "D:\\Projetos\\_competitors\\juliet-java-1.3\\holdout-cwe23-maven-v35",
+      "source_archive_sha256": "d985f4177c2bcd7b03455a05c1c8f2e755f55c9eb250accd052f05f877347e60",
+      "pom_sha256": "c99f083de59783f75cbe5e43573dadc63c8ba165cb95aef2f58003345404f29f",
+      "files": 732,
+      "certain_promotions": 4408,
+      "status": "complete",
+      "warnings": 0,
+      "errors": 0
+    }
+  },
+  "owasp": {
+    "corpus": "OWASP Benchmark v1.2",
+    "target_repository": "https://github.com/OWASP-Benchmark/BenchmarkJava",
+    "target_commit": "f51bf36b8891032453527d661babb845f39d03c3",
+    "target_git_dirty": false,
+    "command": "python evals/securitybench.py graphcodemap D:\\Projetos\\_competitors\\owasp --max-findings 100000 --db-path .codegraph\\round27-owasp-fresh-v35.db --out .codegraph\\round27-final-clean-owasp-v35-report.json",
+    "status": "complete",
+    "duration_s": 280.036,
+    "peak_rss_mb": 696.04,
+    "findings": 2420,
+    "score": {
+      "tp": 902,
+      "fp": 0,
+      "fn": 0,
+      "tn": 796,
+      "eligible": true
+    },
+    "artifacts": {
+      "report_sha256": "27f2b2c4486342901479d82483f7a83bcc8b34c81a015fd159a3f3a7d3d64766",
+      "score_sha256": "05e4f4eb7a0e85c809cf74bc1d2cea4b3ef69784785adaf39dfe2e0bbdef7a84"
+    }
+  },
+  "juliet_cwe23": {
+    "corpus": "NIST Juliet Java 1.3 CWE-23",
+    "source_archive_sha256": "d985f4177c2bcd7b03455a05c1c8f2e755f55c9eb250accd052f05f877347e60",
+    "command": "python evals/securitybench.py graphcodemap D:\\Projetos\\_competitors\\juliet-java-1.3\\holdout-cwe23-maven-v35 --max-findings 100000 --db-path .codegraph\\round27-juliet-overlay-health-v35b.db --out .codegraph\\round27-final-clean-juliet-v35-report.json",
+    "status": "complete",
+    "duration_s": 23.095,
+    "peak_rss_mb": 194.95,
+    "findings": 888,
+    "score": {
+      "tp": 444,
+      "fp": 0,
+      "fn": 0,
+      "tn": 444,
+      "eligible": true
+    },
+    "artifacts": {
+      "report_sha256": "0ec55b7afbe37580fb42a0b575a69339654f01826c8e771e524fb0dbc0c6de79",
+      "score_sha256": "b92ecb105c91c3960c4520cab3e70de5e95bf85a3e81109d0fb7721be7f8519f"
+    }
+  },
+  "java_real_pairs": {
+    "result": "java-real-pairs-round27-results.json",
+    "engine_provenance": "verified",
+    "detected_and_cleared": 3,
+    "reports_directory": "D:\\Projetos\\_competitors\\java-real-pairs\\results\\round27-final-clean-v35"
+  },
+  "scope_note": "These are pinned corpus and real-pair measurements, not a claim of universal SAST or whole-product superiority."
+}

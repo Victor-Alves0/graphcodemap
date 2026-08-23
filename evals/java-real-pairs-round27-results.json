@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.1",
+  "run_date": "2026-08-23",
+  "engine_commit": "29000c6d61a916b8ec31a9d613a61deff5ac7a62",
+  "engine_provenance": {
+    "status": "verified",
+    "git_commit": "29000c6d61a916b8ec31a9d613a61deff5ac7a62",
+    "git_dirty": false,
+    "source_tree_sha256": "ea95110a7c67b27f6359518aef9dfa6157de6fe49829a6c0ffb0c3f877568720"
+  },
+  "reports_directory": "D:\\Projetos\\_competitors\\java-real-pairs\\results\\round27-final-clean-v35",
+  "outcomes": {
+    "detected-and-cleared": 3
+  },
+  "cases": [
+    {
+      "id": "openrefine-cve-2024-49760",
+      "cve": "CVE-2024-49760",
+      "outcome": "detected-and-cleared",
+      "vulnerable_matches": 1,
+      "fixed_matches": 0,
+      "vulnerable_total_findings": 290,
+      "fixed_total_findings": 285,
+      "vulnerable_duration_s": 221.001,
+      "fixed_duration_s": 210.092,
+      "vulnerable_report_sha256": "ba6a901ab1161947d88442e7b84be11ec54ff456e514535dbfb3124db1b4539f",
+      "fixed_report_sha256": "8be0050a47fe5849691d93c5d07105dcc6fba4d9a0948ac698b06610b40378ce"
+    },
+    {
+      "id": "fitnesse-cve-2024-42499",
+      "cve": "CVE-2024-42499",
+      "outcome": "detected-and-cleared",
+      "vulnerable_matches": 2,
+      "fixed_matches": 0,
+      "vulnerable_total_findings": 83,
+      "fixed_total_findings": 83,
+      "vulnerable_duration_s": 164.143,
+      "fixed_duration_s": 155.738,
+      "vulnerable_report_sha256": "22e705c034a792eb72939c37052c0a23acc7a6db4590257bb79a9ea99bd08089",
+      "fixed_report_sha256": "404d1ced8be11ae19f196d96726700540295c6de1c95f75603883facabee0a66"
+    },
+    {
+      "id": "openhab-cve-2024-42468",
+      "cve": "CVE-2024-42468",
+      "outcome": "detected-and-cleared",
+      "vulnerable_matches": 3,
+      "fixed_matches": 0,
+      "vulnerable_total_findings": 71,
+      "fixed_total_findings": 43,
+      "vulnerable_duration_s": 3.743,
+      "fixed_duration_s": 3.292,
+      "vulnerable_report_sha256": "ba42cca307ebe30cdc26a0efd46999309cda11f6ae705f5c75984ac6426c666d",
+      "fixed_report_sha256": "cc3122fbf10b073b665119c1157dd24b9c894b0313282e635ecff80017c6d702"
+    }
+  ]
+}

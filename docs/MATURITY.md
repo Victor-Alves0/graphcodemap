@@ -70,7 +70,9 @@ Juliet and 3/3 vulnerable plus 3/3 fixed real-pair outcomes. The final local
 project gate is **1,778 passed, 27 skipped**. The corrected Juliet overlay
 distinguished shutdown bookkeeping from real diagnostics and completed with
 732/732 files, 4,408 `certain` promotions and no warnings/errors. Final
-pre-report analysis took 224.707 s on OWASP and 19.039 s on Juliet.
+pre-report analysis took 280.036 s on OWASP and 23.095 s on Juliet. The
+[Round 27 manifest](../evals/round27-java-gates-manifest.json) pins the engine,
+targets, package/report hashes and overlay-health record.
 
 ## Rule for adding scope
 

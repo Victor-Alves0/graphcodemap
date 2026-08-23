@@ -51,8 +51,8 @@ a red semantic or health contract.
 
 | Gate | GraphCodeMap Round 27 profile | Final pre-report time | Status |
 |---|---:|---:|---|
-| OWASP Benchmark v1.2 | 902 TP / 0 FP / 0 FN / 796 TN | 224.707 s | Complete, target clean |
-| NIST Juliet Java 1.3 CWE-23 | 444 TP / 0 FP / 0 FN / 444 TN | 19.039 s | Complete; healthy `INDEXER_VERSION=35` overlay |
+| OWASP Benchmark v1.2 | 902 TP / 0 FP / 0 FN / 796 TN | 280.036 s | Complete, target clean |
+| NIST Juliet Java 1.3 CWE-23 | 444 TP / 0 FP / 0 FN / 444 TN | 23.095 s | Complete; healthy `INDEXER_VERSION=35` overlay |
 | Java vulnerable/fixed pairs | 3/3 vulnerable detected; 3/3 fixes clear | Per-report timings in `evals/java-real-pairs-round27-results.json` | Valid hardened-oracle evidence |
 
 The first fresh indexing plus JDTLS phases exposed two genuine operational
@@ -89,5 +89,6 @@ operational tooling. Neither table justifies a universal superiority claim.
 | Whole-product parity with CodeQL | Not claimed |
 
 Canonical details live in [Security Benchmark](SECURITY_BENCHMARK.md), the
-[Round 27 result](../evals/java-real-pairs-round27-results.json), and the
+[Round 27 gate manifest](../evals/round27-java-gates-manifest.json), the
+[real-pair result](../evals/java-real-pairs-round27-results.json), and the
 historical log in [evals/RESULTS.md](../evals/RESULTS.md).

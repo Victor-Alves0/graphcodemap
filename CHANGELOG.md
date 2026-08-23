@@ -18,9 +18,9 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
   invocadas/deferred, sanitizers contextuais, estado global e proveniência de
   fontes concorrentes. O gate final do projeto fecha em **1.778 passed,
   27 skipped**, sem xfail.
-- **Performance do perfil:** análise final pré-report em 224,707 s no OWASP
-  e 19,039 s no Juliet. Fresh indexing + JDTLS levou 23m23s e 15m12s,
-  respectivamente.
+- **Performance do perfil:** análise final pré-report em 280,036 s no OWASP
+  e 23,095 s no Juliet. As indexações JDTLS iniciais foram usadas como gate de
+  saúde separado; o manifesto Round 27 distingue esses estágios.
 - **Overlay JDTLS elegível.** O falso handshake pós-shutdown foi corrigido e o
   Juliet foi reaberto com `src` e classpath oficiais: 732/732 arquivos,
   **4.408** promoções `certain`, `status=complete`, zero warnings/errors.

@@ -1962,8 +1962,8 @@ seleção focada dos contratos/P1 também passa dentro desse gate amplo.
 
 | gate | TP | FP | FN | TN | tempo final pré-report |
 |---|---:|---:|---:|---:|---:|
-| OWASP Benchmark v1.2 | **902** | **0** | **0** | **796** | **224,707 s** |
-| NIST Juliet Java 1.3 CWE-23 | **444** | **0** | **0** | **444** | **19,039 s** |
+| OWASP Benchmark v1.2 | **902** | **0** | **0** | **796** | **280,036 s** |
+| NIST Juliet Java 1.3 CWE-23 | **444** | **0** | **0** | **444** | **23,095 s** |
 
 Os pares CVE também fecham o contrato hardened:
 
@@ -1974,8 +1974,10 @@ Os pares CVE também fecham o contrato hardened:
 | openHAB CVE-2024-42468 | **3 → 0** | preservado |
 | **agregado** | **3/3 detectadas; 3/3 fixes limpos** | scorer hardened sem evidência inválida |
 
-Tempos, RSS, commits, subject e hashes byte a byte dos seis reports/DBs estão
+Tempos e hashes byte a byte dos seis reports estão
 em [`java-real-pairs-round27-results.json`](java-real-pairs-round27-results.json).
+O commit do motor, hashes dos reports/pacotes e a saúde do overlay estão no
+[`manifesto Round 27`](round27-java-gates-manifest.json).
 
 ## Overlay health elegível
 

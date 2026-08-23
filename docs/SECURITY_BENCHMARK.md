@@ -319,8 +319,8 @@ the Round 26 sections above remain unchanged as historical reproduction data.
 
 | gate | GraphCodeMap Round 27 | precision | recall | FPR | final pre-report time |
 |---|---:|---:|---:|---:|---:|
-| OWASP Benchmark v1.2 | 902 / 0 / 0 / 796 | 100% | 100% | 0% | 224.707 s |
-| NIST Juliet Java 1.3 CWE-23 | 444 / 0 / 0 / 444 | 100% | 100% | 0% | 19.039 s |
+| OWASP Benchmark v1.2 | 902 / 0 / 0 / 796 | 100% | 100% | 0% | 280.036 s |
+| NIST Juliet Java 1.3 CWE-23 | 444 / 0 / 0 / 444 | 100% | 100% | 0% | 23.095 s |
 
 The hardened real-pair scorer also reports:
 
@@ -356,5 +356,8 @@ comparison on these pinned corpora:
 GraphCodeMap is stronger on these measured rows. CodeQL remains broader in
 languages, queries, framework models, integrations and operational maturity;
 this document does not claim whole-product superiority. Round 27 real-pair
-timings, RSS and byte hashes are versioned in
+timings and byte hashes are versioned in
 [`evals/java-real-pairs-round27-results.json`](../evals/java-real-pairs-round27-results.json).
+Engine/target identities, package hashes, OWASP/Juliet report hashes and the
+overlay-health record are pinned in the
+[`Round 27 Java gate manifest`](../evals/round27-java-gates-manifest.json).
