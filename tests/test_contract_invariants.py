@@ -233,14 +233,14 @@ def test_drift_flips_fresh_to_false(tmp_path):
 AMBIG = {
     "a.py": "def run():\n    return 1\n",
     "b.py": "def run():\n    return 2\n",
-    "c.py": "def go(x):\n    return x.run()\n",
+    "c.py": "def go():\n    return run()\n",
 }
 
 
 def test_possible_stays_possible_through_query(tmp_path):
     g = _graph(tmp_path, AMBIG)
     sym, rows, _ = g.query.callers("a.run")
-    # x.run() é ambíguo → aresta 'possible'; a query não pode promovê-la
+    # run() é ambíguo → aresta 'possible'; a query não pode promovê-la
     assert rows and all(r["confidence"] == "possible" for r in rows)
     g.close()
 
@@ -268,12 +268,12 @@ def test_query_confidence_is_subset_of_stored(tmp_path):
 # ============================================================================
 
 def test_impact_propagates_minimum_confidence(tmp_path):
-    # target ← (import-traced, inferred) ← mid ← (receptor ambíguo, possible) ← go
+    # target ← (import-traced, inferred) ← mid ← (nome ambíguo, possible) ← go
     g = _graph(tmp_path, {
         "leaf.py": "def target():\n    return 1\n",
         "mid.py": "from leaf import target\n\ndef mid():\n    return target()\n",
-        "other.py": "def mid():\n    return 2\n",       # torna x.mid() ambíguo
-        "caller.py": "def go(x):\n    return x.mid()\n",
+        "other.py": "def mid():\n    return 2\n",       # torna mid() ambíguo
+        "caller.py": "def go():\n    return mid()\n",
     })
     _s, rows, _ = g.query.impact("target")
     by = {r["fqn"]: r for r in rows}
@@ -290,7 +290,7 @@ def test_impact_confidence_is_monotonic_along_chain(tmp_path):
         "leaf.py": "def target():\n    return 1\n",
         "mid.py": "from leaf import target\n\ndef mid():\n    return target()\n",
         "other.py": "def mid():\n    return 2\n",
-        "caller.py": "def go(x):\n    return x.mid()\n",
+        "caller.py": "def go():\n    return mid()\n",
     })
     _s, rows, _ = g.query.impact("target")
     by_depth = {}

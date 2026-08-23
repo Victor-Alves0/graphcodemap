@@ -104,6 +104,9 @@ class LspResolver:
     io_timeout: float = 20.0
     # Encerrar um servidor já degradado não pode repetir o timeout de análise.
     shutdown_timeout: float = 2.0
+    # Resolvers cujo import de projeto e parte do contrato semantico podem
+    # optar por falhar fechado quando o warmup/I/O excede o orçamento.
+    timeout_is_partial: bool = False
 
     # -- descoberta / disponibilidade ----------------------------------------
 
@@ -151,6 +154,8 @@ class LspResolver:
         self._semantic_sites = 0
         self._semantic_hits = 0
         self._warmup_timed_out = False
+        self._io_timed_out = False
+        self._active_method: str | None = None
         # O timeout curto de ``shutdown`` usa o mesmo caminho de kill das
         # falhas operacionais. Preserve se o servidor chegou saudável ao
         # encerramento para que o teardown não reescreva retrospectivamente a
@@ -231,6 +236,8 @@ class LspResolver:
         except queue.Empty:
             log.warning("%s: sem resposta em %.0fs — matando servidor LSP",
                         self.cmd_name, wait)
+            if getattr(self, "_active_method", None) != "shutdown":
+                self._io_timed_out = True
             self._kill()
             return None
         if msg is _EOF:
@@ -252,6 +259,7 @@ class LspResolver:
             return None
         self._seq += 1
         rid = self._seq
+        self._active_method = method
         self._write({"jsonrpc": "2.0", "id": rid, "method": method,
                      "params": params})
         # Limite TOTAL: notificações de progresso não podem manter viva para
@@ -266,6 +274,8 @@ class LspResolver:
         for _ in range(timeout_msgs):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                if method != "shutdown":
+                    self._io_timed_out = True
                 self._kill()
                 return None
             msg = self._read(remaining)
@@ -279,6 +289,9 @@ class LspResolver:
             if "id" in msg and "method" in msg:
                 self._write({"jsonrpc": "2.0", "id": msg["id"],
                              "result": self._server_request_result(msg)})
+        if method != "shutdown":
+            self._io_timed_out = True
+        self._kill()
         return None
 
     @staticmethod
@@ -291,6 +304,16 @@ class LspResolver:
 
     def _record_health(self, severity: str, value) -> None:
         text = self._health_text(value)
+        # gopls pode terminar um job assíncrono depois de aceitarmos shutdown e
+        # reportar "while diagnosing orphaned files: session is shut down" como
+        # Error. Isso descreve o teardown solicitado pelo cliente, não a análise.
+        # O filtro exige shutdown iniciado saudável + mensagem inequívoca; NPEs,
+        # erros de build e qualquer falha observada antes continuam fail-closed.
+        if (severity == "error"
+                and getattr(self, "_shutdown_started_healthy", False)
+                and getattr(self, "_active_method", None) == "shutdown"
+                and "session is shut down" in text.lower()):
+            severity = "warning"
         target = (self._health_errors if severity == "error"
                   else self._health_warnings)
         if text not in target and len(target) < 20:
@@ -421,10 +444,33 @@ class LspResolver:
         timed_out = bool(getattr(self, "_warmup_timed_out", False))
         sites = int(getattr(self, "_semantic_sites", 0))
         hits = int(getattr(self, "_semantic_hits", 0))
-        if timed_out and sites and hits == 0 and not errors:
-            warnings.append(
-                f"readiness semantica nao comprovada: 0/{sites} site(s) "
-                "obtiveram definicao durante o warmup")
+        io_timed_out = bool(getattr(self, "_io_timed_out", False))
+        if timed_out:
+            # O warmup consulta UMA aresta representativa. Ela pode ser externa,
+            # dinâmica ou simplesmente irresolúvel; exigir que esse probe tenha
+            # definição produz falso partial mesmo quando centenas de requests
+            # posteriores provaram que o servidor está semanticamente pronto.
+            # Só falhe fechado quando não existe nenhuma prova positiva no run.
+            if hits:
+                warnings.append(
+                    f"probe de readiness nao resolveu em {self.ready_timeout:g}s, "
+                    f"mas {hits}/{sites} site(s) obtiveram definicao na passada")
+            else:
+                message = (
+                    f"readiness semantica nao comprovada em "
+                    f"{self.ready_timeout:g}s: 0/{sites} site(s) obtiveram "
+                    "definicao na passada")
+                if self.timeout_is_partial:
+                    message += ("; aumente --jdtls-ready-timeout/"
+                                "CODEGRAPH_JDTLS_READY_TIMEOUT e o orçamento de I/O")
+                    errors.append(message)
+                else:
+                    warnings.append(message)
+        if io_timed_out and self.timeout_is_partial:
+            errors.append(
+                f"JDTLS excedeu o timeout de I/O de {self.io_timeout:g}s; "
+                "aumente --jdtls-io-timeout/CODEGRAPH_JDTLS_IO_TIMEOUT")
+        errors = list(dict.fromkeys(errors))
         return {
             "status": "partial" if errors else "complete",
             "errors": errors,
@@ -432,6 +478,9 @@ class LspResolver:
             "sites": sites,
             "resolved_sites": hits,
             "warmup_timed_out": timed_out,
+            "io_timed_out": io_timed_out,
+            "ready_timeout_s": self.ready_timeout,
+            "io_timeout_s": self.io_timeout,
         }
 
     def _server_request_result(self, msg: dict):

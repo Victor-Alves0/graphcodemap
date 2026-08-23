@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -38,6 +40,48 @@ def _print_l1_report(stats: dict, elapsed: float) -> None:
         print(f"  {key}: {json.dumps(value, ensure_ascii=False, default=str)}")
 
 
+@contextlib.contextmanager
+def _jdtls_timeout_env(args):
+    mapping = {
+        "jdtls_ready_timeout": "CODEGRAPH_JDTLS_READY_TIMEOUT",
+        "jdtls_io_timeout": "CODEGRAPH_JDTLS_IO_TIMEOUT",
+    }
+    old = {env: os.environ.get(env) for env in mapping.values()}
+    try:
+        for attr, env in mapping.items():
+            value = getattr(args, attr, None)
+            if value is not None:
+                os.environ[env] = str(value)
+        yield
+    finally:
+        for env, value in old.items():
+            if value is None:
+                os.environ.pop(env, None)
+            else:
+                os.environ[env] = value
+
+
+def _positive_seconds(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("deve ser um número positivo") from exc
+    if not (0 < seconds < float("inf")):
+        raise argparse.ArgumentTypeError("deve ser um número positivo")
+    return seconds
+
+
+def _add_jdtls_timeout_options(parser) -> None:
+    parser.add_argument(
+        "--jdtls-ready-timeout", type=_positive_seconds, default=None,
+        help="segundos para o JDTLS importar/indexar o projeto (env: "
+             "CODEGRAPH_JDTLS_READY_TIMEOUT)")
+    parser.add_argument(
+        "--jdtls-io-timeout", type=_positive_seconds, default=None,
+        help="segundos por requisição JDTLS; deve ser >= readiness e, se "
+             "omitido, acompanha readiness (env: CODEGRAPH_JDTLS_IO_TIMEOUT)")
+
+
 def cmd_index(args) -> int:
     if args.path:
         args.root = str(Path(args.path).resolve())
@@ -57,7 +101,8 @@ def cmd_index(args) -> int:
         from . import l1
 
         t0 = time.perf_counter()
-        r = l1.refine(ix)
+        with _jdtls_timeout_env(args):
+            r = l1.refine(ix)
         dt = time.perf_counter() - t0
         _print_l1_report(r, dt)
         return 1 if _l1_partial(r) else 0
@@ -69,7 +114,8 @@ def cmd_refine(args) -> int:
 
     ix = Indexer(args.root, args.db)
     t0 = time.perf_counter()
-    r = l1.refine(ix)
+    with _jdtls_timeout_env(args):
+        r = l1.refine(ix)
     dt = time.perf_counter() - t0
     _print_l1_report(r, dt)
     return 1 if _l1_partial(r) else 0
@@ -174,7 +220,11 @@ def cmd_taint(args) -> int:
 
 
 def cmd_reaches(args) -> int:
-    sym, data, env = _engine(args).reaches(args.symbol, sink=args.sink,
+    symbol = args.symbol or args.entry
+    if not symbol:
+        print("reaches: informe SYMBOL ou --entry SYMBOL", file=sys.stderr)
+        return 2
+    sym, data, env = _engine(args).reaches(symbol, sink=args.sink,
                                            via=args.via, depth=args.depth,
                                            max_paths=args.max_paths,
                                            deadline_ms=args.deadline_ms,
@@ -301,17 +351,44 @@ def cmd_watch(args) -> int:
 
     from .watcher import Watcher
 
-    ix = Indexer(args.root, args.db)
-    stats = ix.index_repo()
-    ix.close()
-    print(f"índice atualizado ({stats['indexed']} arquivos); observando {args.root} "
-          f"(Ctrl+C para sair)")
-    w = Watcher(args.root, args.db)
-    w.start()
+    print(f"watch: estado inicial — preparando índice de {args.root}", flush=True)
+    try:
+        ix = Indexer(args.root, args.db)
+        try:
+            stats = ix.index_repo()
+        finally:
+            ix.close()
+    except Exception as error:
+        print(f"watch: erro ao preparar índice: {type(error).__name__}: {error}",
+              file=sys.stderr, flush=True)
+        return 1
+
+    w = None
+    try:
+        w = Watcher(args.root, args.db)
+        w.start()
+    except Exception as error:
+        cleanup_error = None
+        if w is not None:
+            try:
+                w.stop()
+            except Exception as secondary:
+                cleanup_error = secondary
+        print(f"watch: erro ao iniciar observador: {type(error).__name__}: {error}",
+              file=sys.stderr, flush=True)
+        if cleanup_error is not None:
+            print("watch: erro secundário ao limpar observador: "
+                  f"{type(cleanup_error).__name__}: {cleanup_error}",
+                  file=sys.stderr, flush=True)
+        return 1
+    print(f"watch: pronto — índice atualizado ({stats['indexed']} arquivos); "
+          f"observando {args.root} (Ctrl+C para sair)", flush=True)
     try:
         while True:
             _time.sleep(1)
     except KeyboardInterrupt:
+        pass
+    finally:
         w.stop()
     return 0
 
@@ -348,9 +425,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="padrão estilo gitignore a excluir (repetível). Fica "
                          "guardado no índice — não escreve nada no repo. "
                          "Substitui a política anterior; use --exclude '' p/ limpar")
+    _add_jdtls_timeout_options(sp)
     sp.set_defaults(fn=cmd_index)
 
     sp = sub.add_parser("refine", help="refinamento L1: promove arestas a 'certain'")
+    _add_jdtls_timeout_options(sp)
     sp.set_defaults(fn=cmd_refine)
 
     sp = sub.add_parser("find", help="localiza símbolos")
@@ -446,7 +525,9 @@ def main(argv: list[str] | None = None) -> int:
 
     sp = sub.add_parser("reaches", help="reachability entry→sink numa resposta só "
                         "(cadeia + verdict de validação)")
-    sp.add_argument("symbol", help="fqn da função-entrada")
+    sp.add_argument("symbol", nargs="?", help="fqn da função-entrada")
+    sp.add_argument("--entry", default=None,
+                    help="alias explícito para o símbolo de entrada")
     sp.add_argument("--sink", default="http",
                     help="preset (http|sql|exec|file) ou regex sobre o nome da chamada")
     sp.add_argument("--via", default=None,

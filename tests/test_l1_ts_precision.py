@@ -86,6 +86,124 @@ def test_typescript_discovery_uses_analyzed_repo_root(tmp_path, monkeypatch):
     assert tsjs_ls._find_ts(repo) == str(ts)
 
 
+def test_typescript_discovery_finds_bounded_monorepo_subproject(
+        tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    package = repo / "packages" / "web"
+    ts = package / "node_modules" / "typescript"
+    (ts / "lib").mkdir(parents=True)
+    (ts / "lib" / "typescript.js").write_text("", encoding="utf-8")
+    (repo / "package.json").write_text(
+        '{"private":true,"workspaces":["packages/*"]}', encoding="utf-8")
+    monkeypatch.delenv("CODEGRAPH_TS_DIR", raising=False)
+    monkeypatch.setattr(tsjs_ls, "_DEV_ROOT", tmp_path / "sem-tools")
+    monkeypatch.setattr(tsjs_ls, "_find_node", lambda: None)
+
+    assert tsjs_ls._find_ts(repo) == str(ts.resolve())
+
+
+def test_typescript_discovery_prefers_declared_workspace_over_fixture(
+        tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    fixture_ts = repo / "aaa_fixture" / "node_modules" / "typescript"
+    workspace = repo / "packages" / "app"
+    workspace_ts = workspace / "node_modules" / "typescript"
+    for ts in (fixture_ts, workspace_ts):
+        (ts / "lib").mkdir(parents=True)
+        (ts / "lib" / "typescript.js").write_text("", encoding="utf-8")
+    (repo / "package.json").write_text(
+        '{"private":true,"workspaces":["packages/*"]}', encoding="utf-8")
+    (workspace / "src").mkdir()
+    (workspace / "src" / "index.ts").write_text("export {};", encoding="utf-8")
+    monkeypatch.delenv("CODEGRAPH_TS_DIR", raising=False)
+    monkeypatch.setattr(tsjs_ls, "_DEV_ROOT", tmp_path / "sem-tools")
+    monkeypatch.setattr(tsjs_ls, "_find_node", lambda: None)
+
+    assert tsjs_ls._find_ts(repo) == str(workspace_ts.resolve())
+
+
+def test_typescript_discovery_prefers_manifest_and_code_over_fixture(
+        tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    fixture_ts = repo / "aaa_fixture" / "node_modules" / "typescript"
+    project = repo / "packages" / "app"
+    project_ts = project / "node_modules" / "typescript"
+    for ts in (fixture_ts, project_ts):
+        (ts / "lib").mkdir(parents=True)
+        (ts / "lib" / "typescript.js").write_text("", encoding="utf-8")
+    (project / "package.json").write_text('{"private":true}', encoding="utf-8")
+    (project / "src").mkdir()
+    (project / "src" / "index.ts").write_text("export {};", encoding="utf-8")
+    monkeypatch.delenv("CODEGRAPH_TS_DIR", raising=False)
+    monkeypatch.setattr(tsjs_ls, "_DEV_ROOT", tmp_path / "sem-tools")
+    monkeypatch.setattr(tsjs_ls, "_find_node", lambda: None)
+
+    assert tsjs_ls._find_ts(repo) == str(project_ts.resolve())
+
+
+def test_typescript_workspace_candidate_tie_is_deterministic(
+        tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    # Criação em ordem inversa não pode influenciar a escolha.
+    for name in ("zeta", "alpha"):
+        package = repo / "packages" / name
+        ts = package / "node_modules" / "typescript"
+        (ts / "lib").mkdir(parents=True)
+        (ts / "lib" / "typescript.js").write_text("", encoding="utf-8")
+        (package / "index.ts").write_text("export {};", encoding="utf-8")
+    (repo / "package.json").write_text(
+        '{"private":true,"workspaces":["packages/*"]}', encoding="utf-8")
+    monkeypatch.delenv("CODEGRAPH_TS_DIR", raising=False)
+    monkeypatch.setattr(tsjs_ls, "_DEV_ROOT", tmp_path / "sem-tools")
+    monkeypatch.setattr(tsjs_ls, "_find_node", lambda: None)
+
+    expected = repo / "packages" / "alpha" / "node_modules" / "typescript"
+    assert tsjs_ls._find_ts(repo) == str(expected.resolve())
+
+
+def test_typescript_subproject_discovery_obeys_directory_limit(
+        tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    ts = repo / "packages" / "web" / "node_modules" / "typescript"
+    (ts / "lib").mkdir(parents=True)
+    (ts / "lib" / "typescript.js").write_text("", encoding="utf-8")
+    monkeypatch.delenv("CODEGRAPH_TS_DIR", raising=False)
+    monkeypatch.setattr(tsjs_ls, "_DEV_ROOT", tmp_path / "sem-tools")
+    monkeypatch.setattr(tsjs_ls, "_find_node", lambda: None)
+    monkeypatch.setattr(tsjs_ls, "_TS_DISCOVERY_MAX_DIRS", 1)
+
+    assert tsjs_ls._find_ts(repo) is None
+
+
+def test_typescript_subproject_discovery_rejects_symlink_escape(
+        tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    external = tmp_path / "external-typescript"
+    (external / "lib").mkdir(parents=True)
+    (external / "lib" / "typescript.js").write_text("", encoding="utf-8")
+    link = repo / "packages" / "web" / "node_modules" / "typescript"
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(external, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"symlink indisponível: {error}")
+    monkeypatch.delenv("CODEGRAPH_TS_DIR", raising=False)
+    monkeypatch.setattr(tsjs_ls, "_DEV_ROOT", tmp_path / "sem-tools")
+    monkeypatch.setattr(tsjs_ls, "_find_node", lambda: None)
+
+    assert tsjs_ls._find_ts(repo) is None
+
+
+def test_typescript_unavailable_message_explains_env_contract():
+    details = TsLsResolver.unavailable_details()
+    assert "CODEGRAPH_TS_DIR" in details["action"]
+    assert "lib/typescript.js" in details["action"]
+
+    missing = l1.missing_resolvers(
+        {"typescript"}, is_available=lambda _resolver: False)
+    assert missing[0]["action"] == details["action"]
+
+
 def test_ts_kind_guard_rejects_callback_parameter(tmp_path):
     g = _fixture(tmp_path)
     edge = _edge_at(g, 11)
@@ -117,6 +235,33 @@ def test_ts_definition_name_must_match_callee(tmp_path):
                                 "main.js", edge["file_id"]) == 0
     assert _edge_at(g, 11)["resolver"] == "l0"
     g.close()
+
+
+def test_describe_and_it_callbacks_have_distinct_human_names(tmp_path):
+    source = """
+        describe("authentication", () => {
+          it("accepts a valid token", () => {});
+          it("rejects an invalid token", () => {});
+        });
+        describe("authorization", () => {
+          it("rejects a guest", () => {});
+        });
+    """
+    (tmp_path / "auth.spec.ts").write_text(
+        textwrap.dedent(source), encoding="utf-8")
+    graph = CodeGraph(tmp_path)
+    try:
+        graph.index()
+        rows = graph.indexer.conn.execute(
+            "SELECT name, fqn FROM symbols WHERE name LIKE 'describe#%' "
+            "OR name LIKE 'it#%' ORDER BY start_line"
+        ).fetchall()
+        assert len(rows) == 5
+        assert len({row["fqn"] for row in rows}) == 5
+        assert any("authentication" in row["name"] for row in rows)
+        assert any("valid_token" in row["name"] for row in rows)
+    finally:
+        graph.close()
 
 
 @pytest.mark.skipif(not TsLsResolver.available(),

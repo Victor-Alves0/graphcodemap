@@ -10,12 +10,13 @@ import pytest
 
 from codegraph import CodeGraph
 
-# 4 funções 'run' em módulos distintos + um chamador com receptor desconhecido
-# (x.run()) → resolução por nome é ambígua → antes explodia em N arestas.
+# 4 funções 'run' em módulos distintos + uma chamada nua sem import explícito
+# → resolução por nome é ambígua → antes explodia em N arestas. Receiver
+# desconhecido não participa mais desse fallback: não há evidência de tipo.
 A = "def run():\n    return 1\n"
 B = "def run():\n    return 2\n"
 C = "def run():\n    return 3\n"
-CALLER = "def go(x):\n    return x.run()\n"
+CALLER = "def go():\n    return run()\n"
 
 
 @pytest.fixture()
@@ -34,7 +35,7 @@ def _count(cg, where="1=1"):
 
 
 def test_ambiguous_call_fans_out_to_all_candidates(cg):
-    # x.run() casa 3 funções 'run' (a/b/c) → 3 arestas 'possible' (recall
+    # run() casa 3 funções 'run' (a/b/c) → 3 arestas 'possible' (recall
     # preservado para callers/impact), todas distintas por dst
     rows = cg.indexer.conn.execute(
         "SELECT dst, confidence FROM edges "

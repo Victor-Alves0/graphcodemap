@@ -88,11 +88,13 @@ def calls(sym, rows, env, label: str, direction: str) -> str:
     unresolved = [r for r in rows
                   if r.get("other_fqn") is None and r.get("dst_name")]
     resolved = [r for r in rows if r not in unresolved]
-    strong = [r for r in resolved if r["confidence"] != "possible"]
+    strong = [r for r in resolved if r["confidence"] == "certain"]
+    inferred = [r for r in resolved if r["confidence"] == "inferred"]
     weak = [r for r in resolved if r["confidence"] == "possible"]
     lines = [f"{label} {sym['fqn']} — {len(strong)} confiáveis, "
-             f"{len(weak)} candidatos, {len(unresolved)} externas:"]
-    for r in strong:
+             f"{len(inferred)} inferidas, {len(weak)} candidatos, "
+             f"{len(unresolved)} externas:"]
+    for r in [*strong, *inferred]:
         other = r["other_fqn"] or "<módulo>"
         lines.append(f"{'  ' * r['depth']}{r['site_path']}:{r['line']}  "
                      f"{other}  {_tag(r)}")
@@ -423,10 +425,21 @@ def doctor(d) -> str:
                      "'possible' (instale: pip install \"graphcodemap[l1]\")")
     for m in d.get("l1_missing", []):
         langs = ", ".join(m["languages"])
-        env = f" (ou defina ${m['env']})" if m.get("env") else ""
-        flags.append(f"L1 indisponível para {langs}: '{m['server']}' não está no "
-                     f"PATH{env} — resolução fica em 'inferred'/'possible'")
-    if d["call_edges"] and d["certain_pct"] < 20 and d["l1_resolvers"]:
+        if m.get("reason"):
+            action = f"; {m['action']}" if m.get("action") else ""
+            flags.append(f"L1 indisponível para {langs}: {m['reason']}{action} "
+                         "— resolução fica em 'inferred'/'possible'")
+        else:
+            env = f" (ou defina ${m['env']})" if m.get("env") else ""
+            flags.append(f"L1 indisponível para {langs}: '{m['server']}' não está no "
+                         f"PATH{env} — resolução fica em 'inferred'/'possible'")
+    last_l1 = d.get("l1_last_run") or {}
+    if last_l1.get("partial"):
+        warnings = last_l1.get("warnings") or []
+        detail = warnings[0] if warnings else "consulte a saída de `refine`"
+        flags.append(f"última passada L1 terminou parcial: {detail}")
+    if (d["call_edges"] and d["certain_pct"] < 20 and d["l1_resolvers"]
+            and not last_l1.get("partial")):
         flags.append(f"só {d['certain_pct']}% das chamadas são 'certain' — "
                      "considere rodar `refine` para promover mais arestas")
     if flags:

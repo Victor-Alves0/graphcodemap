@@ -11,6 +11,9 @@ node; requer node + typescript instalados).
 
 from __future__ import annotations
 
+import json
+import time
+
 from ..community import mark_dirty as mark_community_dirty
 from ..indexer import Indexer
 from ..log import get as _get_log
@@ -86,9 +89,13 @@ def missing_resolvers(languages, is_available=None, root=None) -> list[dict]:
         if hit and not avail(cls):
             # JediResolver é in-process (sem cmd_name/cmd_env); os demais são LSP
             # no PATH. getattr tolera ambos.
-            out.append({"languages": hit,
-                        "server": getattr(cls, "cmd_name", "") or "jedi",
-                        "env": getattr(cls, "cmd_env", None)})
+            item = {"languages": hit,
+                    "server": getattr(cls, "cmd_name", "") or "jedi",
+                    "env": getattr(cls, "cmd_env", None)}
+            details = getattr(cls, "unavailable_details", None)
+            if details is not None:
+                item.update(details())
+            out.append(item)
     return out
 
 
@@ -217,21 +224,30 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
         hit = sorted(remaining.intersection(cls.languages))
         if not hit:
             continue
-        unavailable.append({
+        item = {
             "languages": hit,
             "resolver": cls.__name__,
             "server": getattr(cls, "cmd_name", "") or "jedi",
             "env": getattr(cls, "cmd_env", None),
-        })
+        }
+        details = getattr(cls, "unavailable_details", None)
+        if details is not None:
+            item.update(details())
+        unavailable.append(item)
         remaining.difference_update(hit)
 
-    missing_warnings = [
-        "resolver L1 indisponível para " + ", ".join(item["languages"])
-        + f" ({item['server']})"
-        for item in unavailable
-    ]
+    missing_warnings = []
+    for item in unavailable:
+        warning = ("resolver L1 indisponível para "
+                   + ", ".join(item["languages"])
+                   + f" ({item['server']})")
+        if item.get("reason"):
+            warning += f": {item['reason']}"
+        if item.get("action"):
+            warning += f"; ação: {item['action']}"
+        missing_warnings.append(warning)
     stats = {"files": 0, "promoted": 0, "errors": 0, "roots": 0,
-             "servers": 0,
+             "servers": 0, "rolled_back": 0,
              "status": "partial" if unavailable else "complete",
              "partial": bool(unavailable),
              "warnings": missing_warnings, "runs": [],
@@ -259,7 +275,56 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
         mark_dirty(conn)
         mark_community_dirty(conn)
         indexer.resolve_edges()
+    def persist_last_run() -> None:
+        safe_runs = [{key: run[key] for key in (
+            "resolver", "files", "promoted", "status",
+            "attempted_promotions", "rolled_back",
+            "sites", "resolved_sites", "warmup_timed_out", "io_timed_out",
+            "ready_timeout_s", "io_timeout_s") if key in run}
+            for run in stats["runs"]]
+        safe_warnings = list(missing_warnings)
+        for run in safe_runs:
+            resolver_name = run["resolver"]
+            unresolved_readiness = (run.get("warmup_timed_out")
+                                    and not run.get("resolved_sites"))
+            if unresolved_readiness:
+                seconds = run.get("ready_timeout_s", "configurado")
+                action = ("aumente --jdtls-ready-timeout/"
+                          "CODEGRAPH_JDTLS_READY_TIMEOUT"
+                          if resolver_name == "JdtlsResolver"
+                          else "ajuste o timeout de readiness do resolver")
+                safe_warnings.append(
+                    f"{resolver_name}: readiness excedeu {seconds}s; {action}")
+            if run.get("io_timed_out"):
+                seconds = run.get("io_timeout_s", "configurado")
+                action = ("aumente --jdtls-io-timeout/"
+                          "CODEGRAPH_JDTLS_IO_TIMEOUT"
+                          if resolver_name == "JdtlsResolver"
+                          else "ajuste o timeout de I/O do resolver")
+                safe_warnings.append(
+                    f"{resolver_name}: I/O excedeu {seconds}s; {action}")
+            if (run.get("status") == "partial"
+                    and not unresolved_readiness
+                    and not run.get("io_timed_out")):
+                safe_warnings.append(
+                    f"{resolver_name}: passada parcial; execute `refine` para detalhes")
+        record = {key: stats[key] for key in (
+            "status", "partial", "errors", "applicable",
+            "attempted", "unavailable", "files", "promoted", "rolled_back")}
+        # Diagnosticos do LSP podem conter caminhos absolutos. O doctor e a API
+        # publica preservam o estado/acao, enquanto o detalhe fica no stdout da
+        # passada que o produziu.
+        record["warnings"] = list(dict.fromkeys(safe_warnings))
+        record["runs"] = safe_runs
+        record["finished_at"] = int(time.time())
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES('l1_last_run', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (json.dumps(record, ensure_ascii=False),))
+        conn.commit()
+
     if not resolvers:
+        persist_last_run()
         return stats
     roots_used = set()
     attempted_languages: set[str] = set()
@@ -297,6 +362,11 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
                           cls.__name__, proj_root, type(e).__name__, e,
                           exc_info=True)
                 continue
+            # Uma promoção só é publicável depois que close+health aprovam a
+            # instância desta raiz. A savepoint permite rollback exato sem
+            # apagar provas saudáveis aceitas por outra raiz/resolver.
+            savepoint = f"l1_root_{stats['servers']}"
+            conn.execute(f"SAVEPOINT {savepoint}")
             try:
                 for rel in group_rels:
                     stats["files"] += 1
@@ -344,7 +414,8 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
                         f"health: {type(e).__name__}: {e}")
                 else:
                     run.update({key: health[key] for key in (
-                        "sites", "resolved_sites", "warmup_timed_out")
+                        "sites", "resolved_sites", "warmup_timed_out",
+                        "io_timed_out", "ready_timeout_s", "io_timeout_s")
                                 if key in health})
                     run["warnings"].extend(health.get("warnings", ()))
                     run["errors"].extend(health.get("errors", ()))
@@ -356,6 +427,17 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
                         run["status"] = "partial"
                         stats["partial"] = True
                         stats["status"] = "partial"
+            if run["status"] == "partial":
+                conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                attempted = run["promoted"]
+                run["attempted_promotions"] = attempted
+                run["rolled_back"] = attempted
+                run["promoted"] = 0
+                stats["rolled_back"] += attempted
+                stats["promoted"] -= attempted
+            else:
+                conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             run["warnings"] = list(dict.fromkeys(run["warnings"]))
             run["errors"] = list(dict.fromkeys(run["errors"]))
             stats["warnings"].extend(
@@ -371,4 +453,5 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
         mark_dirty(conn)
         mark_community_dirty(conn)
     conn.commit()
+    persist_last_run()
     return stats

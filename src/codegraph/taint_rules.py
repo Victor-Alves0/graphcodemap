@@ -76,6 +76,18 @@ _SANITIZERS = {
 # de 26% para 3%; a régua por linguagem existe por causa dessa medição.
 _BARE_SINKS = {"open", "exec"}
 
+# Python's ``json.load(s)`` parses data but does not instantiate arbitrary
+# objects or execute constructors.  It must not inherit the universal naked
+# ``load``/``loads`` heuristic used for dangerous object deserializers.  Keep
+# this identity-aware exception beside the defaults so repository overrides
+# remain additive and pickle/YAML/marshal/dill stay covered.
+_PYTHON_SAFE_DESERIALIZERS = frozenset({"json.load", "json.loads"})
+_PYTHON_UNSAFE_DESERIALIZERS = frozenset({
+    "pickle.load", "pickle.loads", "_pickle.load", "_pickle.loads",
+    "yaml.load", "yaml.unsafe_load", "marshal.load", "marshal.loads",
+    "dill.load", "dill.loads",
+})
+
 # Papéis semânticos dos argumentos de sinks. A chave pode ser global
 # (``execute``) ou específica por linguagem (``java:exec``), e o valor lista
 # os índices que realmente carregam o conteúdo interpretado pelo sink.
@@ -224,6 +236,21 @@ class TaintRules:
         negativo é kwarg ou posição desconhecida, então continua valendo, que
         é o lado seguro."""
         typed = (f"{receiver_type}.{callee}" if receiver_type else None)
+        if (language or "").lower() == "python" and callee in {"load", "loads"}:
+            python_identities = tuple(
+                identity for identity in (typed, qualified) if identity)
+
+            def matches(identity: str, api: str) -> bool:
+                return identity == api or identity.endswith("." + api)
+
+            if any(matches(identity, api)
+                   for identity in python_identities
+                   for api in _PYTHON_SAFE_DESERIALIZERS):
+                return False
+            if any(matches(identity, api)
+                   for identity in python_identities
+                   for api in _PYTHON_UNSAFE_DESERIALIZERS):
+                return True
         # ``command`` is only a process-execution sink on ProcessBuilder.
         # Matching the last segment by itself would classify ordinary domain
         # methods such as ``menu.command(items)`` as command injection once a

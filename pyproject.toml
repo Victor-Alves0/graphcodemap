@@ -37,7 +37,7 @@ quality = [
   "ruff>=0.9",
   "twine>=6",
 ]
-mcp = ["mcp>=1.2"]
+mcp = ["mcp>=1.2,<2"]
 l1 = ["jedi>=0.19"]
 
 [project.scripts]

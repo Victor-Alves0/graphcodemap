@@ -36,11 +36,37 @@ def _load_dotenv(root: Path) -> dict[str, str]:
         out[key.strip()] = value.strip().strip("'\"")
     return out
 
-def openrouter_key_model(root: Path) -> tuple[str, str] | None:
-    """(api_key, model) do env, do .env do root ou do .env do cwd (para
-    avaliar repos externos sem espalhar segredos neles)."""
-    dotenv = _load_dotenv(root)
+
+def _allow_repo_env() -> bool:
+    """Repo-target secrets are never credentials unless explicitly allowed."""
+    return os.environ.get("CODEGRAPH_ALLOW_REPO_ENV", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _credential_sources(root: Path) -> tuple[dict[str, str], dict[str, str]]:
+    """Optional dotenv sources, gated because ``root`` is analyzed input.
+
+    Loading a target repository's ``.env`` as an API credential silently turns
+    code analysis into an external transmission paid by the repository owner.
+    Process environment credentials are already explicit; repository/cwd files
+    require ``CODEGRAPH_ALLOW_REPO_ENV=1``.
+    """
+    if not _allow_repo_env():
+        return {}, {}
+    repo_env = _load_dotenv(root)
     cwd_env = _load_dotenv(Path.cwd()) if Path.cwd() != root else {}
+    return repo_env, cwd_env
+
+
+def openrouter_key_model(root: Path) -> tuple[str, str] | None:
+    """Return explicit OpenRouter credentials for the evaluation harness.
+
+    The process environment is trusted input. Dotenv files from the analyzed
+    repository or cwd are considered target data and are ignored unless the
+    user explicitly sets ``CODEGRAPH_ALLOW_REPO_ENV=1``.
+    """
+    dotenv, cwd_env = _credential_sources(root)
 
     def get(name: str) -> str | None:
         return os.environ.get(name) or dotenv.get(name) or cwd_env.get(name)
@@ -72,7 +98,7 @@ def coerce_provider(llm):
 
 
 def provider_from_env(root: Path):
-    dotenv = _load_dotenv(root)
+    dotenv, _cwd_env = _credential_sources(root)
 
     def get(name: str) -> str | None:
         return os.environ.get(name) or dotenv.get(name)

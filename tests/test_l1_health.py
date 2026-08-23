@@ -183,6 +183,23 @@ def test_real_diagnostic_during_shutdown_remains_partial(tmp_path):
     assert health["errors"] == ["cannot resolve project type"]
 
 
+def test_explicit_session_shutdown_diagnostic_is_teardown_warning(tmp_path):
+    resolver = _resolver(tmp_path)
+    resolver._shutdown_started_healthy = True
+    resolver._active_method = "shutdown"
+    resolver._observe_message({
+        "method": "window/logMessage",
+        "params": {"type": 1, "message": (
+            "warning: while diagnosing orphaned files: session is shut down")},
+    })
+
+    health = resolver.health_report()
+
+    assert health["status"] == "complete"
+    assert health["errors"] == []
+    assert any("session is shut down" in item for item in health["warnings"])
+
+
 def test_shutdown_drains_response_then_late_diagnostic_and_eof(tmp_path):
     resolver = _resolver(tmp_path)
     resolver._seq = 0

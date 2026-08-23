@@ -130,6 +130,24 @@ Resolution quality depends on the server finding the project — a `go.mod`,
 generic client waits for async servers to finish indexing before querying, and
 handles monorepos by grouping files under their project root (one server per root).
 
+For JS/TS, `CODEGRAPH_TS_DIR` is the TypeScript package root containing
+`lib/typescript.js`, not the `lib/` directory itself. Automatic discovery reads
+contained `package.json` workspaces and prefers a TypeScript installation near
+actual JS/TS code over fixtures or unrelated subprojects.
+
+Java uses two deliberately separate runtimes: `CODEGRAPH_JDTLS_JAVA` selects
+the Java executable/JDK that launches JDTLS, while `JAVA_HOME` remains the
+project toolchain Maven/Gradle sees. Slow project imports can be budgeted with:
+
+```bash
+codegraph refine --jdtls-ready-timeout 300 --jdtls-io-timeout 360
+```
+
+The equivalent environment variables are `CODEGRAPH_JDTLS_READY_TIMEOUT` and
+`CODEGRAPH_JDTLS_IO_TIMEOUT`. `doctor` persists an unavailable/timeout/partial
+result and names the missing JDTLS home, incompatible server runtime or project
+build failure; it does not describe a failed pass as healthy.
+
 ### Why L1 matters
 
 A `certain` edge is a **semantic fact, not a name guess** — so an agent can trust a
@@ -143,6 +161,11 @@ Languages without an active resolver keep honest `inferred`/`possible` edges —
 never a fabricated `certain`.
 
 ## Adding a language
+
+Use the [language maturity playbook](LANGUAGE_MATURITY_PLAYBOOK.md) to define
+the target evidence axes, micro-goals, adversarial contracts, operational
+onboarding and external evidence before adapting another language. Java is the reference
+profile for the process, not a source-code template to copy blindly.
 
 - **A new generic-tier language** is often just a grammar mapping.
 - **A new LSP resolver** is typically a **~10-line config** on

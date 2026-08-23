@@ -236,7 +236,7 @@ def test_returned_target_does_not_keep_l1_provenance_without_revalidation(tmp_pa
     assert (returned["confidence"], returned["resolver"]) == ("inferred", "l0")
 
 
-def test_removed_l1_overload_collapses_site_before_l0_reresolution(tmp_path):
+def test_removed_l1_overload_stays_possible_without_receiver_type(tmp_path):
     (tmp_path / "a.py").write_text("def run():\n    return 1\n", encoding="utf-8")
     (tmp_path / "b.py").write_text("def run():\n    return 2\n", encoding="utf-8")
     (tmp_path / "caller.py").write_text(
@@ -245,7 +245,8 @@ def test_removed_l1_overload_collapses_site_before_l0_reresolution(tmp_path):
     graph = CodeGraph(tmp_path)
     graph.index()
     graph.indexer.conn.execute(
-        "UPDATE edges SET confidence='inferred', resolver='l1' "
+        "UPDATE edges SET dst=(SELECT id FROM symbols WHERE fqn='a.run'), "
+        "confidence='inferred', resolver='l1' "
         "WHERE kind='calls' AND dst_name='run'"
     )
     graph.indexer.conn.commit()
@@ -265,8 +266,11 @@ def test_removed_l1_overload_collapses_site_before_l0_reresolution(tmp_path):
         "WHERE e.kind='calls' AND e.dst_name='run'"
     ).fetchall()
     graph.close()
+    # Removing one overload does not turn ``obj.run()`` into proof that the
+    # remaining unrelated short-name candidate is its receiver method.  The
+    # former fallback is the same class of error as dict.get → business.get.
     assert [(row["fqn"], row["confidence"], row["resolver"])
-            for row in resolved] == [("b.run", "inferred", "l0")]
+            for row in resolved] == [(None, "possible", "l0")]
 
 
 @pytest.mark.parametrize("operation", ["index", "remove"])

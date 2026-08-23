@@ -29,7 +29,8 @@ from .lsp_base import LspResolver
 class JdtlsResolver(LspResolver):
     languages = ("java",)
     language_id = "java"
-    cmd_name = "java"
+    cmd_name = "jdtls"
+    cmd_env = "CODEGRAPH_JDTLS"
     root_markers = ("pom.xml", "build.gradle", "build.gradle.kts",
                     "settings.gradle", ".project")
     # jdtls importa o projeto de forma assíncrona (autobuild); pode demorar.
@@ -41,6 +42,7 @@ class JdtlsResolver(LspResolver):
     # passada acabava com 0 promocoes. O deadline total de _request continua
     # limitado, agora coerente com o contrato de readiness desta subclasse.
     io_timeout = 120.0
+    timeout_is_partial = True
     # habilita o autobuild do "invisible project" p/ arquivos sem build tool.
     init_options = {"settings": {"java": {"autobuild": {"enabled": True}}}}
 
@@ -159,9 +161,55 @@ class JdtlsResolver(LspResolver):
         java = cls._java_bin()
         return bool(java and cls._runtime_compatible(home, java))
 
+    @classmethod
+    def unavailable_details(cls) -> dict[str, str]:
+        """Explica qual das duas dependencias do resolver Java esta ausente."""
+        home = cls._home()
+        if home is None:
+            return {
+                "reason": "CODEGRAPH_JDTLS não aponta para uma instalação válida",
+                "action": ("defina CODEGRAPH_JDTLS para a pasta do JDTLS que "
+                           "contém plugins/ e config_<plataforma>"),
+            }
+        if cls._launcher_jar(home) is None or cls._config_dir(home) is None:
+            return {
+                "reason": "a instalação em CODEGRAPH_JDTLS está incompleta",
+                "action": ("aponte CODEGRAPH_JDTLS para a pasta que contém "
+                           "plugins/ e config_<plataforma>"),
+            }
+        java = cls._java_bin()
+        if java is None:
+            return {
+                "reason": "runtime Java do JDTLS não encontrado",
+                "action": ("defina CODEGRAPH_JDTLS_JAVA para um executável ou "
+                           "JDK compatível; JAVA_HOME/PATH continuam como fallback"),
+            }
+        required = cls._required_java_major(home)
+        current = cls._runtime_java_major(java) if required is not None else None
+        if required is not None and (current is None or current < required):
+            found = "desconhecido" if current is None else str(current)
+            return {
+                "reason": f"JDTLS requer Java {required}+, runtime encontrado: {found}",
+                "action": ("defina CODEGRAPH_JDTLS_JAVA para um JDK "
+                           f"{required}+ sem alterar o JAVA_HOME do projeto"),
+            }
+        return {}
+
     # -- launch ---------------------------------------------------------------
 
     def __init__(self, root: Path, project_root: Path | None = None) -> None:
+        self.ready_timeout = self._timeout_from_env(
+            "CODEGRAPH_JDTLS_READY_TIMEOUT", type(self).ready_timeout)
+        # Ao elevar apenas readiness, acompanhe-o automaticamente: uma única
+        # requisição definition pode ficar retida durante todo o import Maven/
+        # Gradle. Um override explícito de I/O continua sendo respeitado.
+        io_default = max(type(self).io_timeout, self.ready_timeout)
+        self.io_timeout = self._timeout_from_env(
+            "CODEGRAPH_JDTLS_IO_TIMEOUT", io_default)
+        if self.io_timeout < self.ready_timeout:
+            raise ValueError(
+                "CODEGRAPH_JDTLS_IO_TIMEOUT deve ser maior ou igual a "
+                "CODEGRAPH_JDTLS_READY_TIMEOUT")
         try:
             super().__init__(root, project_root)
         except Exception:
@@ -169,6 +217,19 @@ class JdtlsResolver(LspResolver):
             if data is not None:
                 shutil.rmtree(data, ignore_errors=True)
             raise
+
+    @staticmethod
+    def _timeout_from_env(name: str, default: float) -> float:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            value = float(raw)
+        except ValueError as exc:
+            raise ValueError(f"{name} deve ser um número positivo em segundos") from exc
+        if not (0 < value < float("inf")):
+            raise ValueError(f"{name} deve ser um número positivo em segundos")
+        return value
 
     def _popen_argv(self) -> list[str]:
         home = self._home()

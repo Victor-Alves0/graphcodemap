@@ -1,6 +1,6 @@
 # Java analysis behavioral contract
 
-Status: **Round 27 reference contract, verified by the final release gates.**
+Status: **Round 27 reference contract plus Round 28 operational addendum.**
 Semantic, health, incremental-L1 and reporting invariants below have executable
 evidence. The result is bounded evidence, not a claim of whole-JVM completeness.
 
@@ -25,6 +25,12 @@ a red semantic or health contract.
    source literals allowed by policy, call and flow confidence, provenance,
    truncation and resolver health. Dedupe may collapse equivalent paths, never
    distinct sites or sources.
+7. **Operational semantics:** canonical declared-package FQNs resolve in user
+   queries; JDTLS/runtime discovery names the actual missing component;
+   readiness and I/O budgets are configurable; request/I/O timeout, process
+   failure and server errors persist as non-success `partial` health for
+   `doctor`. An unresolved definition alone remains L0 and does not make a
+   healthy pass partial.
 
 ## Requirement-to-evidence matrix
 
@@ -36,6 +42,7 @@ a red semantic or health contract.
 | Heap and dispatch | Receiver summaries separate may-dirty effects from must-clean overwrites; fan-out unions dirty state and intersects kills; aliases/escape block unsafe kills. Static/process state and ordered property reads/writes are modeled by the current Java contracts. | Focused heap, alias, dispatch and global-state contracts are green; FitNesse and openHAB fixed revisions clear their oracles. | This is not a whole-JVM points-to analysis: arbitrary object graphs, reflection, concurrency and framework-managed state remain conservative. |
 | Rules | Rules are receiver/type/category/argument-role aware. Sanitizer effects are context-compatible instead of one universal kill set. | The semantic OWASP gate scores 902/0/0/796; Juliet CWE-23 scores 444/0/0/444. | These corpora cover a bounded category and coding-style surface; independent projects and more vulnerability families are still required. |
 | Reporting | Source, sink and steps preserve column/span; allowed request-parameter literals are explicit; fingerprints and dedupe retain site/provenance distinctions; subject, engine and resolver health participate in report validity. Contradictory/partial/SARIF-aborted evidence fails closed. | Hardened scorer reports 3/3 vulnerable revisions detected and 3/3 fixes clear; path, subject and invocation adversarials pass. | Dirty engine worktrees are identified by a source-tree hash; release evidence is repinned after commit. |
+| Real-repository operation | Java queries reconstruct canonical package aliases without rewriting stored identity. JDTLS has separate server/project runtimes, configurable readiness/I/O budgets, actionable component discovery and persisted sanitized health. A warmup probe is not treated as a global failure after other sites prove semantic readiness. | Operational regressions cover timeout, process death, persisted `doctor`, discovery causes and canonical FQN lookup. An exploratory Spring PetClinic run indexed 49/49 Java files and promoted 345 definitions after the project toolchain was supplied. | The exploratory PetClinic run still emitted a JDTLS `Publish Diagnostics` NPE and therefore correctly remained partial; it is not Round 28 release evidence. Persistent JDTLS workspace reuse is deferred until locking/version/invalidation are designed. |
 
 ## Verified Round 27 evidence
 
@@ -59,6 +66,23 @@ The first fresh indexing plus JDTLS phases exposed two genuine operational
 problems: post-shutdown health was sampled incorrectly, and Juliet was opened
 above its actual source root without its bundled classpath. The final overlay
 fixes both without suppressing diagnostics and reports complete/clean health.
+
+### Round 28 real-repository addendum
+
+The Aethros/Spring PetClinic review added the user journey to the contract.
+`--jdtls-ready-timeout` and `--jdtls-io-timeout` (plus their environment
+equivalents) control distinct budgets. A run that exhausts a real request,
+loses the process, fails its handshake or receives an error diagnostic is
+partial and exits nonzero; `doctor` remembers that state and does not recommend
+blindly repeating the same command.
+
+One representative warmup call may legitimately be external or unresolved.
+Consequently, a missed warmup probe is not itself a global readiness failure
+after another site has returned a definition. This does not suppress JDTLS
+errors: the real PetClinic rerun proved readiness with 345 resolved definitions
+but remained partial because the server also emitted an internal diagnostic
+error. See the full disposition and environment details in
+[Round 28 Real-world Feedback](REAL_WORLD_FEEDBACK_ROUND28.md).
 
 ### Fair CodeQL comparison
 

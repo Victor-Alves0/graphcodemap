@@ -17,7 +17,6 @@ import textwrap
 import pytest
 
 from codegraph import CodeGraph, agent, render
-from codegraph.query import AmbiguousSymbol, SymbolNotFound
 
 PKG = {
     "core.py": (
@@ -227,6 +226,22 @@ def test_explain_matches_primitives(g):
 
 def test_suggest_points_to_defining_file(g):
     data, _ = g.suggest_files_to_read("preciso mexer na função base do core")
+    assert data["files"][0]["path"] == "core.py"
+
+
+def test_suggest_removes_portuguese_prompt_noise(g):
+    data, _ = g.suggest_files_to_read(
+        "Por favor, eu preciso analisar e mexer na função base do projeto core"
+    )
+    assert data["tokens"] == ["base", "core"]
+    assert data["files"][0]["path"] == "core.py"
+
+
+def test_suggest_removes_english_prompt_noise(g):
+    data, _ = g.suggest_files_to_read(
+        "Please, I need to analyze and change the base function in core"
+    )
+    assert data["tokens"] == ["base", "core"]
     assert data["files"][0]["path"] == "core.py"
 
 

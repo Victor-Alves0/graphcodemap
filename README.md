@@ -10,7 +10,6 @@ Symbols, call graph, references, impact, dataflow and taint over any codebase �
 [![CI](https://github.com/Victor-Alves0/graphcodemap/actions/workflows/tests.yml/badge.svg)](https://github.com/Victor-Alves0/graphcodemap/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%E2%80%93%203.12-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1778%20passing-brightgreen)](tests/)
 [![Status](https://img.shields.io/badge/status-alpha%20v0.1-orange)](#status)
 
 [Quick start](#quick-start) ·
@@ -62,9 +61,10 @@ win.
 ## Quick start
 
 ```bash
-pip install graphcodemap
+pip install "graphcodemap[l1]"       # includes Python semantic resolution (jedi)
 
-codegraph index .                 # build .codegraph/graph.db
+codegraph index . --l1            # build the index and promote semantic edges
+codegraph doctor                  # verify resolver health and % certain
 codegraph overview                # ranked map of the repo (PageRank)
 codegraph find validate_token     # locate symbols
 codegraph impact auth.TokenService.validate   # what breaks if I change this?
@@ -76,9 +76,14 @@ codegraph visualize --mode impact --symbol validate_token   # investigate as HTM
 Point any MCP-capable agent at your repo:
 
 ```bash
-pip install "graphcodemap[mcp]"
+pip install "graphcodemap[mcp,l1]"
 graphcodemap-mcp --root .         # stdio server; indexes/refreshes on boot
 ```
+
+`pip install graphcodemap` remains the lightweight L0-only install. It is useful,
+but Python call edges cannot become `certain` until the `l1` extra is installed;
+JS/TS and other languages also need their documented language server/runtime.
+See [Languages & Resolvers](docs/languages.md#activating-a-resolver).
 
 ```jsonc
 // .mcp.json at the repo root (Claude Code, Cursor, Codex…)
@@ -190,16 +195,18 @@ cover all 19 dedicated code-language identifiers; 18 are flow-sensitive.
 | **[Library / Host API](docs/library.md)** | Embedding GraphCodeMap in a service |
 | **[Languages & Resolvers](docs/languages.md)** | Language tiers and L1/LSP resolution |
 | **[Product Maturity](docs/MATURITY.md)** | Evidence levels, current gaps and honest parity boundaries |
+| **[Language Maturity Playbook](docs/LANGUAGE_MATURITY_PLAYBOOK.md)** | Reusable Java lessons and gates for adapting each next language |
+| **[Round 28 Real-world Feedback](docs/REAL_WORLD_FEEDBACK_ROUND28.md)** | Aethros/PetClinic findings, fixes, evidence and remaining work |
 | **[Architecture](docs/architecture.md)** | Pipeline, SQLite schema, incremental indexing |
 | **[FAQ & Limitations](docs/faq.md)** | Honest answers, benchmarks, scope |
 | [Design](docs/DESIGN.md) · [Research](docs/RESEARCH.md) | Original design contract and research notes |
 
 ## Status
 
-**Alpha (v0.1.0).** The main query surfaces are implemented and covered by more
-than 1,700 tests. The final Round 27 project gate is **1,778 passed, 27
-skipped**, with no expected failures, and the corrected JDTLS overlay is
-healthy. CI spans Linux and Windows on
+**Alpha (v0.1.0).** The main query surfaces are implemented. The Round 28
+real-world-feedback gate is **1,820 passed, 28 skipped**, with no expected
+failures. The separately versioned Round 27 release evidence remains **1,778
+passed, 27 skipped**, and its corrected JDTLS overlay is healthy. CI spans Linux and Windows on
 Python 3.10–3.12. Language depth and
 external validation are still uneven; see the honest
 [maturity matrix](docs/MATURITY.md) and the [v0.2 gates](docs/ROADMAP.md). It has
@@ -209,7 +216,9 @@ please [open an issue](https://github.com/Victor-Alves0/graphcodemap/issues).
 ## Contributing
 
 Issues and pull requests are welcome — see **[CONTRIBUTING.md](CONTRIBUTING.md)**.
-Adding a language resolver is often a ~10-line config.
+Wiring a basic language-server adapter is often a ~10-line config. Promoting a
+language profile requires the structural, semantic, operational and evidence
+gates in the [maturity playbook](docs/LANGUAGE_MATURITY_PLAYBOOK.md).
 
 ## License
 

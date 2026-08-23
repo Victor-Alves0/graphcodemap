@@ -192,7 +192,9 @@ class Describer:
         if provider is None:
             raise L3Unavailable(
                 "camada L3 desabilitada: configure OPENROUTER_API_KEY (ou "
-                "OPENROUTER_API) no ambiente ou no .env da raiz do repo.")
+                "OPENROUTER_API) explicitamente no ambiente. O .env do repo "
+                "analisado não é lido sem CODEGRAPH_ALLOW_REPO_ENV=1, pois "
+                "describe envia trechos de código a um provedor externo.")
         content = provider(_SYSTEM, user).strip()
         model = getattr(provider, "model", "unknown")
         return content, model

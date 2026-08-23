@@ -9,6 +9,7 @@ references (`className=`/`class=` no JSX → seletor definido no CSS/SCSS).
 from __future__ import annotations
 
 import posixpath
+import re
 
 from .base import BaseExtractor
 
@@ -16,6 +17,7 @@ _FUNCTION_VALUES = {"arrow_function", "function_expression", "function", "genera
 _JS_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
 # `class` cobre Preact/Solid, que não renomeiam o atributo
 _CLASS_ATTRS = {"className", "class"}
+_TEST_CALLBACKS = frozenset({"describe", "it", "test", "suite", "context"})
 # marcador de trecho interpolado: não pode ser espaço, senão partiria o token
 _HOLE = "\x00"
 
@@ -350,7 +352,8 @@ class TsJsExtractor(BaseExtractor):
                 continue
             if arg.type in _FUNCTION_VALUES:
                 name_node = arg.child_by_field_name("name")
-                name = self.text(name_node) if name_node is not None else f"{callee}#{idx}"
+                name = (self.text(name_node) if name_node is not None else
+                        self._anonymous_callback_name(callee, idx, args, arg))
                 body = arg.child_by_field_name("body")
                 self.add_sym(arg, "function", name,
                              signature=self.sig_of(arg, body))
@@ -360,6 +363,30 @@ class TsJsExtractor(BaseExtractor):
                     self.visit(c)
                 self.scope.pop()
             idx += 1
+
+    def _anonymous_callback_name(self, callee: str, index: int, args,
+                                 callback) -> str:
+        """Nome estável e não-colapsável para suites/casos de teste TS/JS.
+
+        ``describe#1`` sozinho se repetia em todas as suites do arquivo; o FQN
+        deixava de identificar qual corpo o usuário estava consultando. Para as
+        APIs de teste conhecidas, preservamos um rótulo legível e a posição do
+        callback. Outros callbacks mantêm o contrato histórico curto.
+        """
+        base = f"{callee}#{index}"
+        if callee.lower() not in _TEST_CALLBACKS:
+            return base
+        label = ""
+        first = next((child for child in args.named_children
+                      if child.type != "comment"), None)
+        if first is not None and first.type in {"string", "template_string"}:
+            raw = self.text(first).strip("'\"`")
+            if "${" not in raw:
+                label = re.sub(r"[^A-Za-z0-9]+", "_", raw).strip("_").lower()
+                label = label[:48]
+        point = callback.start_point
+        readable = f":{label}" if label else ""
+        return f"{base}{readable}@{point.row + 1}:{point.column}"
 
     def _doc_comment(self, node) -> str | None:
         prev = node.prev_sibling

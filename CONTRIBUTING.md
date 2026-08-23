@@ -78,6 +78,12 @@ that skipped step 1 will be asked to redo it.
 
 ## Adding a language
 
+Before opening implementation work, follow the
+[language maturity playbook](docs/LANGUAGE_MATURITY_PLAYBOOK.md). It turns the
+Java reference-profile lessons into evidence axes, required adversarial
+contracts, clean-install journey and external validation gates. A language is
+not considered complete when only its extractor or LSP adapter exists.
+
 - **Generic tier** (structural symbols over any tree-sitter grammar): usually a
   grammar mapping in [`src/codegraph/languages.py`](src/codegraph/languages.py).
 - **Dedicated extractor** (refined fqn/imports/calls/inheritance): a new module in

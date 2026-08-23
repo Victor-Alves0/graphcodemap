@@ -26,7 +26,9 @@ Commands are grouped below by what you're trying to do.
 ### `index`
 
 ```
-codegraph index [path] [--force] [--l1] [--scope SCOPE] [--workers N] [--exclude PATTERN]
+codegraph index [path] [--force] [--l1] [--scope SCOPE] [--workers N]
+                [--exclude PATTERN] [--jdtls-ready-timeout SEC]
+                [--jdtls-io-timeout SEC]
 ```
 
 Builds or incrementally updates the index. Only changed files (by content-hash)
@@ -39,11 +41,13 @@ are re-parsed.
 | `--scope SCOPE` | Index only this subtree. **Persisted and additive** across runs; the freshness sweep then walks only indexed scopes. |
 | `--workers N` | Threads for the prepare phase (read+parse+extract). Default `min(4, CPUs)`; auto for repos ≥ 1000 files. The SQLite writer is always serial. |
 | `--exclude PATTERN` | gitignore-style exclusion, repeatable. Stored *in the index* (nothing written to the repo); replaces the prior policy. Use `--exclude ''` to clear. |
+| `--jdtls-ready-timeout SEC` | Java project-import/readiness budget; environment equivalent: `CODEGRAPH_JDTLS_READY_TIMEOUT`. |
+| `--jdtls-io-timeout SEC` | JDTLS request budget, at least readiness; environment equivalent: `CODEGRAPH_JDTLS_IO_TIMEOUT`. |
 
 ### `refine`
 
 ```
-codegraph refine
+codegraph refine [--jdtls-ready-timeout SEC] [--jdtls-io-timeout SEC]
 ```
 
 Runs L1 semantic resolution over the index, promoting call edges to `certain`
@@ -57,6 +61,7 @@ codegraph watch
 ```
 
 Indexes, then watches the repository and keeps the index hot as files change.
+It prints its initial, ready and failure states when run in the foreground.
 
 ### `vacuum`
 
@@ -220,6 +225,7 @@ so **prefer `--entry` over scanning the whole base**. `--depth` defaults per mod
 ```
 codegraph reaches <symbol> [--sink SINK] [--via VALIDATOR] [--depth N]
                    [--max-paths N] [--deadline-ms MS] [--max-steps N]
+codegraph reaches --entry <symbol> [--sink SINK] [--via VALIDATOR]
 ```
 
 Answers *"does a path from this entry point reach a dangerous sink?"* in one shot:
@@ -227,6 +233,8 @@ it returns the call chain plus a validation verdict. `--sink` is a preset
 (`http`/`sql`/`exec`/`file`) or a regex over the call name; `--via` names a
 sanitizer to check for along the path. Like `taint`, `--deadline-ms`/`--max-steps`
 return a `truncated` partial result, and `--max-paths` caps the enumeration.
+The positional form and `--entry` are equivalent; the explicit alias makes the
+transition from `taint --entry` predictable.
 
 ---
 

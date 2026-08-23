@@ -7,8 +7,10 @@ a consulta; arquivo sumiu → sai do índice; tudo anotado no envelope.
 
 from __future__ import annotations
 
+import json
 import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 
 from . import explain
@@ -36,6 +38,26 @@ _MISS = object()          # sentinela p/ cache LRU (distingue "None cacheado" de
 # ramif^depth) → raso; entry=<func> parte de uma raiz só → pode ir mais fundo.
 TAINT_DEPTH_SCAN = 3
 TAINT_DEPTH_ENTRY = 6
+
+_SUGGEST_STOPWORDS = frozenset({
+    # Português: intenção/conversa, não conceitos do repositório.
+    "ajuda", "ajudar", "altera", "alterar", "analise", "analisar",
+    "arquivo", "arquivos", "codigo", "com", "como", "consertar",
+    "corrigir", "das", "desse", "desta", "deste", "dos", "essa", "esse",
+    "favor", "funcao", "funcoes", "gostaria", "implementar", "mexer", "meu",
+    "minha", "modulo", "modulos", "mudar", "nesta", "neste", "onde", "para",
+    "parte", "pode", "poderia", "por", "preciso", "projeto", "qual", "quais", "que",
+    "quero", "remover", "sem", "sobre", "uma", "voce",
+    # Equivalentes frequentes em prompts mistos.
+    "add", "analyze", "and", "change", "code", "could", "file", "files", "fix",
+    "function", "functions", "help", "implement", "module", "need", "please",
+    "project", "remove", "should", "the", "want", "with", "would",
+})
+
+
+def _suggest_token(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    return normalized.encode("ascii", "ignore").decode("ascii").lower().strip("_")
 
 
 class _Budget:
@@ -356,6 +378,9 @@ class QueryEngine:
         take(self.conn.execute(base.format("s.fqn=?") + order,
                                [query, *args_kind]).fetchall())
         if len(seen) < limit:
+            take(self._java_canonical_rows(
+                query, kind, limit - len(seen), only_code=only_code))
+        if len(seen) < limit:
             take(self.conn.execute(
                 base.format("s.fqn LIKE ? ESCAPE '\\'") + order + " LIMIT ?",
                 [f"%.{like_escape(query)}", *args_kind, limit]).fetchall())
@@ -427,6 +452,87 @@ class QueryEngine:
                                  r["kind"] in LOW_INFO_KINDS))
         return rows
 
+    @staticmethod
+    def _java_canonical_fqn(row: dict, package: str) -> str | None:
+        """Alias Java de consulta: pacote declarado + escopo após o módulo.
+
+        A identidade L0 é deliberadamente baseada no caminho e inclui o nome
+        do arquivo como módulo. Em layouts Maven/Gradle isso gera, por exemplo,
+        ``src.main.java.com.acme.Svc.Svc.run``. O nome que ferramentas Java e
+        usuários conhecem é ``com.acme.Svc.run``. O alias remove apenas o
+        prefixo de módulo calculado para *aquele arquivo*; nada é persistido.
+        """
+        if row["kind"] == "file":
+            return None
+        path = row["path"]
+        stem = path.rsplit(".", 1)[0]
+        module = stem.replace("/", ".")
+        prefix = f"{module}."
+        stored = row["fqn"]
+        if not stored.startswith(prefix):
+            return None
+        declared = stored[len(prefix):]
+        if not declared:
+            return None
+        return f"{package}.{declared}" if package else declared
+
+    def _java_canonical_rows(self, selector: str, kind: str | None,
+                             limit: int | None = None, *,
+                             only_code: bool = False) -> list[dict]:
+        """Localiza aliases canônicos somente entre símbolos de arquivos Java."""
+        if "." not in selector:
+            return []
+        terminal = selector.rsplit(".", 1)[-1]
+        where = ["f.language='java'", "s.name=?"]
+        args: list = [terminal]
+        if kind:
+            where.append("s.kind=?")
+            args.append(kind)
+        if only_code:
+            where.append(
+                "s.kind NOT IN (" + ",".join("?" * len(LOW_INFO_KINDS)) + ")"
+            )
+            args.extend(LOW_INFO_KINDS)
+        rows = self.conn.execute(
+            "SELECT s.*, f.path, f.parse_status FROM symbols s "
+            "JOIN files f ON s.file_id=f.id WHERE " + " AND ".join(where)
+            + " ORDER BY (s.kind='file'), s.rank DESC, s.fqn",
+            args,
+        ).fetchall()
+        packages: dict[str, str | None] = {}
+        matched: list[dict] = []
+        package_re = re.compile(
+            r"(?m)^\s*package\s+"
+            r"([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*;"
+        )
+        comments_re = re.compile(r"//[^\r\n]*|/\*.*?\*/", re.DOTALL)
+        for raw in rows:
+            row = dict(raw)
+            declaration = self._java_canonical_fqn(row, "")
+            if (declaration is None
+                    or (selector != declaration
+                        and not selector.endswith(f".{declaration}"))):
+                continue
+            path = row["path"]
+            if path not in packages:
+                try:
+                    rel = _repo_rel(self.root, path)
+                    source = (self.root / rel).read_text(
+                        encoding="utf-8", errors="replace")
+                except (OSError, ValueError):
+                    packages[path] = None
+                else:
+                    match = package_re.search(comments_re.sub("", source))
+                    packages[path] = match.group(1) if match else ""
+            package = packages[path]
+            if package is None:
+                continue
+            if self._java_canonical_fqn(row, package) == selector:
+                matched.append(row)
+                if limit is not None and len(matched) >= limit:
+                    break
+        return matched
+
     def _resolve_selector(self, selector: str) -> dict:
         exact = self.conn.execute(
             "SELECT s.*, f.path FROM symbols s JOIN files f ON s.file_id=f.id WHERE s.fqn=?",
@@ -435,6 +541,11 @@ class QueryEngine:
             return dict(exact[0])
         if len(exact) > 1:
             raise AmbiguousSymbol(selector, [dict(r) for r in exact])
+        canonical = self._java_canonical_rows(selector, None, 9)
+        if len(canonical) == 1:
+            return canonical[0]
+        if len(canonical) > 1:
+            raise AmbiguousSymbol(selector, canonical)
         for where, arg in (("s.fqn LIKE ? ESCAPE '\\'", f"%.{like_escape(selector)}"),
                            ("s.name=?", selector)):
             rows = self.conn.execute(
@@ -975,6 +1086,27 @@ class QueryEngine:
         """
         rows = self._df_resolve_calls(src_id, line, name, col)
         return rows[0] if rows else None
+
+    def _df_call_identity(self, src_id, line, name, col=None) -> str | None:
+        """Canonical extractor identity at a callsite, resolved or dangling.
+
+        Python dataflow sees the syntax ``alias.loads``; the graph extractor
+        also knows that ``import pickle as alias`` means ``pickle.loads``.
+        Security classification must use the latter identity so a misleading
+        alias cannot turn an unsafe deserializer into stdlib JSON.
+        """
+        col_filter = " AND e.col=?" if col is not None else ""
+        args = [src_id, line, name, f"%.{name}"]
+        if col is not None:
+            args.append(col)
+        rows = self.conn.execute(
+            "SELECT DISTINCT e.dst_name FROM edges e WHERE e.src=? "
+            "AND e.kind='calls' AND e.line=? "
+            "AND (e.dst_name=? OR e.dst_name LIKE ?)" + col_filter,
+            tuple(args),
+        ).fetchall()
+        identities = {row["dst_name"] for row in rows if row["dst_name"]}
+        return next(iter(identities)) if len(identities) == 1 else None
 
     def _df_unique_call_target(self, src_id, line, name, col=None) -> bool:
         """True only for one resolved (non-possible) target at a callsite."""
@@ -1709,22 +1841,27 @@ class QueryEngine:
                     here = source_origin(sym_row, seed_map[matching_seed])
                 # casa pelo nome simples OU pelo qualificado receptor.método:
                 # `getWriter.println` é sink de XSS, `out.println` não é.
+                sink_identity = af.qualified
+                if flang == "python":
+                    sink_identity = (self._df_call_identity(
+                        sym_row["id"], af.line, af.callee, af.col)
+                        or af.qualified)
                 sink_context = rules.sink_context(
-                    af.callee, af.qualified, flang)
+                    af.callee, sink_identity, flang)
                 profile_matches = (
                     profile == "all" or sink_context == profile
                     or (profile == "non-xss" and sink_context is None)
                 )
                 if (profile_matches
                         and rules.is_sink(
-                            af.callee, af.qualified, af.arg_index,
+                            af.callee, sink_identity, af.arg_index,
                             language=flang,
                             receiver_type=af.receiver_type)):
                     if len(findings) < max_findings:
                         findings.append({
                             "origin": here,
                             "sink": {"callee": af.callee, "callee_fqn": step["callee_fqn"],
-                                     "qualified": af.qualified,
+                                     "qualified": sink_identity,
                                      "site_path": sym_row["path"], "line": af.line,
                                      "column": af.col,
                                      "byte_span": span_json(af.span),
@@ -2357,7 +2494,10 @@ class QueryEngine:
         termos, casa símbolos (find_symbol) e ranqueia os arquivos por importância
         no grafo (PageRank) + nº de casamentos. Ponto de partida para o agente."""
         env = Envelope()
-        tokens = [t for t in re.split(r"[^A-Za-z0-9_]+", task) if len(t) >= 3]
+        tokens = [_suggest_token(value) for value in re.findall(r"\w+", task)]
+        tokens = [token for token in tokens
+                  if len(token) >= 3 and not token.isdigit()
+                  and token not in _SUGGEST_STOPWORDS]
         tokens = list(dict.fromkeys(tokens))[:8]
         score: dict[str, float] = {}
         why: dict[str, list] = {}
@@ -2423,6 +2563,10 @@ class QueryEngine:
         g = lambda q: self.conn.execute(q).fetchone()[0]  # noqa: E731
         meta = {r["key"]: r["value"] for r in self.conn.execute(
             "SELECT key, value FROM meta")}
+        try:
+            l1_last_run = json.loads(meta.get("l1_last_run", "null"))
+        except (TypeError, ValueError):
+            l1_last_run = None
         conf = {r["confidence"] or "none": r["c"] for r in self.conn.execute(
             "SELECT confidence, COUNT(*) c FROM edges WHERE kind='calls' "
             "GROUP BY confidence")}
@@ -2466,6 +2610,7 @@ class QueryEngine:
             "dangling": g("SELECT COUNT(*) FROM edges WHERE kind='calls' AND dst IS NULL"),
             "l1_resolvers": resolvers,
             "l1_missing": l1_missing,
+            "l1_last_run": l1_last_run,
             "last_full_scan": int(last_scan) if last_scan else None,
             "last_full_scan_age_s": age,
             "by_language": {

@@ -30,6 +30,14 @@ AI agent — organized from first run to internals.
   (LSP) resolution promotes edges to `certain`.
 - **[Product Maturity](MATURITY.md)** — what recognized, structural, engine and
   validated support actually promise, with the current evidence gaps.
+- **[Language Maturity Playbook](LANGUAGE_MATURITY_PLAYBOOK.md)** — the reusable
+  Java lessons, evidence axes and operational gates for taking the next
+  language to a reference-quality profile.
+- **[Java Analysis Contract](JAVA_ANALYSIS_CONTRACT.md)** — the worked reference
+  profile linking required behavior to executable and external evidence.
+- **[Round 28 Real-world Feedback](REAL_WORLD_FEEDBACK_ROUND28.md)** — Aethros
+  and Spring PetClinic findings mapped to invariants, fixes, evidence and named
+  deferred micro-goals.
 - **[Security Benchmark](SECURITY_BENCHMARK.md)** — the normalized CodeQL,
   OpenGrep, OpenTaint and GraphCodeMap contract and fairness rules.
 - **[Architecture](architecture.md)** — the indexing pipeline, the SQLite schema,

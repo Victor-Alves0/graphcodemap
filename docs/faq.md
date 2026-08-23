@@ -108,7 +108,10 @@ leaks the absolute server path.
 
 ## Configuration
 
-- **L3 / eval**: set `OPENROUTER_API_KEY` (env or `.env`); pick the model with
+- **L3 / eval**: set `OPENROUTER_API_KEY` explicitly in the process environment;
+  GraphCodeMap does not consume credentials from the analyzed repository's
+  `.env` unless `CODEGRAPH_ALLOW_REPO_ENV=1` is explicitly set. `describe`
+  sends selected source context to the external provider. Pick the model with
   `CODEGRAPH_L3_MODEL`. In a host, inject the credential via `llm=` instead — see
   [Library](library.md#l3-provider).
 - **Logging**: off by default. `CODEGRAPH_LOG=warning` for warnings,

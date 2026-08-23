@@ -8,15 +8,21 @@ about your codebase in about five minutes.
 GraphCodeMap needs **Python 3.10+**. The parser is C (via tree-sitter), so the
 hot path is not Python.
 
+For the recommended first experience, install Python semantic resolution too:
+
 ```bash
-pip install graphcodemap
+pip install "graphcodemap[l1]"
 ```
+
+The smaller `pip install graphcodemap` install is intentionally L0-only. It can
+answer structural questions, but Python call edges cannot become `certain`
+without Jedi. GraphCodeMap reports that degradation; it does not silently turn
+name guesses into semantic facts.
 
 Optional extras, installed only when you need them:
 
 ```bash
 pip install "graphcodemap[mcp]"   # MCP server for AI agents
-pip install "graphcodemap[l1]"    # semantic refinement for Python (jedi)
 pip install "graphcodemap[dev]"   # test tooling (pytest)
 ```
 
@@ -29,12 +35,15 @@ shorter alias `codegraph` — they are the same program.
 From the root of any repository:
 
 ```bash
-codegraph index .
+codegraph index . --l1
+codegraph doctor
 ```
 
 This parses every source file into `.codegraph/graph.db` (a local SQLite
-database). Add `.codegraph/` to your `.gitignore` — the index is a derived cache
-and should never be committed.
+database), runs available semantic resolvers and then reports their health.
+`doctor` shows the confidence split and an actionable warning for each missing,
+timed-out or partial resolver. Add `.codegraph/` to your `.gitignore` — the
+index is a derived cache and should never be committed.
 
 For very large monorepos, index only the subtree you care about:
 
@@ -127,7 +136,7 @@ codegraph stats         # counts
 ## Wire it into an AI agent
 
 ```bash
-pip install "graphcodemap[mcp]"
+pip install "graphcodemap[mcp,l1]"
 graphcodemap-mcp --root .
 ```
 

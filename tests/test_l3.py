@@ -94,3 +94,35 @@ def test_dotenv_parsing(tmp_path):
     env = _load_dotenv(tmp_path)
     assert env["OPENROUTER_API_KEY"] == "abc123"
     assert env["CODEGRAPH_L3_MODEL"] == "x/y"
+
+
+def test_target_repo_dotenv_is_not_used_without_explicit_opt_in(
+        tmp_path, monkeypatch):
+    from codegraph.l3.provider import openrouter_key_model, provider_from_env
+
+    (tmp_path / ".env").write_text(
+        "OPENROUTER_API_KEY=repo-owner-secret\nCODEGRAPH_L3_MODEL=x/y\n",
+        encoding="utf-8")
+    for name in ("OPENROUTER_API_KEY", "OPENROUTER_API",
+                 "CODEGRAPH_L3_MODEL", "CODEGRAPH_ALLOW_REPO_ENV"):
+        monkeypatch.delenv(name, raising=False)
+
+    assert provider_from_env(tmp_path) is None
+    assert openrouter_key_model(tmp_path) is None
+
+
+def test_target_repo_dotenv_requires_explicit_opt_in(tmp_path, monkeypatch):
+    from codegraph.l3.provider import openrouter_key_model, provider_from_env
+
+    (tmp_path / ".env").write_text(
+        "OPENROUTER_API_KEY=explicitly-allowed\nCODEGRAPH_L3_MODEL=x/y\n",
+        encoding="utf-8")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API", raising=False)
+    monkeypatch.setenv("CODEGRAPH_ALLOW_REPO_ENV", "1")
+
+    provider = provider_from_env(tmp_path)
+    assert provider is not None
+    assert provider.api_key == "explicitly-allowed"
+    assert provider.model == "x/y"
+    assert openrouter_key_model(tmp_path) == ("explicitly-allowed", "x/y")

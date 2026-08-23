@@ -19,6 +19,12 @@ L1 has its own evidence ladder: `wired` means an adapter exists,
 `real-repo` means it has been measured on an external repository. A wired
 resolver is not advertised as proven semantic resolution.
 
+Security and L1 evidence are independent axes: useful corpus work may precede
+an operational resolver, and real-repository L1 may precede a labeled security
+corpus. The product labels above are promotion gates, not a mandatory
+chronological experiment order. The precise `E0`–`E4` and `V0`–`V4` mapping is
+defined in the [language maturity playbook](LANGUAGE_MATURITY_PLAYBOOK.md#evidence-axes-and-promotion-levels).
+
 ## Current snapshot
 
 Generated from `codegraph capabilities` after the August 2026 consolidation:
@@ -39,7 +45,8 @@ wired. Go has real-repository L1 evidence but still needs a labeled security
 corpus. The remaining languages must not be described as equivalent to those
 profiles.
 
-Run `codegraph capabilities [language]` for the machine-readable current view.
+Run `codegraph capabilities` and locate the language row for the current human-
+readable view.
 
 ## Subsystem audit
 
@@ -80,4 +87,5 @@ A new language or major feature must declare a target maturity level, an oracle,
 a vulnerable and a safe test where security applies, a before/after measurement,
 and its known limitations. No additional generic language is a priority while a
 Tier-A release gate remains open. This keeps breadth from masking unfinished
-depth.
+depth. The required workflow and evidence portfolio are defined in the
+[language maturity playbook](LANGUAGE_MATURITY_PLAYBOOK.md).

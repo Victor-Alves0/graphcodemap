@@ -98,7 +98,7 @@ STYLE_DEF_KINDS = ("css_class", "html_id")
 
 # Versão da lógica de extração/resolução: mudou → força re-index completo,
 # mesmo com content-hashes iguais (o índice é derivado de código+extractor).
-INDEXER_VERSION = "35"
+INDEXER_VERSION = "36"
 
 DEFAULT_IGNORES = [
     ".git/", ".codegraph/", "__pycache__/", ".venv/", "venv/", "node_modules/",
@@ -121,6 +121,25 @@ def _ignore_lines(root: Path, extra: list[str] | None = None) -> list[str]:
 def load_ignore_spec(root: Path,
                      extra: list[str] | None = None) -> pathspec.PathSpec:
     return pathspec.GitIgnoreSpec.from_lines(_ignore_lines(root, extra))
+
+
+def _is_test_path(path: str) -> bool:
+    """Small resolver-local test-path predicate (query imports Indexer)."""
+    parts = path.replace("\\", "/").split("/")
+    if any(part.lower() in {
+            "test", "tests", "spec", "specs", "__tests__", "testing",
+    } for part in parts[:-1]):
+        return True
+    base = parts[-1].lower()
+    raw_stem = parts[-1].rsplit(".", 1)[0]
+    stem = raw_stem.lower()
+    return (".test." in base or ".spec." in base
+            or stem == "test" or stem.startswith("test_")
+            or (raw_stem.startswith("test") and len(raw_stem) > 4
+                and raw_stem[4].isupper())
+            or stem.endswith(("_test", "_spec"))
+            or raw_stem.endswith(
+                ("Test", "Tests", "Spec", "Specs", "IT")))
 
 
 def _file_ignore_spec(lines: list[str]) -> pathspec.PathSpec:
@@ -937,14 +956,104 @@ class Indexer:
         # Sai da MESMA varredura: uma segunda passada por `symbols` custaria
         # outro full scan a cada resolve_edges (que roda no read-repair).
         file_sym: dict[str, str] = {}
-        for r in cur.execute(
-                "SELECT s.id, s.file_id, s.fqn, s.name, s.kind, f.language "
-                "FROM symbols s JOIN files f ON s.file_id=f.id ORDER BY s.id"):
+        symbol_rows = cur.execute(
+                "SELECT s.id, s.file_id, s.parent_id, s.fqn, s.name, s.kind, "
+                "f.language FROM symbols s JOIN files f ON s.file_id=f.id "
+                "ORDER BY s.id").fetchall()
+        by_id = {r["id"]: r for r in symbol_rows}
+        for r in symbol_rows:
             by_name.setdefault(r["name"], []).append(r)
             if r["kind"] == "file":
                 p = path_of.get(r["file_id"])
                 if p is not None:
                     file_sym[p] = r["id"]
+
+        nested_in_callable: dict[str, bool] = {}
+        class_owner: dict[str, str | None] = {}
+
+        def _nested_in_callable(candidate) -> bool:
+            """Whether a symbol lives below a function/method body.
+
+            A class declared inside a test function is a local runtime object,
+            not a repository-wide candidate for unrelated ``db.execute()``
+            sites.  Parent ids let us enforce that lexical boundary without
+            relying on names or test conventions.
+            """
+            sid = candidate["id"]
+            cached = nested_in_callable.get(sid)
+            if cached is not None:
+                return cached
+            seen: set[str] = set()
+            parent_id = candidate["parent_id"]
+            result = False
+            while parent_id is not None and parent_id not in seen:
+                seen.add(parent_id)
+                parent = by_id.get(parent_id)
+                if parent is None:
+                    break
+                if parent["kind"] in ("function", "method"):
+                    result = True
+                    break
+                parent_id = parent["parent_id"]
+            nested_in_callable[sid] = result
+            return result
+
+        def _class_owner(symbol_id: str | None) -> str | None:
+            if symbol_id is None:
+                return None
+            if symbol_id in class_owner:
+                return class_owner[symbol_id]
+            seen: set[str] = set()
+            current_id: str | None = symbol_id
+            result = None
+            while current_id is not None and current_id not in seen:
+                seen.add(current_id)
+                current = by_id.get(current_id)
+                if current is None:
+                    break
+                if current["kind"] == "class":
+                    result = current_id
+                    break
+                current_id = current["parent_id"]
+            class_owner[symbol_id] = result
+            return result
+
+        python_lines: dict[int, list[bytes]] = {}
+
+        def _python_member_site(edge) -> str | None:
+            """Distinguish ``obj.get()`` from a bare ``get()`` at the site.
+
+            Both historically stored only ``dst_name='get'``.  Looking at the
+            indexed byte column preserves the public edge schema while keeping
+            a unique method name in another module from becoming false type
+            evidence (the model_policy.get/FakeDb.execute failure mode).
+            """
+            if (edge["kind"] != "calls"
+                    or lang_of.get(edge["file_id"]) != "python"):
+                return None
+            lines = python_lines.get(edge["file_id"])
+            if lines is None:
+                rel = path_of.get(edge["file_id"])
+                try:
+                    lines = (self.root / rel).read_bytes().splitlines() if rel else []
+                except OSError:
+                    lines = []
+                python_lines[edge["file_id"]] = lines
+            line_no, col = edge["line"] - 1, edge["col"]
+            if not (0 <= line_no < len(lines) and col > 0):
+                return None
+            prefix = lines[line_no][:col].rstrip()
+            if not prefix.endswith(b"."):
+                return None
+            before_dot = prefix[:-1].rstrip()
+            if not before_dot:
+                return "<member>"
+            receiver = before_dot.rsplit(None, 1)[-1]
+            receiver = receiver.rsplit(b".", 1)[-1]
+            try:
+                return receiver.decode("ascii")
+            except UnicodeDecodeError:
+                return "<member>"
 
         # 'module' é alvo válido de herança para os MIXINS (Ruby include/extend/
         # prepend apontam para um module); os demais casam class/interface/struct
@@ -1043,6 +1152,24 @@ class Indexer:
                 cands = _dedup_cap(
                     c for c in by_name.get(guess, ())
                     if c["kind"] in STYLE_DEF_KINDS)
+                if (not cands and lang_of.get(e["file_id"]) == "python"):
+                    # Python callback/class values passed to Depends,
+                    # decorators, middleware registration, Celery, pytest,
+                    # etc. are uses, not calls.  Resolve only to callable code
+                    # symbols in the same language.
+                    if "." in guess:
+                        seg, suffix = guess.rsplit(".", 1)[-1], "." + guess
+                        cands = _dedup_cap(
+                            c for c in by_name.get(seg, ())
+                            if c["kind"] in CALLABLE_KINDS
+                            and c["language"] == "python"
+                            and (c["fqn"] == guess
+                                 or c["fqn"].endswith(suffix)))
+                    else:
+                        cands = _dedup_cap(
+                            c for c in by_name.get(guess, ())
+                            if c["kind"] in CALLABLE_KINDS
+                            and c["language"] == "python")
                 if (not cands and "." in guess
                         and lang_of.get(e["file_id"]) == "terraform"):
                     # Terraform: dependência entre blocos (var.x, local.x,
@@ -1086,6 +1213,40 @@ class Indexer:
                     by_symbol=lang == "java" and e["kind"] == "calls")
             else:
                 continue
+            lang = lang_of.get(e["file_id"])
+            if lang == "python":
+                # Lexically local symbols cannot be reached by name fallback
+                # from another module.  This removes nested FakeDb/FakeResult
+                # test doubles from production call sites.
+                cands = [c for c in cands
+                         if (c["file_id"] == e["file_id"]
+                             or not _nested_in_callable(c))]
+
+                # For heuristic (unqualified) production sites, real code is
+                # stronger evidence than homonymous test helpers.  Explicitly
+                # qualified imports keep their target, even when it is a test.
+                source_is_test = _is_test_path(path_of.get(e["file_id"], ""))
+                if not source_is_test:
+                    production = [c for c in cands
+                                  if not _is_test_path(
+                                      path_of.get(c["file_id"], ""))]
+                    if production:
+                        cands = production
+                    elif "." not in guess:
+                        cands = []
+                member_receiver = _python_member_site(e)
+                if member_receiver is not None and "." not in guess:
+                    if member_receiver in {"self", "cls"}:
+                        owner = _class_owner(e["src"])
+                        cands = [candidate for candidate in cands
+                                 if owner is not None
+                                 and _class_owner(candidate["id"]) == owner]
+                    else:
+                        # A receiver with type/binding evidence was qualified
+                        # by the Python extractor.  A remaining bare member is
+                        # unknown and cannot resolve by name, regardless of
+                        # candidate count or same-file preference.
+                        cands = []
             if not cands or len(cands) > MAX_CANDIDATES:
                 continue  # permanece dangling — contado na completeness
             if len(cands) == 1:
