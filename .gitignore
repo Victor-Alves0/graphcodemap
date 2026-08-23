@@ -28,3 +28,6 @@ htmlcov/
 
 # worktrees de agentes (efemeros)
 .claude/worktrees/
+
+# Configuracao local de agentes/Codex (nunca versionar ou empacotar)
+.codex/

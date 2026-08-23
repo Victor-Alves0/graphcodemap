@@ -45,6 +45,10 @@ claim equal depth across all 46. See [Product Maturity](MATURITY.md).
       promoted 8,838 edges with JDTLS 1.60.0 on JDK 21, with zero resolver
       errors and taint invariant after the Java
       return-summary safety guard. Gradle evidence remains a follow-up.
+- [x] Close the Round 27 Java semantic contracts and hardened CVE oracle:
+      OWASP 902/0/0/796, Juliet 444/0/0/444 and 3/3 fixes clear.
+- [x] Complete the Round 27 JDTLS overlay-health rerun: corrected Juliet source
+      root/classpath, 732/732 files, 4,408 `certain`, zero warnings/errors.
 - [ ] Add a TypeScript vulnerable-versus-fixed real-app corpus.
 - [ ] Add an externally labeled Go security corpus.
 - [ ] Pin vulnerable and fixed revisions for Python, JavaScript and PHP apps.
@@ -79,35 +83,39 @@ Histórico completo, com as rodadas e os números de cada mudança:
 
 ## Onde estamos
 
-OWASP Benchmark v1.2, 1.698 casos das 7 categorias de taint:
+OWASP Benchmark v1.2, 1.698 casos das 7 categorias de taint. Round 27 é o
+snapshot Java operacional atual; Round 26 fica preservado como histórico:
 
 | | valor |
 |---|---|
-| precisão | 90,4% |
-| recall (TPR) | 96,2% |
-| FPR | 11,6% |
-| score (TPR − FPR) | **+0.847** |
+| Round 27 atual | 902 TP / 0 FP / 0 FN / 796 TN |
+| Round 26 histórico | 868 TP / 92 FP / 34 FN / 704 TN |
 
-Esta é a primeira linha medida com concordância obrigatória de **arquivo e
-categoria**, no mesmo commit do alvo. Na mesma régua, OpenTaint marcou +0.338
+O parágrafo comparativo a seguir descreve o snapshot Round 26. Foi a primeira
+linha medida com concordância obrigatória de **arquivo e categoria**, no mesmo
+commit do alvo. Na mesma régua, OpenTaint marcou +0.338
 (recall 90,8%, FPR 57,0%). Nesta matriz fixada, GraphCodeMap tem 49 TPs a mais
 e 362 FPs a menos. Isso não é uma alegação de superioridade global sobre
 CodeQL ou outro produto; ecossistema de queries, frameworks, operações e
 linguagens ficam fora desta régua. Path traversal chegou a 100% de recall e o
 FPR total ficou abaixo de 12%.
 
-O holdout independente NIST Juliet CWE-23 impede transformar isso em uma
-declaração universal: nele o GraphCodeMap teve precisão 100% e FPR 0%, mas
-recall de **69,4%**. O primeiro gate externo (recall >=50%, FPR <=5%) foi
-atingido por modelagem de fontes Java qualificada por tipo, sem regra específica
-para nomes do corpus. O transporte atual encontra 3/3 vulnerabilidades Java
-reais e dois dos três patches eliminam o oráculo. O próximo gate é ampliar os
-efeitos de heap já existentes para lambdas invocadas, fan-out e hierarquias de
-tipo, além de levar a mesma evidência às demais
-linguagens Tier A, não continuar ajustando o corpus OWASP.
+O holdout independente NIST Juliet CWE-23 também fecha em 444/0/0/444 na
+Round 27, e os pares reais fecham 3/3 vulneráveis e 3/3 fixes. Dois
+corpora perfeitos continuam sendo uma amostra limitada, não uma declaração
+universal. O próximo gate é ampliar a evidência para outros frameworks, CVEs e
+linguagens Tier A.
 Veja [Security Benchmark](SECURITY_BENCHMARK.md).
 
-### Checkpoint Round 26
+### Checkpoint Round 27
+
+- Gate final: **1.778 passed, 27 skipped**, sem xfail.
+- OWASP semântico com `INDEXER_VERSION=35`: **902/0/0/796**; Juliet CWE-23: **444/0/0/444**.
+- Pares reais: OpenRefine 1 → 0, FitNesse 2 → 0 e openHAB 3 → 0.
+- Performance final: **224,707 s** OWASP e **19,039 s** Juliet.
+- Overlay JDTLS: 732/732, 4.408 `certain`, zero warnings/errors.
+
+### Checkpoint Round 26 (histórico preservado)
 
 - Gate local: **1.576 passed, 25 skipped, 1 xfailed**.
 - OWASP: 868 TP / 92 FP / 34 FN / 704 TN; 1.942 findings e 378 descartados por
@@ -130,7 +138,7 @@ Em aplicações vulneráveis REAIS (não gabarito sintético):
 | nodejs-goof | Node/Express | 2 |
 | dvpwa | Python/aiohttp | 1 (100% de precisão) |
 
-## Qual é o alvo, e por que não é "score máximo"
+## Qual é o alvo, e por que não é "score máximo" (histórico Round 26)
 
 Placares oficiais publicados no artefato `scorecard/OWASP_Benchmark_Home.html`
 do checkout externo pinado do OWASP Benchmark (o corpus não é vendorizado neste
@@ -147,9 +155,8 @@ O líder em score tem **57,7% de FPR** — mais da metade do código seguro
 acusado. Ninguém revisa um relatório assim; o score alto não se traduz em
 ferramenta usável.
 
-> **Os gates OWASP, Juliet e descoberta nos primeiros pares reais foram
-> atingidos. O próximo gate é distinguir mais patches e elevar as demais
-> linguagens Tier A à mesma evidência externa.**
+> **Round 27 fecha os gates Java atuais: OWASP, Juliet, overlay JDTLS e os três
+> pares vulnerável/corrigido.**
 
 Ressalva da comparação: os placares cobrem 11 categorias e nós pontuamos 7.
 Nossa medição agora exige arquivo **e categoria**, mas ainda não é comparação
@@ -178,31 +185,22 @@ constante.
 
 | ação | estado |
 |---|---|
-| resolver L1 de Java (jdtls) | Maven real + A/B OWASP concluídos; falta Gradle |
+| resolver L1 de Java (jdtls) | Maven, Gradle/FitNesse e overlay Juliet concluídos |
 | resolver L1 de PHP (intelephense) | DVWA real concluído: 659 arestas `certain`, achados de taint invariantes |
 | aumentar taxa de promoção em Python/JS | em investigação |
 
-Path traversal passou de 46% para **100% de recall**. O micro-goal de FPR <20%
-foi superado em 11,6%, com 868 TPs totais. No Juliet CWE-23 ainda há 136 FNs,
-concentrados em lambdas invocadas, fan-out mais largo, hierarquias de tipo,
-containers, serialização e dispatch abstrato/virtual.
+Historicamente, path traversal passou de 46% para **100% de recall** e o
+micro-goal de FPR <20% foi superado em 11,6%, com 868 TPs na Round 26. Os 136
+FNs Juliet daquela rodada orientaram as correções agora cobertas pela Round 27;
+o próximo passo é evidência mais diversa.
 
-### 2. Causas de falso positivo ainda abertas
+### 2. Próxima expansão de precisão
 
-Classificação medida dos falsos positivos (a distribuição muda a cada rodada;
-reclassificar antes de escolher):
-
-- **Lista/Map local com índice/chave constante** — resolvidos por domínio
-  fechado, com alias, escape, branch incerto e chave dinâmica fail-closed.
-- **Despacho/reflexão com argumento constante** — 52 FPs restantes; alvo de
-  chamada certo ainda não prova o valor devolvido pela implementação runtime.
-- **Sanitizador HTML contextual** — 37 FPs restantes (ESAPI, Spring, Commons
-  Lang, OWASP Java Encoder). Custa recall: escape para HTML não protege uso em
-  contexto de URL, e tratá-lo como universal apaga esse bug.
-- **Enhanced-for seguro conservador** — 3 FPs restantes; a propagação correta
-  do elemento iterado recuperou 62 TPs totais e não deve ser desfeita.
-- **Propagação pelo RECEPTOR** — `String s = objSujo.toString()`. Hoje o motor
-  não distingue receptor de argumento, o que impede endurecer o sumário.
+A Round 27 fechou em 0 FP e 0 FN nos recortes OWASP/Juliet medidos. As antigas
+classes de Lista/Map, sanitização contextual, enhanced-for e receiver foram
+promovidas a contratos executáveis. O próximo trabalho de precisão não é
+ajustar esses corpora: é procurar contraexemplos independentes em novos CVEs,
+frameworks e famílias de vulnerabilidade, preservando os gates atuais.
 
 ### 3. Modelagem que falta
 
@@ -217,10 +215,9 @@ reclassificar antes de escolher):
 
 ### 4. Cobertura estrutural
 
-- **Callbacks anônimos**: feito para JS (`get#2`). Java agora não executa uma
-  lambda não invocada por acidente, mas lambdas efetivamente invocadas ainda
-  precisam de unidade deferred e aresta de chamada próprias. Python (`lambda`)
-  e Ruby (blocos) não têm equivalente completo.
+- **Callbacks anônimos**: feito para JS (`get#2`). Em Java, lambdas invocadas e
+  deferred têm contratos próprios e lambdas não invocadas não executam por
+  acidente. Python (`lambda`) e Ruby (blocos) ainda não têm equivalente completo.
 - **Código de nível de arquivo**: feito. Era invisível e é a norma em PHP.
 - **`switch`/`if` sem chaves**: feito. Os dois avaliavam ramos em SEQUÊNCIA e
   apagavam recall em silêncio.
@@ -235,8 +232,9 @@ Construído e medido: score subia de +0.29 para **+0.62** com **zero falso
 positivo** em 796 casos seguros. Rejeitado mesmo assim:
 
 1. Custava **109 verdadeiros positivos** por motivo não isolado.
-2. Zero FP em 796 casos não é resultado, é alarme — nenhuma análise estática
-   real acerta 796 de 796.
+2. Naquela rodada, zero FP em 796 casos sem evidência independente era um
+   alarme, sobretudo porque a mudança também perdia 109 verdadeiros positivos.
+   A Round 27 só aceita o mesmo placar quando contratos e pares CVE o sustentam.
 3. Era quase inerte em código real e decisivo no Benchmark, porque o artifício
    de segurança do Benchmark é justamente um método auxiliar. Ganho que só
    aparece no gabarito é ganho no gabarito.

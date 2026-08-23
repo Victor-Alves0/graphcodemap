@@ -13,6 +13,7 @@ ancestral os tem — cai na raiz do repo, que é o comportamento de sempre."""
 
 from __future__ import annotations
 
+import fnmatch
 from pathlib import Path
 
 
@@ -24,6 +25,64 @@ def _has_marker(d: Path, markers) -> bool:
         elif (d / m).exists():
             return True
     return False
+
+
+def matches_project_marker(rel: str, markers) -> bool:
+    """Se ``rel`` casa exatamente com um marker/nome glob do resolver.
+
+    O basename cobre os markers usuais (``pom.xml``, ``*.csproj``). Um marker
+    configurado com diretório continua podendo casar com o caminho repo-relativo.
+    Nenhum outro arquivo desconhecido é promovido a evento semântico.
+    """
+    normalized = rel.replace("\\", "/").strip("/")
+    name = normalized.rsplit("/", 1)[-1]
+    for marker in markers:
+        pattern = str(marker).replace("\\", "/").strip("/")
+        candidate = normalized if "/" in pattern else name
+        if pattern and fnmatch.fnmatchcase(candidate, pattern):
+            return True
+    return False
+
+
+def _root_from_directory(directory: Path, repo_root: Path, markers) -> Path:
+    """Marker mais próximo a partir de um diretório já conhecido."""
+    repo_root = repo_root.resolve()
+    directory = directory.resolve()
+    try:
+        directory.relative_to(repo_root)
+    except ValueError:
+        return repo_root
+    d = directory
+    while True:
+        if _has_marker(d, markers):
+            return d
+        if d == repo_root or d.parent == d:
+            return repo_root
+        d = d.parent
+
+
+def marker_affected_roots(rel: str, repo_root: Path, markers) -> set[Path]:
+    """Raízes cujo universo pode mudar ao criar/modificar/remover ``rel``.
+
+    Com o marker presente, a nova raiz e sua raiz-pai mudam de universo (uma
+    ganhou o subprojeto; a outra o perdeu). Depois da remoção, a raiz-pai basta:
+    o antigo subprojeto agora pertence a ela. Projetos irmãos com marker próprio
+    não aparecem no conjunto.
+    """
+    if not matches_project_marker(rel, markers):
+        return set()
+    repo_root = repo_root.resolve()
+    marker = (repo_root / rel).resolve()
+    try:
+        marker.relative_to(repo_root)
+    except ValueError:
+        return set()
+    marker_dir = marker.parent
+    parent_start = marker_dir if marker_dir == repo_root else marker_dir.parent
+    affected = {_root_from_directory(parent_start, repo_root, markers)}
+    if _has_marker(marker_dir, markers):
+        affected.add(marker_dir)
+    return affected
 
 
 def detect_project_root(rel: str, repo_root: Path, markers) -> Path:
@@ -41,13 +100,7 @@ def detect_project_root(rel: str, repo_root: Path, markers) -> Path:
         # Caminho malformado ou symlink que escapa do repo: nunca usar um
         # marcador externo como root de um servidor que analisará o workspace.
         return repo_root
-    d = candidate.parent
-    while True:
-        if _has_marker(d, markers):
-            return d
-        if d == repo_root or d.parent == d:
-            return repo_root
-        d = d.parent
+    return _root_from_directory(candidate.parent, repo_root, markers)
 
 
 def group_by_root(rels, repo_root: Path, markers) -> dict[Path, list[str]]:

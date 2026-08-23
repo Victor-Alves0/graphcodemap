@@ -121,6 +121,25 @@ _TRUSTED_SOURCE_LITERAL_ARGS: dict[tuple[str, int], frozenset[str]] = {
     ("System.getProperty", 0): frozenset({"user.dir"}),
 }
 
+# Source arguments whose literal denotes public request metadata rather than a
+# runtime value. Only these indexes may leave the analyzer in finding JSON.
+# This is API semantics, not a benchmark/repository exception.
+_SOURCE_PARAMETER_INDEXES: dict[str, int] = {
+    "getParameter": 0,
+    "getParameterValues": 0,
+}
+_MAX_PUBLISHED_SOURCE_PARAMETER_BYTES = 128
+
+# Java output encoders are contextual defenses, not universal taint erasers.
+# Keeping this separate from the user-extensible flat catalog lets the query
+# engine run the XSS slice with these defenses while retaining the same value
+# for command/path/SQL/trust-boundary analysis.
+_JAVA_HTML_SANITIZERS = frozenset({
+    "encodeForHTML", "encodeForHTMLAttribute",
+    "htmlEscape", "escapeHtml", "escapeHtml3", "escapeHtml4",
+    "forHtml", "forHtmlContent", "forHtmlAttribute",
+})
+
 
 def _frozen_sink_arg_indexes() -> tuple[tuple[str, frozenset[int]], ...]:
     return tuple(sorted(_SINK_ARG_INDEXES.items()))
@@ -134,6 +153,10 @@ def _frozen_trusted_source_literals(
     ))
 
 
+def _frozen_source_parameter_indexes() -> tuple[tuple[str, int], ...]:
+    return tuple(sorted(_SOURCE_PARAMETER_INDEXES.items()))
+
+
 @dataclass(frozen=True)
 class TaintRules:
     sources: frozenset[str]
@@ -144,10 +167,51 @@ class TaintRules:
     trusted_source_literals: tuple[
         tuple[str, int, frozenset[str]], ...
     ] = ()
+    source_parameter_indexes: tuple[tuple[str, int], ...] = ()
+
+    def published_source_arguments(
+            self, source: str, arg_literals
+    ) -> tuple[tuple[int, str], ...]:
+        """Return the fail-closed subset safe to publish in a report."""
+        indexes = dict(self.source_parameter_indexes)
+        index = indexes.get(source)
+        if index is None:
+            index = indexes.get(source.rsplit(".", 1)[-1])
+        if index is None:
+            return ()
+        value = dict(arg_literals).get(index)
+        if (not isinstance(value, str) or not value or not value.isprintable()
+                or len(value.encode("utf-8"))
+                > _MAX_PUBLISHED_SOURCE_PARAMETER_BYTES):
+            return ()
+        return ((index, value),)
+
+    def sanitizers_for_context(
+            self, language: str | None, context: str | None
+    ) -> frozenset[str]:
+        """Return defenses valid for the requested vulnerability context."""
+        if (language or "").lower() != "java":
+            return self.sanitizers
+        contextual = self.sanitizers & _JAVA_HTML_SANITIZERS
+        if context == "xss":
+            return self.sanitizers
+        return self.sanitizers - contextual
+
+    @staticmethod
+    def sink_context(callee: str, qualified: str | None,
+                     language: str | None) -> str | None:
+        """Classify contexts that require distinct sanitizer semantics."""
+        if (language or "").lower() != "java":
+            return None
+        if qualified and qualified.rsplit(".", 1)[0] in {
+                "getWriter", "getOutputStream"}:
+            return "xss"
+        return "non-xss"
 
     def is_sink(self, callee: str, qualified: str | None,
                 arg_index: int | None = None,
-                language: str | None = None) -> bool:
+                language: str | None = None,
+                receiver_type: str | None = None) -> bool:
         """A chamada é um sink? Casa pelo `receptor.método` OU pelo nome nu.
 
         Um nome em `bare_sinks` só casa SEM receptor: é o que separa
@@ -159,10 +223,23 @@ class TaintRules:
         ``command`` e ``envp``, mas não o diretório de trabalho. ``arg_index``
         negativo é kwarg ou posição desconhecida, então continua valendo, que
         é o lado seguro."""
+        typed = (f"{receiver_type}.{callee}" if receiver_type else None)
+        # ``command`` is only a process-execution sink on ProcessBuilder.
+        # Matching the last segment by itself would classify ordinary domain
+        # methods such as ``menu.command(items)`` as command injection once a
+        # container payload crosses a helper boundary.
+        if (language or "").lower() == "java" and callee == "command":
+            identities = (typed, qualified)
+            if not any(identity and (
+                    identity == "ProcessBuilder.command"
+                    or identity.endswith(".ProcessBuilder.command"))
+                    for identity in identities):
+                return False
         if callee in self.bare_sinks:
             casou = qualified is None
         else:
-            casou = ((qualified is not None and qualified in self.sinks)
+            casou = ((typed is not None and typed in self.sinks)
+                     or (qualified is not None and qualified in self.sinks)
                      or callee in self.sinks)
         if casou and arg_index is not None and arg_index >= 0:
             by_sink = dict(self.sink_arg_indexes)
@@ -184,7 +261,8 @@ class TaintRules:
 def default_rules() -> TaintRules:
     return TaintRules(frozenset(_SOURCES), frozenset(_SINKS), frozenset(_SANITIZERS),
                       frozenset(_BARE_SINKS), _frozen_sink_arg_indexes(),
-                      _frozen_trusted_source_literals())
+                      _frozen_trusted_source_literals(),
+                      _frozen_source_parameter_indexes())
 
 
 # Suplemento CURADO À MÃO, por linguagem. Complementa o catálogo gerado com
@@ -234,7 +312,8 @@ _CURATED: dict[str, dict[str, set[str]]] = {
             # variável local (`Runtime r = …; r.exec(cmd)`), impossível de
             # nomear por regra qualificada. Declarar aqui reverte o default
             # bare-only para repositórios Java — ver `_BARE_SINKS`.
-            "ProcessBuilder", "exec",
+            "ProcessBuilder", "ProcessBuilder.command",
+            "java.lang.ProcessBuilder.command", "exec",
             # XPath / expressão
             "evaluate", "compileExpression", "getValue", "setValue",
             # XSS: QUALIFICADOS (receptor.método). `println` puro pegaria todo
@@ -416,7 +495,8 @@ def catalog_for(languages) -> TaintRules:
     except ImportError:                       # catálogo é opcional
         return TaintRules(frozenset(src), frozenset(snk), frozenset(san),
                           frozenset(bare), _frozen_sink_arg_indexes(),
-                          _frozen_trusted_source_literals())
+                          _frozen_trusted_source_literals(),
+                          _frozen_source_parameter_indexes())
     try:
         from .taint_catalog_codeql import CATALOG_CODEQL
     except ImportError:                       # também opcional
@@ -443,13 +523,15 @@ def catalog_for(languages) -> TaintRules:
     bare -= snk
     return TaintRules(frozenset(src), frozenset(snk), frozenset(san),
                       frozenset(bare), _frozen_sink_arg_indexes(),
-                      _frozen_trusted_source_literals())
+                      _frozen_trusted_source_literals(),
+                      _frozen_source_parameter_indexes())
 
 
 def load_rules(root: Path, languages=None) -> TaintRules:
     base = catalog_for(languages)
     src, snk, san = set(base.sources), set(base.sinks), set(base.sanitizers)
     bare = set(base.bare_sinks)
+    source_parameter_indexes = dict(base.source_parameter_indexes)
     cfg = root / ".codegraph" / "taint.json"
     if cfg.is_file():
         try:
@@ -460,6 +542,13 @@ def load_rules(root: Path, languages=None) -> TaintRules:
         snk |= set(data.get("sinks", []))
         san |= set(data.get("sanitizers", []))
         bare |= set(data.get("bare_sinks", []))
+        configured_indexes = data.get("source_parameter_indexes", {})
+        if isinstance(configured_indexes, dict):
+            for source, index in configured_indexes.items():
+                if (isinstance(source, str) and source
+                        and isinstance(index, int) and not isinstance(index, bool)
+                        and index >= 0):
+                    source_parameter_indexes[source] = index
         rem = data.get("remove", {}) or {}
         src -= set(rem.get("sources", []))
         snk -= set(rem.get("sinks", []))
@@ -469,4 +558,5 @@ def load_rules(root: Path, languages=None) -> TaintRules:
         bare -= set(rem.get("sinks", [])) | set(rem.get("bare_sinks", []))
     return TaintRules(frozenset(src), frozenset(snk), frozenset(san),
                       frozenset(bare), base.sink_arg_indexes,
-                      base.trusted_source_literals)
+                      base.trusted_source_literals,
+                      tuple(sorted(source_parameter_indexes.items())))

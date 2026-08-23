@@ -3,22 +3,29 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 import jsonschema
+import pytest
 
 from codegraph.eval.security_bench import (
     build_report,
     compare_reports,
+    deduplicate,
     infer_category,
     infer_graphcodemap_category,
     infer_cwes,
+    location,
+    make_finding,
     normalize_opengrep,
     normalize_path,
     normalize_sarif,
     execute,
     run_graphcodemap,
+    sarif_execution_health,
+    validate_report,
 )
 
 
@@ -44,10 +51,48 @@ def test_paths_are_repo_relative_and_uri_decoded(tmp_path):
     assert normalize_path("file:///C:/repo/a%20b.py") == "C:/repo/a b.py"
 
 
+def test_root_bound_paths_reject_traversal_absolute_escape_and_symlink(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    inside = root / "src" / "a.py"
+    inside.parent.mkdir()
+    inside.write_text("pass\n", encoding="utf-8")
+    outside = tmp_path / "outside.py"
+    outside.write_text("pass\n", encoding="utf-8")
+
+    assert normalize_path(str(inside), root) == "src/a.py"
+    assert normalize_path("../outside.py", root) is None
+    assert normalize_path(str(outside), root) is None
+
+    link = root / "linked.py"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks are unavailable on this platform")
+    assert normalize_path("linked.py", root) is None
+
+
+def test_report_rejects_non_relative_finding_paths(tmp_path):
+    finding = make_finding(
+        rule_id="path", category="path-traversal",
+        sink={"path": "../outside.py", "line": 1},
+    )
+    with pytest.raises(ValueError, match="path não relativo"):
+        build_report(
+            tool={"name": "test", "version": "1", "adapter_version": "1"},
+            root=tmp_path, findings=[finding],
+        )
+
+
 def _sarif():
     return {
         "version": "2.1.0",
         "runs": [{
+            "invocations": [{
+                "executionSuccessful": True,
+                "exitCode": 0,
+                "toolExecutionNotifications": [],
+            }],
             "tool": {"driver": {
                 "name": "CodeQL", "semanticVersion": "2.20.0",
                 "rules": [{"id": "py/sql-injection", "properties": {
@@ -76,7 +121,7 @@ def test_sarif_normalizes_rule_cwe_category_and_flow():
     findings, tool, warnings = normalize_sarif(_sarif())
     assert warnings == []
     assert tool == {"name": "CodeQL", "version": "2.20.0",
-                    "adapter_version": "1.0"}
+                    "adapter_version": "1.1"}
     assert len(findings) == 1
     finding = findings[0]
     assert finding["category"] == "sql-injection"
@@ -84,6 +129,75 @@ def test_sarif_normalizes_rule_cwe_category_and_flow():
     assert finding["source"]["path"] == "src/web.py"
     assert finding["sink"] == {"path": "src/db.py", "line": 20, "column": 5}
     assert finding["evidence"] == "sarif-code-flow"
+
+
+def test_sarif_execution_health_accepts_explicit_success():
+    partial, errors, exit_code = sarif_execution_health(_sarif())
+    assert partial is False
+    assert errors == []
+    assert exit_code == 0
+
+
+def test_sarif_error_notification_alone_forces_partial():
+    data = _sarif()
+    data["runs"][0]["invocations"][0]["toolExecutionNotifications"] = [{
+        "level": "error",
+        "message": {"text": "database incomplete"},
+    }]
+    partial, errors, exit_code = sarif_execution_health(data)
+    assert partial is True
+    assert errors == [
+        "SARIF run 0 invocation 0 notification 0: database incomplete"]
+    assert exit_code == 0
+
+
+@pytest.mark.parametrize("success", [False, pytest.param(None, id="missing")])
+def test_aborted_or_unproven_sarif_import_is_partial_and_cli_returns_two(
+        tmp_path, monkeypatch, success):
+    from evals import securitybench as cli
+
+    data = _sarif()
+    invocation = {
+        "exitCode": 3,
+        "toolExecutionNotifications": [{
+            "level": "error",
+            "message": {"text": "analysis aborted"},
+        }],
+    }
+    if success is not None:
+        invocation["executionSuccessful"] = success
+    data["runs"][0]["invocations"] = [invocation]
+    input_path = tmp_path / "aborted.sarif"
+    input_path.write_text(json.dumps(data), encoding="utf-8")
+
+    report = cli.import_report("sarif", input_path, tmp_path)
+    assert report["status"] == "partial"
+    assert report["invocation"]["status"] == "partial"
+    assert report["invocation"]["exit_code"] == 3
+    assert report["truncated"] is False
+    assert any("executionSuccessful" in error for error in report["errors"])
+    assert any("analysis aborted" in error for error in report["errors"])
+
+    output = tmp_path / "normalized.json"
+    monkeypatch.setattr(
+        sys, "argv", ["securitybench", "sarif", str(input_path),
+                      "--root", str(tmp_path), "--out", str(output)])
+    assert cli.main() == 2
+    persisted = json.loads(output.read_text(encoding="utf-8"))
+    assert persisted["status"] == "partial"
+    assert persisted["errors"] == report["errors"]
+
+
+def test_healthy_sarif_import_remains_complete(tmp_path):
+    from evals import securitybench as cli
+
+    input_path = tmp_path / "healthy.sarif"
+    input_path.write_text(json.dumps(_sarif()), encoding="utf-8")
+    report = cli.import_report("sarif", input_path, tmp_path)
+    assert report["status"] == "complete"
+    assert report["invocation"]["exit_code"] == 0
+    assert report["truncated"] is False
+    assert report["errors"] == []
 
 
 def test_opengrep_normalizes_dataflow_and_deduplicates():
@@ -113,6 +227,128 @@ def test_report_matches_published_json_schema(tmp_path):
     assert report["summary"]["findings"] == 1
     assert report["summary"]["by_category"] == {"sql-injection": 1}
     assert report["target"]["git_commit"] is None
+
+    bad_exit = json.loads(json.dumps(report))
+    bad_exit["invocation"]["exit_code"] = 1
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            bad_exit, json.loads(schema_path.read_text(encoding="utf-8")))
+
+    escaped = json.loads(json.dumps(report))
+    escaped["findings"][0]["sink"]["path"] = "../outside.py"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            escaped, json.loads(schema_path.read_text(encoding="utf-8")))
+
+    for field, value in (("truncated", True), ("errors", ["failure"])):
+        contradictory = json.loads(json.dumps(report))
+        contradictory[field] = value
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(
+                contradictory,
+                json.loads(schema_path.read_text(encoding="utf-8")))
+
+
+def test_report_runtime_rejects_complete_nonzero_and_unhashed_dirty_engine(
+        tmp_path):
+    tool = {"name": "test", "version": "1", "adapter_version": "1"}
+    with pytest.raises(ValueError, match="exit_code zero"):
+        build_report(
+            tool=tool, root=tmp_path, findings=[], status="complete",
+            exit_code=3,
+        )
+    with pytest.raises(ValueError, match="truncated=false"):
+        build_report(
+            tool=tool, root=tmp_path, findings=[], status="complete",
+            truncated=True,
+        )
+    with pytest.raises(ValueError, match=r"errors=\[\]"):
+        build_report(
+            tool=tool, root=tmp_path, findings=[], status="complete",
+            errors=["hidden failure"],
+        )
+    with pytest.raises(ValueError, match="source_tree_sha256"):
+        build_report(
+            tool=tool, root=tmp_path, findings=[],
+            analysis={
+                "engine": {"git_commit": "a" * 40, "git_dirty": True},
+                "config": {},
+            },
+        )
+
+
+def test_validate_report_rejects_complete_with_truncation_or_errors(tmp_path):
+    tool = {"name": "test", "version": "1", "adapter_version": "1"}
+    report = build_report(tool=tool, root=tmp_path, findings=[])
+    truncated = json.loads(json.dumps(report))
+    truncated["truncated"] = True
+    with pytest.raises(ValueError, match="truncated=false"):
+        validate_report(truncated, root=tmp_path)
+    errored = json.loads(json.dumps(report))
+    errored["errors"] = ["failure"]
+    with pytest.raises(ValueError, match=r"errors=\[\]"):
+        validate_report(errored, root=tmp_path)
+
+
+def test_fingerprint_distinguishes_same_line_sites():
+    source = location("src/App.java", 4, 20)
+    left = make_finding(
+        rule_id="path", category="path-traversal", source=source,
+        sink=location("src/App.java", 5, 9, byte_span={"start": 80, "end": 90}),
+    )
+    right = make_finding(
+        rule_id="path", category="path-traversal", source=source,
+        sink=location("src/App.java", 5, 42, byte_span={"start": 113, "end": 123}),
+    )
+    assert left["fingerprint"] != right["fingerprint"]
+    assert len(deduplicate([left, right])) == 2
+
+
+def test_report_subject_identifies_git_subdirectory(tmp_path):
+    repo = tmp_path / "repo"
+    scan_root = repo / "services" / "api"
+    scan_root.mkdir(parents=True)
+    (scan_root / "App.java").write_text("class App {}", encoding="utf-8")
+    commands = [
+        ["git", "init"],
+        ["git", "config", "user.email", "test@example.invalid"],
+        ["git", "config", "user.name", "Test"],
+        ["git", "remote", "add", "origin", "git@github.com:owner/repo.git"],
+        ["git", "add", "."],
+        ["git", "commit", "-m", "fixture"],
+    ]
+    for command in commands:
+        subprocess.run(command, cwd=repo, check=True, capture_output=True)
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+    report = build_report(
+        tool={"name": "test", "version": "1", "adapter_version": "1"},
+        root=scan_root, findings=[],
+    )
+    assert report["subject"] == {
+        "repository": "https://github.com/owner/repo.git",
+        "commit": commit,
+        "scan_subdir": "services/api",
+    }
+    assert report["target"]["git_dirty"] is False
+
+    # Dirtiness is scoped to the scan root: unrelated untracked files do not
+    # taint this subject, while an untracked input below it does.
+    (repo / "outside-scan.txt").write_text("x", encoding="utf-8")
+    outside_report = build_report(
+        tool={"name": "test", "version": "1", "adapter_version": "1"},
+        root=scan_root, findings=[],
+    )
+    assert outside_report["target"]["git_dirty"] is False
+    (scan_root / "Untracked.java").write_text("class Untracked {}", encoding="utf-8")
+    dirty_report = build_report(
+        tool={"name": "test", "version": "1", "adapter_version": "1"},
+        root=scan_root, findings=[],
+    )
+    assert dirty_report["target"]["git_dirty"] is True
 
 
 def test_comparison_distinguishes_exact_sink_from_same_file_category(tmp_path):
@@ -158,6 +394,37 @@ def test_graphcodemap_report_measures_process_tree(tmp_path):
     assert report["invocation"]["memory_scope"] == "process-tree"
     assert report["invocation"]["peak_rss_mb"] is not None
     assert Path(report["extra"]["db_path"]) == isolated.resolve()
+    engine = report["analysis"]["engine"]
+    assert engine["git_commit"]
+    assert isinstance(engine["git_dirty"], bool)
+    assert len(engine["source_tree_sha256"]) == 64
+
+
+@pytest.mark.parametrize(("status", "expected"), [
+    ("complete", 0),
+    ("partial", 2),
+    ("failed", 1),
+])
+def test_securitybench_cli_exit_code_reflects_report_completeness(
+        tmp_path, monkeypatch, status, expected):
+    from evals import securitybench as cli
+
+    report = {
+        "status": status,
+        "invocation": {
+            "status": status, "duration_s": 0.0, "peak_rss_mb": None,
+        },
+        "tool": {"name": "test", "version": "1"},
+        "target": {"name": "repo", "git_commit": None, "git_dirty": False},
+        "summary": {"findings": 0, "with_source": 0, "by_category": {}},
+        "warnings": [],
+        "errors": [],
+    }
+    monkeypatch.setattr(cli, "run_graphcodemap", lambda *args, **kwargs: report)
+    monkeypatch.setattr(
+        sys, "argv", ["securitybench", "graphcodemap", str(tmp_path),
+                      "--out", str(tmp_path / f"{status}.json")])
+    assert cli.main() == expected
 
 
 def test_opentaint_rule_ids_are_resolved_and_validated(tmp_path):

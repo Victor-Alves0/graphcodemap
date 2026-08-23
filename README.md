@@ -10,7 +10,7 @@ Symbols, call graph, references, impact, dataflow and taint over any codebase �
 [![CI](https://github.com/Victor-Alves0/graphcodemap/actions/workflows/tests.yml/badge.svg)](https://github.com/Victor-Alves0/graphcodemap/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%E2%80%93%203.12-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1576%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-1778%20passing-brightgreen)](tests/)
 [![Status](https://img.shields.io/badge/status-alpha%20v0.1-orange)](#status)
 
 [Quick start](#quick-start) ·
@@ -113,7 +113,7 @@ New here? Start with **[Getting Started](docs/getting-started.md)**.
 | *What should I read for this task?* | `suggest`, `explain` |
 | *Show me the neighborhood* | `visualize` — seeded, interactive HTML |
 
-Full reference: **[CLI](docs/cli.md)** · **[MCP tools](docs/mcp.md)** · **[Library API](docs/library.md)**.
+Full reference: **[CLI](docs/cli.md)** · **[MCP tools](docs/mcp.md)** · **[Library API](docs/library.md)** · **[Java analysis contract](docs/JAVA_ANALYSIS_CONTRACT.md)**.
 
 ## Highlights
 
@@ -154,16 +154,16 @@ Trust is built by being honest about the boundaries:
   structure, not substring matching.
 - ⚠️ **Treat dataflow/taint findings as candidates.** It is *may-taint* — it
   over-approximates on purpose, so a finding is a lead to verify, not a verdict.
-  Measured on the OWASP Benchmark: **90.4% precision, 96.2% recall, 11.6% FPR**
-  (score TPR−FPR = +0.847). The independent NIST Juliet CWE-23 holdout is much
-  harder: **100% precision and 69.4% recall**, exposing the remaining invoked-
-  lambda, wider fan-out and type-hierarchy transport gaps. See
-  [evals/RESULTS.md](evals/RESULTS.md), which records how
-  every number moved and why — including the changes that were measured and
-  then *rejected*. That is in the range of mid-tier commercial SAST on the
-  benchmark's own published scorecards, and short of the best. The gap that
-  matters now is interprocedural transport and patch sensitivity, and the plan is in
-  [docs/ROADMAP.md](docs/ROADMAP.md).
+  The Round 27 Java profile scores **902/0/0/796** on the pinned
+  OWASP matrix and **444/0/0/444** on Juliet CWE-23; all three pinned vulnerable
+  revisions are detected and all three fixes clear. A corrected Juliet project
+  overlay completed with 732/732 files, 4,408 `certain` promotions and zero
+  resolver warnings/errors. Existing versioned
+  CodeQL rows remain the fair comparison: OWASP `default` is
+  776/292/126/504 and `security-extended` is 902/471/0/325; Juliet is
+  222/6/222/438 for both suites. These pinned rows do not establish universal
+  superiority over CodeQL's broader languages, queries, framework models and
+  operational tooling. See [Security Benchmark](docs/SECURITY_BENCHMARK.md).
 
 Full, quantified limitations and benchmark methodology: **[FAQ & Limitations](docs/faq.md)**
 and **[evals/RESULTS.md](evals/RESULTS.md)**. What is being worked on next, and
@@ -197,9 +197,10 @@ cover all 19 dedicated code-language identifiers; 18 are flow-sensitive.
 ## Status
 
 **Alpha (v0.1.0).** The main query surfaces are implemented and covered by more
-than 1,500 tests (the Round 26 gate closed at 1,576 passed, 25 skipped and one
-expected failure, including contracts for the graph's load-bearing invariants),
-across a CI matrix of Linux + Windows on Python 3.10–3.12. Language depth and
+than 1,700 tests. The final Round 27 project gate is **1,778 passed, 27
+skipped**, with no expected failures, and the corrected JDTLS overlay is
+healthy. CI spans Linux and Windows on
+Python 3.10–3.12. Language depth and
 external validation are still uneven; see the honest
 [maturity matrix](docs/MATURITY.md) and the [v0.2 gates](docs/ROADMAP.md). It has
 not yet been battle-tested by broad real-world usage — expect rough edges, and

@@ -5,11 +5,13 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema_version", "tool", "target", "invocation", "findings",
+    "schema_version", "status", "truncated", "tool", "target", "invocation", "findings",
     "summary", "warnings", "errors", "extra"
   ],
   "properties": {
     "schema_version": {"const": 1},
+    "status": {"enum": ["complete", "partial", "failed", "unavailable"]},
+    "truncated": {"type": "boolean"},
     "tool": {
       "type": "object",
       "required": ["name", "version", "adapter_version"],
@@ -25,9 +27,54 @@
       "required": ["name", "git_commit", "git_dirty", "git_remote"],
       "properties": {
         "name": {"type": "string", "minLength": 1},
-        "git_commit": {"type": ["string", "null"]},
+        "git_commit": {
+          "oneOf": [
+            {"type": "string", "pattern": "^[0-9a-f]{7,64}$"},
+            {"type": "null"}
+          ]
+        },
         "git_dirty": {"type": ["boolean", "null"]},
         "git_remote": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "subject": {
+      "type": "object",
+      "required": ["repository", "commit", "scan_subdir"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{7,64}$"},
+        "scan_subdir": {"$ref": "#/$defs/repo_path_or_root"}
+      },
+      "additionalProperties": false
+    },
+    "analysis": {
+      "type": "object",
+      "required": ["engine", "config"],
+      "properties": {
+        "engine": {
+          "type": "object",
+          "properties": {
+            "git_commit": {"type": "string", "pattern": "^[0-9a-f]{7,64}$"},
+            "git_dirty": {"type": "boolean"},
+            "git_remote": {"type": ["string", "null"]},
+            "source_tree_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          },
+          "dependentRequired": {
+            "git_commit": ["git_dirty"],
+            "git_dirty": ["git_commit"]
+          },
+          "allOf": [
+            {
+              "if": {
+                "required": ["git_dirty"],
+                "properties": {"git_dirty": {"const": true}}
+              },
+              "then": {"required": ["source_tree_sha256"]}
+            }
+          ]
+        },
+        "config": {"type": "object"}
       },
       "additionalProperties": false
     },
@@ -71,16 +118,82 @@
     "errors": {"type": "array", "items": {"type": "string"}},
     "extra": {"type": "object"}
   },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "complete"}}},
+      "then": {
+        "properties": {
+          "truncated": {"const": false},
+          "errors": {"maxItems": 0},
+          "invocation": {
+            "properties": {
+              "status": {"const": "complete"},
+              "exit_code": {"const": 0}
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
+    "repo_path": {
+      "type": "string",
+      "minLength": 1,
+      "allOf": [
+        {"not": {"const": "."}},
+        {"not": {"pattern": "^(?:[A-Za-z]:|[/\\\\])"}},
+        {"not": {"pattern": "(^|[/\\\\])\\.\\.([/\\\\]|$)"}}
+      ]
+    },
+    "repo_path_or_root": {
+      "oneOf": [
+        {"const": "."},
+        {"$ref": "#/$defs/repo_path"}
+      ]
+    },
     "location": {
       "type": "object",
       "required": ["path", "line"],
       "properties": {
-        "path": {"type": "string", "minLength": 1},
+        "path": {"$ref": "#/$defs/repo_path"},
         "line": {"type": ["integer", "null"], "minimum": 1},
         "column": {"type": "integer", "minimum": 1},
         "label": {"type": "string"},
-        "symbol": {"type": "string"}
+        "symbol": {"type": "string"},
+        "byte_span": {"$ref": "#/$defs/byte_span"},
+        "argument_literals": {
+          "type": "object",
+          "patternProperties": {"^[0-9]+$": {"type": "string", "minLength": 1, "maxLength": 128}},
+          "additionalProperties": false
+        },
+        "parameter": {"type": "string", "minLength": 1, "maxLength": 128}
+      },
+      "additionalProperties": false
+    },
+    "byte_span": {
+      "type": "object",
+      "required": ["start", "end"],
+      "properties": {
+        "start": {"type": "integer", "minimum": 0},
+        "end": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "step": {
+      "type": "object",
+      "required": ["path", "line", "resolved"],
+      "properties": {
+        "path": {"$ref": "#/$defs/repo_path"},
+        "line": {"type": ["integer", "null"], "minimum": 1},
+        "column": {"type": "integer", "minimum": 1},
+        "label": {"type": "string"},
+        "symbol": {"type": "string"},
+        "byte_span": {"$ref": "#/$defs/byte_span"},
+        "callee": {"type": ["string", "null"]},
+        "callee_fqn": {"type": ["string", "null"]},
+        "arg_index": {"type": ["integer", "null"]},
+        "confidence": {"type": ["string", "null"]},
+        "resolved": {"type": "boolean"}
       },
       "additionalProperties": false
     },
@@ -100,7 +213,8 @@
         "source": {"oneOf": [{"$ref": "#/$defs/location"}, {"type": "null"}]},
         "sink": {"$ref": "#/$defs/location"},
         "confidence": {"type": ["string", "null"]},
-        "evidence": {"type": ["string", "null"]}
+        "evidence": {"type": ["string", "null"]},
+        "steps": {"type": "array", "items": {"$ref": "#/$defs/step"}}
       },
       "additionalProperties": false
     }

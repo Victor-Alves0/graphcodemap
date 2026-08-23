@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -14,6 +15,27 @@ from .query import AmbiguousSymbol, QueryEngine, SymbolNotFound
 
 def _engine(args) -> QueryEngine:
     return QueryEngine(Indexer(args.root, args.db))
+
+
+def _l1_partial(stats: dict) -> bool:
+    """Compatível também com relatórios anteriores à telemetria de status."""
+    return bool(stats.get("partial") or stats.get("status") == "partial"
+                or stats.get("errors", 0))
+
+
+def _print_l1_report(stats: dict, elapsed: float) -> None:
+    """Saída humana com campos estruturados estáveis para logs/CI."""
+    partial = _l1_partial(stats)
+    status = "partial" if partial else (stats.get("status") or "complete")
+    resolvers = stats.get("resolvers", [])
+    print(f"L1: {stats.get('promoted', 0)} aresta(s) promovidas a 'certain' em "
+          f"{stats.get('files', 0)} arquivo(s) "
+          f"({', '.join(resolvers) or 'nenhum resolver'}) em {elapsed:.2f}s")
+    print(f"  status: {status}; partial: {str(partial).lower()}")
+    # JSON válido preserva listas/objetos e acentos sem depender de repr Python.
+    for key in ("applicable", "attempted", "unavailable", "warnings"):
+        value = stats.get(key, [])
+        print(f"  {key}: {json.dumps(value, ensure_ascii=False, default=str)}")
 
 
 def cmd_index(args) -> int:
@@ -37,9 +59,8 @@ def cmd_index(args) -> int:
         t0 = time.perf_counter()
         r = l1.refine(ix)
         dt = time.perf_counter() - t0
-        print(f"L1: {r['promoted']} aresta(s) promovidas a 'certain' em "
-              f"{r['files']} arquivo(s) ({', '.join(r['resolvers']) or 'nenhum resolver'}) "
-              f"em {dt:.2f}s")
+        _print_l1_report(r, dt)
+        return 1 if _l1_partial(r) else 0
     return 0
 
 
@@ -50,12 +71,8 @@ def cmd_refine(args) -> int:
     t0 = time.perf_counter()
     r = l1.refine(ix)
     dt = time.perf_counter() - t0
-    if not r["resolvers"]:
-        print("nenhum resolver L1 disponível — instale: pip install \"graphcodemap[l1]\"")
-        return 1
-    print(f"L1: {r['promoted']} aresta(s) promovidas a 'certain' em "
-          f"{r['files']} arquivo(s) [{', '.join(r['resolvers'])}] em {dt:.2f}s")
-    return 0
+    _print_l1_report(r, dt)
+    return 1 if _l1_partial(r) else 0
 
 
 def cmd_find(args) -> int:
@@ -319,7 +336,8 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("index", help="indexa/atualiza o repo")
     sp.add_argument("path", nargs="?", default=None, help="raiz do repo (equivale a --root)")
     sp.add_argument("--force", action="store_true", help="re-indexa tudo mesmo sem mudanças")
-    sp.add_argument("--l1", action="store_true", help="roda refinamento L1 após indexar")
+    sp.add_argument("--l1", "--refine", dest="l1", action="store_true",
+                    help="roda refinamento L1 após indexar")
     sp.add_argument("--scope", default=None,
                     help="indexa só esta subárvore do repo (parcial; acumula "
                          "entre execuções e é lembrado nas próximas)")

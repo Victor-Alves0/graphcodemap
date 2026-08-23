@@ -32,12 +32,15 @@ from __future__ import annotations
 
 import ast
 import re
+from bisect import bisect_left
 from dataclasses import dataclass, field
 
-from .dataflow import (ArgFlow, Flow, ReceiverEffect, ReceiverFlow, _is_tainted,
+from .dataflow import (ArgFlow, Flow, ReceiverEffect, ReceiverFlow, StaticFlow,
+                       _carries_tainted_payload, _is_tainted,
                        assign_reads_framework_source, assign_reads_named_source,
                        direct_named_source_args, direct_source_args,
-                       instance_field_name)
+                       direct_source_evidence,
+                       effective_assignment_rhs_ids, instance_field_name)
 
 # --- node types de controle de fluxo, por família de gramática ---------------
 # `body`: filhos que são CORPOS (executam condicionalmente); o que não é corpo
@@ -170,6 +173,15 @@ class Branch:
 @dataclass
 class Loop:
     body: object               # Seq
+    taken: bool | None = None
+    at_least_once: bool = False
+
+
+@dataclass
+class TryFinally:
+    """Alternative try/catch exits followed by one mandatory finally."""
+    exits: list                # list[Seq]
+    final: object              # Seq
 
 
 @dataclass
@@ -589,6 +601,10 @@ def eval_const(text: str, consts: dict):
     t = text.strip()
     while t.startswith("(") and t.endswith(")"):
         t = t[1:-1].strip()                 # `if (cond)` / `switch (x)` do C/Java
+    if t == "true":
+        return True
+    if t == "false":
+        return False
     t = t.replace("&&", " and ").replace("||", " or ")
     protegido = t.replace("==", "\0").replace("!=", "\0").replace("<=", "\0") \
                  .replace(">=", "\0")
@@ -682,9 +698,36 @@ def build_regions(body_node, key: str, source: bytes | None = None,
             if t in cfg["loop"]:
                 inner = Seq([build_regions(b, key, source, consts)
                              for b in bodies])
-                seq.items.append(Loop(inner))
+                condition = child.child_by_field_name("condition")
+                if source is None or condition is None:
+                    loop_taken = None
+                else:
+                    condition_text = source[
+                        condition.start_byte:condition.end_byte
+                    ].decode("utf-8", "replace")
+                    loop_taken = fold_condition(condition_text, consts or {})
+                seq.items.append(Loop(
+                    inner, taken=loop_taken,
+                    at_least_once=t in {
+                        "do_statement", "do_while_statement",
+                        "repeat_statement", "repeat_while_statement",
+                    },
+                ))
             else:
                 arms = [build_regions(b, key, source, consts) for b in bodies]
+                if key == "java" and t == "try_statement":
+                    finally_indexes = [
+                        index for index, body in enumerate(bodies)
+                        if body.type == "finally_clause"
+                    ]
+                    if len(finally_indexes) == 1:
+                        final_index = finally_indexes[0]
+                        exits = [arm for index, arm in enumerate(arms)
+                                 if index != final_index]
+                        if exits:
+                            seq.items.append(TryFinally(
+                                exits, arms[final_index]))
+                            continue
                 # Num `switch`, "tem 2+ braços" NÃO significa que algum sempre
                 # executa: sem `default` o seletor pode não casar com nenhum e
                 # o bloco inteiro é pulado. Quem decide é a presença do rótulo
@@ -815,6 +858,35 @@ def _kill(env: set, targets) -> set:
     return out
 
 
+@dataclass
+class _SystemPropertyState:
+    """Estado process-wide que precisa acompanhar cada caminho da CFG.
+
+    Uma entrada ausente ou ``False`` significa que aquele caminho não provou a
+    chave suja; ``True`` é may-taint.  O join é, portanto, OR por chave e no
+    wildcard dinâmico.  A cópia profunda do mapa impede um braço de observar a
+    escrita executada apenas em outro braço exclusivo.
+    """
+
+    values: dict[str, bool] = field(default_factory=dict)
+    wildcard: bool = False
+
+    def clone(self) -> "_SystemPropertyState":
+        return _SystemPropertyState(dict(self.values), self.wildcard)
+
+    @classmethod
+    def join(cls, states) -> "_SystemPropertyState":
+        states = tuple(states)
+        if not states:
+            return cls()
+        keys = set().union(*(state.values for state in states))
+        return cls(
+            {key: any(state.values.get(key, False) for state in states)
+             for key in keys},
+            any(state.wildcard for state in states),
+        )
+
+
 class _Eval:
     """Interpreta a CFG estruturada propagando o ambiente sujo."""
 
@@ -832,10 +904,60 @@ class _Eval:
         self.receiver_effects = receiver_effects or {}
         self.flow = sinks_out
         self.facts = facts
+        self.lambda_units = {
+            unit.binding: unit for unit in getattr(facts, "lambda_units", ())
+        }
+        self.system_property_state = _SystemPropertyState()
         # todos os fatos ordenados por posição, para o casamento por span
         self.assigns = sorted(facts.assigns, key=lambda a: (a.span or (0, 0))[0])
         self.calls = sorted(facts.calls, key=lambda c: (c.span or (0, 0))[0])
         self.returns = sorted(facts.returns, key=lambda r: (r.span or (0, 0))[0])
+        # Region evaluation used to rescan every fact for every statement span.
+        # Besides making ordinary functions quadratic, that turned a loop which
+        # needs N lattice rounds into an O(N^3) operation.  Keep one immutable
+        # start-ordered event index per evaluation and cache the exact event
+        # slice for regions revisited by a fixpoint.
+        self._events_by_start = sorted(
+            (
+                ((fact.span or (-1, -1))[0],
+                 (fact.span or (-1, -1))[1], kind, fact)
+                for kind, facts_for_kind in (
+                    (0, self.assigns), (1, self.calls), (2, self.returns)
+                )
+                for fact in facts_for_kind
+                if fact.span is not None
+            ),
+            key=lambda event: event[0],
+        )
+        self._event_starts = [event[0] for event in self._events_by_start]
+        self._span_events: dict[tuple[int, int], tuple] = {}
+        self._system_property_getters = tuple(
+            call for call in self.calls
+            if call.qualified == "System.getProperty" and call.span is not None
+        )
+        self.serialization_backing: dict[str, str] = {}
+        serialization_wrappers = {
+            "ObjectOutputStream", "ByteArrayInputStream", "ObjectInputStream",
+        }
+        for assignment in facts.assigns:
+            if (assignment.rhs_call not in serialization_wrappers
+                    or len(assignment.targets) != 1 or assignment.span is None):
+                continue
+            target = next(iter(assignment.targets))
+            if len(target) != 1:
+                continue
+            calls = [
+                call for call in facts.calls
+                if call.callee == assignment.rhs_call and call.span
+                and assignment.span[0] <= call.span[0]
+                and call.span[1] <= assignment.span[1]
+            ]
+            if len(calls) != 1:
+                continue
+            paths = dict(calls[0].args).get(0, set())
+            names = {path[0] for path in paths if len(path) == 1}
+            if len(names) == 1:
+                self.serialization_backing[target[0]] = next(iter(names))
 
     # -- transferências --
 
@@ -872,20 +994,26 @@ class _Eval:
         # `x = f(sujo)` só suja `x` se `f` DEVOLVER o que recebeu. A pergunta
         # só é feita quando o L1 resolveu a chamada: por NOME o alvo pode ser
         # outro, e matar sujeira do alvo errado apaga vulnerabilidade real.
+        summarized = a.span in self.nonprop
+        summary_deps = (self.nonprop.get(a.span)
+                        if isinstance(self.nonprop, dict) else None)
         sanitized = ((a.rhs_call is not None and a.rhs_call in self.sanitizers)
-                     or a.span in self.nonprop)
+                     or (summarized and summary_deps is None))
         # uma FONTE gera sujeira no ponto do programa. Sem isto o motor mataria
         # a própria semente da varredura: `x = input()` tem RHS sem ids, então
         # cairia no kill — o bug que a bateria de recall pegou.
+        system_property_dirty = self._system_property_assignment_dirty(a)
         from_source = not sanitized and (
             assign_reads_named_source(
                 a, self.sources, self.sanitizers,
                 self.trusted_source_literals)
             # fonte de FRAMEWORK: `x = request.POST.get(..)` / `x = req.query.q`
             or assign_reads_framework_source(a, self.sanitizers)
-            or a.span in self.source_spans)
+            or a.span in self.source_spans
+            or system_property_dirty)
         targets = self._expanded_targets(a.targets)
-        rhs_hit = (not sanitized) and any(_is_tainted(p, env) for p in a.rhs_ids)
+        rhs_ids = effective_assignment_rhs_ids(self.facts, a, self.nonprop)
+        rhs_hit = (not sanitized) and any(_is_tainted(p, env) for p in rhs_ids)
         aug_hit = a.is_aug and any(_is_tainted(t, env) for t in targets)
         if from_source or rhs_hit or aug_hit:
             return env | targets                        # gen
@@ -901,16 +1029,29 @@ class _Eval:
         direto.update(dict(direct_named_source_args(
             c, self.sources, self.sanitizers,
             self.trusted_source_literals)))
+        evidence = dict(direct_source_evidence(
+            c, self.sources, self.sanitizers,
+            self.trusted_source_literals))
         for idx, ids in c.args:
-            hit = [p for p in ids if _is_tainted(p, env)]
+            hit = [p for p in ids if _carries_tainted_payload(p, env)]
             if hit:
+                candidates = tuple(".".join(path) for path in sorted(hit))
                 self.flow.arg_flows.append(
-                    ArgFlow(c.callee, idx, c.line, ".".join(sorted(hit)[0]),
-                            c.qualified, direto.get(idx), c.span))
+                    ArgFlow(c.callee, idx, c.line, candidates[0],
+                            c.qualified, direto.get(idx), c.span,
+                            c.receiver_type, c.col, evidence.get(idx),
+                            candidates))
             elif idx in direto:
                 self.flow.arg_flows.append(
                     ArgFlow(c.callee, idx, c.line, direto[idx], c.qualified,
-                            direto[idx], c.span))
+                            direto[idx], c.span, c.receiver_type, c.col,
+                            evidence.get(idx), (direto[idx],)))
+            elif self._system_property_argument_dirty(c, idx):
+                self.flow.arg_flows.append(ArgFlow(
+                    c.callee, idx, c.line, "System.getProperty",
+                    c.qualified, "System.getProperty", c.span,
+                    c.receiver_type, c.col, None,
+                    ("System.getProperty",)))
         if c.receiver_kind in {"implicit_this", "explicit_this"}:
             fields = frozenset(
                 name for path in env
@@ -918,9 +1059,56 @@ class _Eval:
             )
             if fields:
                 self.flow.receiver_flows.append(ReceiverFlow(
-                    c.callee, c.line, fields, c.qualified, c.span))
+                    c.callee, c.line, fields, c.qualified, c.span, c.col))
+        static_fields = frozenset(
+            path[-1] for path in env
+            if path and path[0] not in self.facts.local_names
+            and path[0] != "this"
+            and instance_field_name(self.facts, path) is None
+        )
+        if static_fields:
+            self.flow.static_flows.append(StaticFlow(
+                c.callee, c.line, static_fields, c.qualified, c.span, c.col))
 
     def _apply_receiver_effect(self, c, env: set) -> set:
+        if c.qualified == "System.setProperty":
+            key = self._literal_call_arg(c, 0)
+            direct = dict(direct_source_args(c, self.sanitizers))
+            direct.update(dict(direct_named_source_args(
+                c, self.sources, self.sanitizers,
+                self.trusted_source_literals)))
+            value_paths = dict(c.args).get(1, set())
+            dirty = (1 in direct or any(
+                _carries_tainted_payload(path, env) for path in value_paths))
+            if key is None:
+                if dirty:
+                    self.system_property_state.wildcard = True
+            else:
+                self.system_property_state.values[key] = dirty
+        elif c.qualified == "System.clearProperty":
+            key = self._literal_call_arg(c, 0)
+            if key is not None:
+                self.system_property_state.values[key] = False
+        receiver = (c.qualified.rsplit(".", 1)[0]
+                    if c.qualified and "." in c.qualified else None)
+        if receiver and c.callee == "writeObject":
+            dirty = any(
+                _carries_tainted_payload(path, env)
+                for _index, paths in c.args for path in paths
+            )
+            if dirty:
+                current = receiver
+                seen = set()
+                while current and current not in seen:
+                    seen.add(current)
+                    env = env | {(current,)}
+                    current = self.serialization_backing.get(current)
+        elif receiver and c.callee == "reset":
+            targets = {(receiver,)}
+            backing = self.serialization_backing.get(receiver)
+            if backing:
+                targets.add((backing,))
+            env = _kill(env, targets)
         effect: ReceiverEffect | None = self.receiver_effects.get(c.span)
         if effect is None:
             return env
@@ -944,6 +1132,94 @@ class _Eval:
         for field_name in dirty:
             env |= self._field_aliases(field_name)
         return env
+
+    @staticmethod
+    def _literal_call_arg(c, index: int) -> str | None:
+        raw = c.arg_values.get(index, "").strip()
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {'"', "'"}:
+            return raw[1:-1]
+        return None
+
+    def _property_is_dirty(self, key: str | None) -> bool:
+        if key is None:
+            return self.system_property_state.wildcard or any(
+                self.system_property_state.values.values())
+        return (self.system_property_state.wildcard
+                or self.system_property_state.values.get(key, False))
+
+    def _system_property_assignment_dirty(self, assignment) -> bool:
+        if (assignment.span is None
+                or not (self.system_property_state.wildcard
+                        or any(self.system_property_state.values.values()))):
+            return False
+        calls = [
+            call for call in self._system_property_getters
+            if assignment.span[0] <= call.span[0]
+            and call.span[1] <= assignment.span[1]
+        ]
+        return (len(calls) == 1
+                and self._property_is_dirty(
+                    self._literal_call_arg(calls[0], 0)))
+
+    def _system_property_argument_dirty(self, call, index: int) -> bool:
+        if not (self.system_property_state.wildcard
+                or any(self.system_property_state.values.values())):
+            return False
+        for nested in call.arg_calls.get(index, ()):
+            if nested.qualified != "System.getProperty":
+                continue
+            literals = dict(nested.arg_literals)
+            if self._property_is_dirty(literals.get(0)):
+                return True
+        return False
+
+    def _invoke_lambda(self, c, env: set) -> set:
+        """Execute a proven local Java lambda at its invocation event."""
+        if not self.lambda_units:
+            return env
+        receiver = (c.qualified.rsplit(".", 1)[0]
+                    if c.qualified and "." in c.qualified else None)
+        unit = self.lambda_units.get(receiver)
+        if unit is None:
+            return env
+        args = dict(c.args)
+        if set(args) != set(range(len(unit.params))):
+            return env
+
+        nested_env = set(env)
+        direct = dict(direct_source_args(c, self.sanitizers))
+        direct.update(dict(direct_named_source_args(
+            c, self.sources, self.sanitizers,
+            self.trusted_source_literals)))
+        for index, param in enumerate(unit.params):
+            nested_env = _kill(nested_env, {(param,)})
+            if (index in direct or any(
+                    _carries_tainted_payload(path, env)
+                    for path in args[index])):
+                nested_env.add((param,))
+        # The binding itself is an implementation detail, not a capture.
+        nested_env = _kill(nested_env, {(unit.binding,)})
+        nested = analyze_flow(
+            unit.facts, nested_env, self.sanitizers, self.sources,
+            self.nonprop, self.source_spans, self.receiver_effects,
+            self.trusted_source_literals,
+        )
+        if nested is None:
+            return env
+        self.flow.arg_flows.extend(nested.arg_flows)
+        self.flow.receiver_flows.extend(nested.receiver_flows)
+        self.flow.static_flows.extend(nested.static_flows)
+        self.flow.reaches_return |= nested.reaches_return
+        self.flow.proven_sanitized_return |= nested.proven_sanitized_return
+
+        # Java lambda parameters/locals do not escape their invocation.  Keep
+        # only captured or field/global paths in the caller environment.
+        local_roots = set(unit.facts.local_names) | set(unit.params)
+        persistent = {
+            path for path in nested.exit_taint
+            if path and path[0] not in local_roots
+        }
+        return env | persistent
 
     def _clear_validated_file_constructors(
             self, candidate: tuple[str, ...], base: tuple[str, ...],
@@ -1038,34 +1314,37 @@ class _Eval:
         if any(_is_tainted(p, env) for p in r.ids):
             self.flow.reaches_return = True
 
-    def _in(self, fact, start: int, end: int) -> bool:
-        s = (fact.span or (-1, -1))[0]
-        return start <= s < end
+    def _events_for_span(self, start: int, end: int) -> tuple:
+        key = (start, end)
+        cached = self._span_events.get(key)
+        if cached is not None:
+            return cached
+        lo = bisect_left(self._event_starts, start)
+        hi = bisect_left(self._event_starts, end, lo)
+        events = [
+            (event_end, kind, fact)
+            for _event_start, event_end, kind, fact
+            in self._events_by_start[lo:hi]
+        ]
+        # Preserve the evaluator's established semantics: at the same ending
+        # position a call runs before the assignment receiving its result.
+        events.sort(key=lambda event: (event[0], -event[1]))
+        result = tuple(events)
+        self._span_events[key] = result
+        return result
 
     # -- regiões --
 
     def span(self, sp: Span, env: set, record: bool) -> set:
         """Fatos do trecho, em ordem. `record` desliga o registro de achados nas
         iterações intermediárias do fixpoint de laço (evita duplicar)."""
-        events = []
-        for a in self.assigns:
-            if self._in(a, sp.start, sp.end):
-                events.append(((a.span or (0, 0))[1], 0, a))
-        for c in self.calls:
-            if self._in(c, sp.start, sp.end):
-                events.append(((c.span or (0, 0))[1], 1, c))
-        for r in self.returns:
-            if self._in(r, sp.start, sp.end):
-                events.append(((r.span or (0, 0))[1], 2, r))
-        # ordem de código; num mesmo ponto a chamada é avaliada ANTES do assign
-        # completar (`x = f(sujo)` lê o argumento com o ambiente de entrada)
-        events.sort(key=lambda e: (e[0], -e[1]))
-        for _pos, kind, fact in events:
+        for _pos, kind, fact in self._events_for_span(sp.start, sp.end):
             if kind == 0:
                 env = self._apply_assign(fact, env)
             elif kind == 1:
                 if record:
                     self._record_call(fact, env)
+                env = self._invoke_lambda(fact, env)
                 env = self._apply_receiver_effect(fact, env)
             else:
                 if record:
@@ -1088,11 +1367,15 @@ class _Eval:
                 return self.run(region.arms[region.taken], set(env), record)
             incoming = set(env)
             out = set() if region.has_else else set(env)   # sem else: pode pular
+            incoming_properties = self.system_property_state.clone()
+            property_outputs = ([] if region.has_else
+                                else [incoming_properties.clone()])
             arm_sanitizes = {
                 index: (candidate, base)
                 for index, candidate, base in region.arm_sanitizes
             }
             for index, arm in enumerate(region.arms):
+                self.system_property_state = incoming_properties.clone()
                 arm_env = set(env)
                 if index in arm_sanitizes:
                     candidate, base = arm_sanitizes[index]
@@ -1101,6 +1384,9 @@ class _Eval:
                         if _is_tainted(candidate, env):
                             self.flow.proven_sanitized_return = True
                 out |= self.run(arm, arm_env, record)
+                property_outputs.append(self.system_property_state.clone())
+            self.system_property_state = _SystemPropertyState.join(
+                property_outputs)
             for candidate, base, guard_start in region.post_sanitizes:
                 # A user-controlled base makes containment meaningless. Check
                 # the environment entering the guard, before the rejecting arm.
@@ -1110,17 +1396,39 @@ class _Eval:
                     out = _kill(out, {candidate})
             return out
         if isinstance(region, Loop):
+            if region.taken is False and not region.at_least_once:
+                return set(env)
             # 0..N iterações: o ambiente de entrada entra na união; itera até
             # estabilizar (sem registrar achados nas passadas de convergência)
+            incoming_properties = self.system_property_state.clone()
             cur = set(env)
-            for _ in range(8):
+            cur_properties = incoming_properties.clone()
+            while True:
+                self.system_property_state = cur_properties.clone()
                 nxt = cur | self.run(region.body, set(cur), record=False)
-                if nxt == cur:
+                nxt_properties = _SystemPropertyState.join((
+                    incoming_properties, self.system_property_state,
+                ))
+                if nxt == cur and nxt_properties == cur_properties:
                     break
                 cur = nxt
+                cur_properties = nxt_properties
             if record:                       # passada final: agora registra
+                self.system_property_state = cur_properties.clone()
                 self.run(region.body, set(cur), record=True)
+            self.system_property_state = cur_properties
             return cur
+        if isinstance(region, TryFinally):
+            incoming_properties = self.system_property_state.clone()
+            joined = set()
+            property_outputs = []
+            for exit_region in region.exits:
+                self.system_property_state = incoming_properties.clone()
+                joined |= self.run(exit_region, set(env), record)
+                property_outputs.append(self.system_property_state.clone())
+            self.system_property_state = _SystemPropertyState.join(
+                property_outputs or (incoming_properties,))
+            return self.run(region.final, joined, record)
         return env
 
 
@@ -1151,7 +1459,9 @@ def analyze_flow(facts, tainted_init, sanitizers=frozenset(), sources=frozenset(
     # dedupe: o fixpoint de laço pode registrar o mesmo arg_flow 2x
     seen, uniq = set(), []
     for af in flow.arg_flows:
-        key = (af.callee, af.arg_index, af.line)
+        key = (af.callee, af.arg_index, af.line, af.col, af.span,
+               af.qualified, af.receiver_type, af.via, af.via_candidates,
+               af.source, af.source_evidence)
         if key not in seen:
             seen.add(key)
             uniq.append(af)
@@ -1159,9 +1469,18 @@ def analyze_flow(facts, tainted_init, sanitizers=frozenset(), sources=frozenset(
     seen_receiver, receiver_uniq = set(), []
     for receiver_flow in flow.receiver_flows:
         receiver_key = (receiver_flow.callee, receiver_flow.line,
+                        receiver_flow.col, receiver_flow.span,
                         receiver_flow.fields)
         if receiver_key not in seen_receiver:
             seen_receiver.add(receiver_key)
             receiver_uniq.append(receiver_flow)
     flow.receiver_flows = receiver_uniq
+    seen_static, static_uniq = set(), []
+    for static_flow in flow.static_flows:
+        key = (static_flow.callee, static_flow.line, static_flow.col,
+               static_flow.span, static_flow.fields)
+        if key not in seen_static:
+            seen_static.add(key)
+            static_uniq.append(static_flow)
+    flow.static_flows = static_uniq
     return flow

@@ -8,16 +8,34 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ### Added / Changed — consolidação de segurança e entrega
 
+- **Round 27 fecha o perfil semântico Java (`INDEXER_VERSION=35`):** OWASP em
+  **902/0/0/796**, Juliet CWE-23 em **444/0/0/444** e os três pares CVE com
+  **3/3 vulneráveis detectadas e 3/3 fixes claros**. OpenRefine agora preserva
+  a origem exata `getParameterValues("lang")` da linha 83 e fecha 1 → 0; os
+  resultados FitNesse 2 → 0 e openHAB 3 → 0 foram preservados.
+- **Contratos antes abertos foram promovidos a testes comuns:** identidade
+  same-line, escopo lexical, `finally`, convergência de loop, lambdas
+  invocadas/deferred, sanitizers contextuais, estado global e proveniência de
+  fontes concorrentes. O gate final do projeto fecha em **1.778 passed,
+  27 skipped**, sem xfail.
+- **Performance do perfil:** análise final pré-report em 224,707 s no OWASP
+  e 19,039 s no Juliet. Fresh indexing + JDTLS levou 23m23s e 15m12s,
+  respectivamente.
+- **Overlay JDTLS elegível.** O falso handshake pós-shutdown foi corrigido e o
+  Juliet foi reaberto com `src` e classpath oficiais: 732/732 arquivos,
+  **4.408** promoções `certain`, `status=complete`, zero warnings/errors.
+  Comparações CodeQL permanecem limitadas aos corpora e suites versionados,
+  sem alegação de superioridade universal.
+
 - **Round 26 verificado: 1.576 passed, 25 skipped, 1 xfailed em 158,60 s, com
   82% de cobertura total branch-aware.** O snapshot
   externo usa JDTLS 1.60.0/JDK 21, promove 8.838 arestas sem erro e registra
   OWASP em 868/92/34/704 (90,4% precisão, 96,2% recall, 11,6% FPR,
   score +0,847), com 1.942 findings e 378 wrong-category. Ambiente, consumo e
   SHA-256 estão no
-  [manifest incluído/versionado nesta rodada](evals/round26-external-gates-manifest.json),
-  que será adicionado com o commit.
-- **Holdout independente NIST Juliet CWE-23: recall 27,0% → 54,5% → 69,4%,
-  mantendo precisão 100% e FPR 0%.** O resultado atual é
+  [manifest incluído/versionado nesta rodada](evals/round26-external-gates-manifest.json).
+- **Histórico Round 26 — holdout independente NIST Juliet CWE-23: recall 27,0% → 54,5% → 69,4%,
+  mantendo precisão 100% e FPR 0%.** O resultado daquela rodada era
   308 TP / 0 FP / 136 FN / 444 TN. Fontes Java de leitura são reconhecidas pelo
   tipo declarado do receptor; fontes aninhadas respeitam sanitizers e wrappers
   em receptores construídos são resolvidos pela classe concreta.
@@ -37,9 +55,9 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
   `default` e `security-extended` foram medidas no mesmo OWASP e em uma base
   Juliet compilada manualmente, com versões, checksums e limitações publicados
   em `docs/SECURITY_BENCHMARK.md`.
-- **Pares reais vulnerável/corrigido para Java.** OpenRefine, FitNesse e
+- **Histórico Round 26 — pares reais vulnerável/corrigido para Java.** OpenRefine, FitNesse e
   openHAB/CometVisu agora têm commits e oráculos pinados; misses e alertas que
-  sobrevivem ao patch são registrados em vez de descartados. O estado atual
+  sobrevivem ao patch são registrados em vez de descartados. Naquela rodada o estado
   detecta 3/3 vulnerabilidades e distingue 2/3 patches: FitNesse 2 → 0,
   openHAB 3 → 0 e OpenRefine permanece 2 → 3.
 - **Gate de release completo.** Ruff, mypy progressivo, branch coverage >=75%,
@@ -49,7 +67,7 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
   qualificada cross-file, evitando declarar `rust-analyzer` pronto após resolver
   apenas uma chamada local.
 
-Residuais declarados da rodada: OpenRefine, lambdas Java invocadas, fan-out e
+Residuais declarados na Round 26 (histórico, superado onde indicado acima): OpenRefine, lambdas Java invocadas, fan-out e
 hierarquias de tipo mais largos, 34 FN/92 FP no OWASP e propagação global de
 `System.setProperty("user.dir", value)`, mantida como `xfail` estrito.
 

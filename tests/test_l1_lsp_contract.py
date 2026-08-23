@@ -114,6 +114,89 @@ def test_request_has_total_deadline_even_with_progress_messages(tmp_path,
     assert killed == [True]
 
 
+def test_request_is_capped_by_outer_readiness_deadline(tmp_path, monkeypatch):
+    r = _bare_resolver(tmp_path)
+    r._seq = 0
+    r.io_timeout = 30.0
+    r._active_deadline = 0.25
+    r.proc = type("Proc", (), {"poll": lambda self: None})()
+    r._write = lambda *_a: None
+    waits = []
+
+    def read(timeout):
+        waits.append(timeout)
+        return {"jsonrpc": "2.0", "method": "$/progress"}
+
+    r._read = read
+    killed = []
+    r._kill = lambda: killed.append(True)
+    ticks = iter((0.0, 0.1, 0.3))
+    monkeypatch.setattr(lsp_base.time, "monotonic", lambda: next(ticks))
+
+    assert r._request("example", {}) is None
+    assert len(waits) == 1 and abs(waits[0] - 0.15) < 1e-9
+    assert killed == [True]
+
+
+def test_warmup_uses_one_monotonic_deadline_and_caps_sleep(tmp_path,
+                                                          monkeypatch):
+    r = _bare_resolver(tmp_path)
+    r.ready_timeout = 3.0
+    r._ready = False
+    r.proc = type("Proc", (), {"poll": lambda self: None})()
+    r._lines = {"Main.java": ["service.run();"]}
+    r._definition = lambda *_a: []
+    sleeps = []
+    ticks = iter((10.0, 10.0, 12.6, 13.0))
+    monkeypatch.setattr(lsp_base.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(lsp_base.time, "sleep", sleeps.append)
+
+    r._warmup("Main.java", [{"line": 1, "col": 0,
+                              "dst_name": "service.run"}])
+
+    assert r._ready and r._warmup_timed_out
+    assert len(sleeps) == 1
+    assert abs(sleeps[0] - 0.4) < 1e-9
+    assert r._active_deadline is None
+
+
+def test_warmup_aborts_before_request_when_process_exited(tmp_path):
+    r = _bare_resolver(tmp_path)
+    r.ready_timeout = 10.0
+    r._ready = False
+    r.proc = type("Proc", (), {"poll": lambda self: 1})()
+    r._lines = {"Main.java": ["run();"]}
+    r._definition = lambda *_a: (_ for _ in ()).throw(
+        AssertionError("não deve consultar processo encerrado"))
+
+    r._warmup("Main.java", [{"line": 1, "col": 0, "dst_name": "run"}])
+    assert r._ready and r._warmup_timed_out
+
+
+def test_close_uses_short_shutdown_budget(tmp_path):
+    r = _bare_resolver(tmp_path)
+    r.shutdown_timeout = 1.5
+    requests = []
+    notifications = []
+
+    class Proc:
+        def poll(self):
+            return None
+
+        def wait(self, timeout):
+            assert 0 <= timeout <= 1.5
+            return 0
+
+    r.proc = Proc()
+    r._request = lambda *args, **kwargs: requests.append((args, kwargs))
+    r._notify = lambda *args: notifications.append(args)
+    r.close()
+
+    assert requests[0][0][:2] == ("shutdown", None)
+    assert requests[0][1]["timeout"] == 1.5
+    assert notifications == [("exit", None)]
+
+
 def test_available_resolvers_isolates_discovery_failure(monkeypatch):
     import codegraph.l1 as l1
 
@@ -166,6 +249,8 @@ def test_refine_isolates_resolver_start_failure(tmp_path, monkeypatch):
     assert stats["servers"] == 2
     assert stats["files"] == 1
     assert stats["roots"] == 1
+    assert any("spawn failed" in warning for warning in stats["warnings"])
+    assert stats["runs"][0]["errors"] == ["OSError: spawn failed"]
 
 
 def test_jdtls_removes_workspace_when_spawn_fails(tmp_path, monkeypatch):

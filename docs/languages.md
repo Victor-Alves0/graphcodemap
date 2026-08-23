@@ -89,23 +89,29 @@ Java's `jdtls` is notable as the first **launcher-based** server (it runs on the
 JVM via an Eclipse launcher, `java -jar <equinox-launcher> …`, not a bare `PATH`
 binary) — proving the client generalizes beyond a single executable.
 
-Measured in the Round 26 OWASP Maven snapshot (2,770 indexed files), JDTLS
-1.60.0 on Oracle JDK 21.0.11 promoted **8,838** call edges with zero resolver
-errors. GraphCodeMap
+Measured in the historical Round 26 OWASP Maven snapshot (2,770 indexed files),
+JDTLS 1.60.0 on Oracle JDK 21.0.11 promoted **8,838** call edges with zero
+resolver errors. GraphCodeMap
 uses those Java promotions for return pruning only when the body supplies an
 independent proof: folded local control flow, or locally-created List/Map
 operations with constant indices/keys. Enhanced-for now propagates iterable
 taint to its element. Alias, escape, dynamic key, uncertain branch/loop,
 virtual/interface dispatch and reflection remain conservative.
 
-The independent Juliet Java 1.3 CWE-23 holdout measures 100% precision and
-69.4% recall (308 / 0 / 136 / 444), up from 54.5% in Round 25 without adding an
-FP. Round 26 tightened L0 overload/receiver ownership, L1 line+column identity
-and encoding conversion, incremental L1 provenance, and receiver heap effects.
-It also defers uninvoked lambdas and restricts virtual kills to proven closed
-dispatch. Invoked lambdas, wider fan-out/type hierarchies and global
-`System.setProperty` state remain explicit gaps; Gradle remains the build-system
-validation follow-up after the real Maven/JDTLS run.
+The Round 27 Java profile measures **902/0/0/796** on OWASP and
+**444/0/0/444** on the independent Juliet Java 1.3 CWE-23 holdout. Its focused
+contracts include exact same-line identity, lexical scopes,
+ordered `finally`, finite loop convergence, invoked/deferred lambdas,
+context-compatible sanitizers, process property state and exact source
+provenance. All three pinned vulnerable revisions are detected and all three
+fixes clear.
+
+The first fresh run exposed a false post-shutdown handshake failure and Juliet
+project-root diagnostics. Both were fixed rather than suppressed: the corrected
+overlay used source root `src`, the four official bundled JARs and the official
+`antbuild` exclusion, then completed 732/732 files with 4,408 `certain`
+promotions and zero warnings/errors. Arbitrary JVM object graphs, reflection,
+concurrency and broader framework evidence remain conservative boundaries.
 
 ### Activating a resolver
 

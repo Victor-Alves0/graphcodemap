@@ -76,11 +76,21 @@ def test_callback_parameter_is_not_promoted_to_enclosing_function(tmp_path):
     g.close()
 
 
-def test_refine_is_idempotent(cg):
+def test_refine_revalidates_without_accumulating_clones(cg):
     first = _refine(cg)
+    before = cg.indexer.conn.execute(
+        "SELECT kind, src, dst, dst_name, file_id, line, col, confidence, resolver "
+        "FROM edges ORDER BY kind, src, dst, dst_name, file_id, line, col"
+    ).fetchall()
     second = _refine(cg)
+    after = cg.indexer.conn.execute(
+        "SELECT kind, src, dst, dst_name, file_id, line, col, confidence, resolver "
+        "FROM edges ORDER BY kind, src, dst, dst_name, file_id, line, col"
+    ).fetchall()
     assert first["promoted"] > 0
-    assert second["promoted"] == 0  # arestas l1 não são reprocessadas
+    assert second["revalidated"] > 0
+    assert second["promoted"] == first["promoted"]
+    assert [tuple(row) for row in after] == [tuple(row) for row in before]
 
 
 def test_watcher_drain_refines_changed_file(cg, repo):

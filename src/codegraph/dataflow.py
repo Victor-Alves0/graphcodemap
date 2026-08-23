@@ -22,6 +22,7 @@ um primeiro domínio de estado de campos no mesmo receptor.
 from __future__ import annotations
 
 import re
+from bisect import bisect_left
 from dataclasses import dataclass, field, replace
 
 # Config de extração de fatos por linguagem. As irregularidades das gramáticas
@@ -377,6 +378,32 @@ def direct_named_source_args(c, sources, sanitizers=frozenset(),
                 break
 
 
+def direct_source_evidence(c, sources, sanitizers=frozenset(),
+                           trusted_source_literals=()):
+    """Reporting provenance for sources nested directly in call arguments.
+
+    Taint decisions remain in the existing direct-source helpers. Framework
+    access paths do not retain their own AST node yet, so they conservatively
+    inherit the containing call site and never acquire literal evidence.
+    """
+    framework = dict(direct_source_args(c, sanitizers))
+    named: dict[int, SourceEvidence] = {}
+    for index, calls in c.arg_calls.items():
+        for call in calls:
+            label = _nested_named_source(
+                call, sources, sanitizers, trusted_source_literals)
+            if label is not None:
+                named[index] = SourceEvidence(
+                    label, call.line, call.col, call.span, call.arg_literals)
+                break
+    for index, label in framework.items():
+        yield index, named.get(index, SourceEvidence(
+            label, c.line, c.col, c.span))
+    for index, evidence in named.items():
+        if index not in framework:
+            yield index, evidence
+
+
 def uses_flow_sensitive(facts, lang: str | None) -> bool:
     """O motor FLOW-SENSITIVE roda mesmo para estes fatos?
 
@@ -406,6 +433,35 @@ def analyze(facts, tainted, sanitizers=frozenset(), lang: str | None = None,
             return flow
     return analyze_facts(facts, tainted, sanitizers, nonprop, source_spans,
                          sources, trusted_source_literals)
+
+
+def effective_assignment_rhs_ids(facts: FnFacts, assignment: Assign,
+                                 nonprop) -> set:
+    """Filter a resolved call RHS through its parametric return summary."""
+    if not isinstance(nonprop, dict) or assignment.span not in nonprop:
+        return assignment.rhs_ids
+    dependencies = nonprop[assignment.span]
+    candidates = [
+        call for call in facts.calls
+        if call.span and assignment.span
+        and assignment.span[0] <= call.span[0]
+        and call.span[1] <= assignment.span[1]
+        and call.callee == assignment.rhs_call
+    ]
+    if not candidates:
+        return assignment.rhs_ids
+    # The outer/top RHS call has the widest span. Ambiguous equal spans fail
+    # closed by retaining the original unfiltered identifiers.
+    width = max(call.span[1] - call.span[0] for call in candidates)
+    widest = [call for call in candidates
+              if call.span[1] - call.span[0] == width]
+    if len(widest) != 1:
+        return assignment.rhs_ids
+    args = dict(widest[0].args)
+    if any(index not in args for index in dependencies):
+        return assignment.rhs_ids
+    return set().union(*(args[index] for index in dependencies)) \
+        if dependencies else set()
 
 
 def _build_regions(body_node, family: str, source=None, assigns=None):
@@ -659,6 +715,12 @@ class CallSite:
     # Java receiver identity used by the first heap-sensitive boundary.  Only
     # literal/implicit ``this`` is safe to transport instance-field state.
     receiver_kind: str = "unknown"
+    # Declared receiver type when Java syntax resolves it without guessing.
+    # This keeps generic method names (notably ``command``) out of the global
+    # sink catalog while still recognizing the concrete JDK API.
+    receiver_type: str | None = None
+    # Zero-based callee column. Line alone is not a call-site identity.
+    col: int | None = None
 
 
 @dataclass
@@ -677,6 +739,26 @@ class NestedCall:
     # Exact decoded string literals by argument index. Expressions and escaped
     # literals stay absent, so a trust policy is fail-closed.
     arg_literals: tuple[tuple[int, str], ...] = ()
+    line: int = 0
+    col: int | None = None
+    span: tuple[int, int] | None = None
+
+
+@dataclass(frozen=True)
+class SourceEvidence:
+    """Exact, non-semantic provenance for one configured source call."""
+    label: str
+    line: int
+    col: int | None = None
+    span: tuple[int, int] | None = None
+    arg_literals: tuple[tuple[int, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class SourceSite:
+    """A taint seed and the source call that created its value."""
+    path: tuple[str, ...]
+    evidence: SourceEvidence
 
 
 @dataclass
@@ -685,6 +767,13 @@ class ReturnExpr:
     top_call: str | None
     span: tuple[int, int] | None = None
     nested_calls: list[NestedCall] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class JavaLambdaUnit:
+    binding: str
+    params: tuple[str, ...]
+    facts: object
 
 
 @dataclass
@@ -700,6 +789,9 @@ class FnFacts:
     # shadow an unqualified field access inside this method.
     instance_fields: frozenset[str] = frozenset()
     local_names: frozenset[str] = frozenset()
+    # Deferred Java lambdas proven local and non-escaping.  They are evaluated
+    # only at a matching invocation event by the structured flow engine.
+    lambda_units: tuple = ()
 
 
 @dataclass
@@ -719,6 +811,13 @@ class ArgFlow:
     # value is subsequently proven contained.  A line number is insufficient:
     # Java permits multiple independent expressions on one physical line.
     span: tuple[int, int] | None = None
+    receiver_type: str | None = None
+    col: int | None = None
+    source_evidence: SourceEvidence | None = None
+    # Every tainted access path read by the argument. ``via`` remains the
+    # legacy deterministic representative, while provenance consumers can
+    # select the candidate that actually corresponds to a known source seed.
+    via_candidates: tuple[str, ...] = ()
 
 
 @dataclass
@@ -729,6 +828,18 @@ class ReceiverFlow:
     fields: frozenset[str]
     qualified: str | None = None
     span: tuple[int, int] | None = None
+    col: int | None = None
+
+
+@dataclass
+class StaticFlow:
+    """Dirty non-local Java fields visible at an ordered call site."""
+    callee: str
+    line: int
+    fields: frozenset[str]
+    qualified: str | None = None
+    span: tuple[int, int] | None = None
+    col: int | None = None
 
 
 @dataclass(frozen=True)
@@ -777,6 +888,7 @@ def merge_receiver_effects(effects) -> ReceiverEffect:
 class Flow:
     arg_flows: list[ArgFlow] = field(default_factory=list)
     receiver_flows: list[ReceiverFlow] = field(default_factory=list)
+    static_flows: list[StaticFlow] = field(default_factory=list)
     reaches_return: bool = False
     # Internal post-state used to derive composable receiver summaries.
     exit_taint: frozenset[tuple[str, ...]] = frozenset()
@@ -786,7 +898,528 @@ class Flow:
     proven_sanitized_return: bool = False
 
 
-_JAVA_LIST_CTOR = re.compile(r"^(?:ArrayList|LinkedList)(?:<.*>)?$")
+def proves_sanitized_return(
+        facts: FnFacts, sanitizers=frozenset()) -> bool:
+    """Fail-closed proof that every observable return is sanitized.
+
+    This complements the transfer engine for the common helper shape
+    ``safe = encode(input); return safe``.  It intentionally accepts only
+    single-definition local aliases and direct sanitizer calls.  Branch joins,
+    augmented writes, fields, containers and unknown calls remain unproven.
+    """
+    if not facts.returns:
+        return False
+    by_target: dict[str, list[Assign]] = {}
+    for assignment in facts.assigns:
+        if assignment.is_aug or len(assignment.targets) != 1:
+            continue
+        target = next(iter(assignment.targets))
+        if len(target) == 1:
+            by_target.setdefault(target[0], []).append(assignment)
+
+    memo: dict[str, bool] = {}
+    building: set[str] = set()
+
+    def safe_local(name: str) -> bool:
+        if name in memo:
+            return memo[name]
+        if name in building:
+            return False
+        assignments = by_target.get(name, [])
+        if len(assignments) != 1:
+            memo[name] = False
+            return False
+        building.add(name)
+        assignment = assignments[0]
+        if assignment.rhs_call in sanitizers:
+            result = True
+        elif (assignment.rhs_call is None
+              and len(assignment.rhs_ids) == 1):
+            path = next(iter(assignment.rhs_ids))
+            result = len(path) == 1 and safe_local(path[0])
+        else:
+            result = False
+        building.discard(name)
+        memo[name] = result
+        return result
+
+    for returned in facts.returns:
+        if returned.top_call in sanitizers:
+            continue
+        if not returned.ids or not all(
+                len(path) == 1 and safe_local(path[0])
+                for path in returned.ids):
+            return False
+    return True
+
+
+def java_return_param_dependencies(
+        facts: FnFacts, sanitizers=frozenset()
+) -> frozenset[int] | None:
+    """Return exact parameter indexes a Java return may depend on.
+
+    ``None`` means the proof is open/ambiguous.  The slice is deliberately
+    fail-closed around receiver/global state and unknown side effects.  A dead
+    local value-builder chain is the sole ignored side-effect-free work: it
+    cannot affect the returned slice or object state.
+    """
+    if not facts.params or not facts.returns:
+        return None
+    param_index = {name: index for index, name in enumerate(facts.params)}
+    definitions: dict[str, list[Assign]] = {}
+    for assignment in facts.assigns:
+        if assignment.is_aug or len(assignment.targets) != 1:
+            continue
+        target = next(iter(assignment.targets))
+        if len(target) == 1 and target[0] in facts.local_names:
+            definitions.setdefault(target[0], []).append(assignment)
+
+    mutable_local_objects = {
+        next(iter(assignment.targets))[0]
+        for assignment in facts.assigns
+        if (not assignment.is_aug and len(assignment.targets) == 1
+            and len(next(iter(assignment.targets))) == 1
+            and assignment.rhs_call is not None
+            and (assignment.rhs_call in {"StringBuilder", "StringBuffer"}
+                 or bool(_JAVA_LIST_CTOR.match(assignment.rhs_call))
+                 or bool(_JAVA_MAP_CTOR.match(assignment.rhs_call))))
+    }
+
+    memo: dict[str, frozenset[int] | None] = {}
+    building: set[str] = set()
+    live_locals: set[str] = set()
+
+    def call_for_span(span, callee):
+        candidates = [
+            call for call in facts.calls
+            if call.span and span
+            and span[0] <= call.span[0] <= call.span[1] <= span[1]
+            and call.callee == callee
+        ]
+        if not candidates:
+            return None
+        width = max(call.span[1] - call.span[0] for call in candidates)
+        widest = [call for call in candidates
+                  if call.span[1] - call.span[0] == width]
+        return widest[0] if len(widest) == 1 else None
+
+    def paths_dependencies(paths) -> frozenset[int] | None:
+        deps: set[int] = set()
+        for path in paths:
+            if not path:
+                continue
+            nested = local_dependencies(path[0])
+            if nested is None:
+                return None
+            deps |= set(nested)
+        return frozenset(deps)
+
+    def call_dependencies(call: CallSite) -> frozenset[int] | None:
+        deps: set[int] = set()
+        receiver_type = (call.receiver_type or "").rsplit(".", 1)[-1]
+        map_payload_read = (
+            call.callee == "get"
+            and receiver_type in {
+                "Map", "HashMap", "LinkedHashMap", "TreeMap",
+                "ConcurrentHashMap", "SortedMap", "NavigableMap",
+            }
+        )
+        if not map_payload_read:
+            for _index, paths in call.args:
+                nested = paths_dependencies(paths)
+                if nested is None:
+                    return None
+                deps |= set(nested)
+        if call.qualified and "." in call.qualified:
+            receiver = call.qualified.rsplit(".", 1)[0]
+            # Static/class receivers and expression chains cannot carry a
+            # method parameter by local identity.  A simple receiver can, and
+            # must be part of the slice.
+            if "." not in receiver and " " not in receiver:
+                if receiver in facts.local_names or receiver in param_index:
+                    nested = local_dependencies(receiver)
+                    if nested is None:
+                        return None
+                    deps |= set(nested)
+        return frozenset(deps)
+
+    def local_dependencies(name: str) -> frozenset[int] | None:
+        if name in param_index:
+            return frozenset({param_index[name]})
+        if name in memo:
+            return memo[name]
+        if name in building or name not in facts.local_names:
+            return None
+        assignments = definitions.get(name, [])
+        if not assignments:
+            return None
+        building.add(name)
+        live_locals.add(name)
+        deps: set[int] = set()
+        for assignment in assignments:
+            if assignment.rhs_call in sanitizers:
+                continue
+            if assignment.rhs_call is not None:
+                call = call_for_span(assignment.span, assignment.rhs_call)
+                nested = call_dependencies(call) if call is not None else None
+                # Java's chained-call facts can expose the top call as
+                # ``append.toString`` while the state-carrying receiver
+                # (``builder``) appears only in the assignment's complete RHS
+                # paths.  Preserve dependencies of known locals/parameters;
+                # identifier-like call tokens are intentionally excluded.
+                syntactic_paths = {
+                    path for path in assignment.rhs_ids
+                    if path and (path[0] in facts.local_names
+                                 or path[0] in param_index)
+                }
+                syntactic = paths_dependencies(syntactic_paths)
+                if nested is not None and syntactic is not None:
+                    nested = frozenset(set(nested) | set(syntactic))
+            else:
+                nested = paths_dependencies(assignment.rhs_ids)
+            if nested is None:
+                building.discard(name)
+                memo[name] = None
+                return None
+            deps |= set(nested)
+        building.discard(name)
+        memo[name] = frozenset(deps)
+        return memo[name]
+
+    dependencies: set[int] = set()
+    for returned in facts.returns:
+        if any(path and path[0] in mutable_local_objects
+               for path in returned.ids):
+            return None
+        if returned.top_call in sanitizers:
+            continue
+        if returned.top_call is not None:
+            call = call_for_span(returned.span, returned.top_call)
+            nested = call_dependencies(call) if call is not None else None
+            if nested is None:
+                return None
+            dependencies |= set(nested)
+            continue
+        if not returned.ids:
+            # Literal-only return.
+            continue
+        nested = paths_dependencies(returned.ids)
+        if nested is None:
+            return None
+        dependencies |= set(nested)
+
+    def path_dependencies(path) -> frozenset[int] | None:
+        if not path:
+            return frozenset()
+        return local_dependencies(path[0])
+
+    # A parameter-dependent write outside method-local state invalidates the
+    # return-only summary: later calls may observe that dirty receiver/global.
+    for assignment in facts.assigns:
+        target_is_local = all(
+            len(target) == 1 and target[0] in facts.local_names
+            for target in assignment.targets
+        )
+        if target_is_local:
+            continue
+        if any(path and path[0] in mutable_local_objects
+               for path in assignment.rhs_ids):
+            return None
+        for path in assignment.rhs_ids:
+            deps = path_dependencies(path)
+            if deps is None or deps:
+                return None
+
+    pure_dead_calls = {
+        "String", "StringBuilder", "StringBuffer",
+        "append", "replace", "toString", "length", "substring",
+        "getBytes", "encodeBase64", "decodeBase64", "split",
+        "get", "put", "remove", "add",
+    }
+    confined_mutators = {
+        "append", "replace", "put", "remove", "add", "clear",
+    }
+    confined_accessors = {"length", "toString", "get", "substring"}
+    confined_types = {
+        "StringBuilder", "StringBuffer", "HashMap", "LinkedHashMap",
+        "TreeMap", "ArrayList", "LinkedList",
+    }
+
+    def known_dead_call(callee: str) -> bool:
+        return (callee in pure_dead_calls
+                or bool(_JAVA_LIST_CTOR.match(callee))
+                or bool(_JAVA_MAP_CTOR.match(callee)))
+
+    for call in facts.calls:
+        enclosing = [
+            assignment for assignment in facts.assigns
+            if assignment.span and call.span
+            and assignment.span[0] <= call.span[0]
+            and call.span[1] <= assignment.span[1]
+        ]
+        dead_builder = bool(enclosing) and all(
+            len(target) == 1 and target[0] not in live_locals
+            for assignment in enclosing for target in assignment.targets
+        ) and all(
+            known_dead_call(nested.callee)
+            for assignment in enclosing
+            for nested in assignment.nested_calls
+        )
+        live_builder = bool(enclosing) and all(
+            len(target) == 1 and target[0] in live_locals
+            for assignment in enclosing for target in assignment.targets
+        ) and all(
+            known_dead_call(nested.callee)
+            for assignment in enclosing
+            for nested in assignment.nested_calls
+        )
+        receiver = (call.qualified.rsplit(".", 1)[0]
+                    if call.qualified and "." in call.qualified else None)
+        receiver_type = (call.receiver_type or "").rsplit(".", 1)[-1]
+        confined_mutation = (
+            receiver in facts.local_names
+            and receiver not in live_locals
+            and receiver_type in confined_types
+            and call.callee in confined_mutators | confined_accessors
+        )
+        object_args = {
+            path[0] for _index, paths in call.args for path in paths
+            if path and path[0] in mutable_local_objects
+        }
+        if object_args and not confined_mutation:
+            return None
+        if dead_builder or live_builder or confined_mutation:
+            continue
+        nested = call_dependencies(call)
+        if nested is None:
+            return None
+        if nested:
+            return None
+    return frozenset(dependencies)
+
+
+def java_properties_source_spans(facts: FnFacts) -> frozenset[tuple[int, int]]:
+    """Assignments reading externally loaded ``java.util.Properties`` data.
+
+    ``getProperty`` is deliberately not a global source: a programmatically
+    populated Properties object is ordinary application state.  A receiver
+    becomes external only after ``load``/``loadFromXML``.  Literal
+    ``setProperty`` overwrites are tracked by key so configuration defaults can
+    be made trusted without cleaning unrelated loaded keys.
+    """
+    properties: set[str] = set()
+    for assignment in facts.assigns:
+        if assignment.rhs_call is None or len(assignment.targets) != 1:
+            continue
+        target = next(iter(assignment.targets))
+        if (len(target) == 1
+                and assignment.rhs_call.rsplit(".", 1)[-1] == "Properties"):
+            properties.add(target[0])
+    if not properties:
+        return frozenset()
+
+    def literal(value: str | None) -> str | None:
+        raw = (value or "").strip()
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {'"', "'"}:
+            return raw[1:-1]
+        return None
+
+    property_calls = [
+        call for call in facts.calls
+        if call.span is not None and call.qualified
+        and "." in call.qualified
+        and call.qualified.rsplit(".", 1)[0] in properties
+    ]
+    literal_keys = {
+        key for call in property_calls
+        if (call.qualified or "").rsplit(".", 1)[1] in {
+            "setProperty", "getProperty",
+        }
+        for key in (literal(call.arg_values.get(0)),)
+        if key is not None
+    }
+    PropertyState = dict[str, tuple[bool, frozenset[str]]]
+
+    def join(states: list[PropertyState]) -> PropertyState:
+        """Join may-loaded state while retaining only must-clean keys."""
+        if not states:
+            return {name: (False, frozenset()) for name in properties}
+        joined: PropertyState = {}
+        for receiver in properties:
+            possibilities = [
+                state.get(receiver, (False, frozenset())) for state in states
+            ]
+            loaded = any(item[0] for item in possibilities)
+            clean = frozenset(
+                key for key in literal_keys
+                if all(not may_load or key in clean_keys
+                       for may_load, clean_keys in possibilities)
+            )
+            joined[receiver] = (loaded, clean)
+        return joined
+
+    out: set[tuple[int, int]] = set()
+
+    def apply_call(call: CallSite, state: PropertyState, *,
+                   record: bool) -> PropertyState:
+        if not call.qualified or "." not in call.qualified:
+            return state
+        receiver, method = call.qualified.rsplit(".", 1)
+        if receiver not in properties:
+            return state
+        loaded, clean_keys = state[receiver]
+        if method in {"load", "loadFromXML"} and call.args:
+            state[receiver] = (True, frozenset())
+            return state
+        if method == "clear":
+            state[receiver] = (False, frozenset())
+            return state
+        if method == "setProperty":
+            values = call.arg_values
+            key = literal(values.get(0))
+            if key is None:
+                # Dynamic-key overwrite cannot prove any loaded key clean.
+                return state
+            updated = set(clean_keys)
+            if literal(values.get(1)) is not None:
+                updated.add(key)
+            else:
+                updated.discard(key)
+            state[receiver] = (loaded, frozenset(updated))
+            return state
+        if method != "getProperty":
+            return state
+        key = literal(call.arg_values.get(0))
+        external = loaded and (key is None or key not in clean_keys)
+        if not record or not external:
+            return state
+        enclosing = [
+            assignment for assignment in facts.assigns
+            if assignment.span and call.span
+            and assignment.span[0] <= call.span[0]
+            and call.span[1] <= assignment.span[1]
+        ]
+        if len(enclosing) == 1 and enclosing[0].span is not None:
+            out.add(enclosing[0].span)
+        return state
+
+    # Keep call lookup linear across structured statement spans.  The ordinal
+    # is a deterministic tie-breaker for synthetic calls sharing one span.
+    events = sorted(
+        (((call.span or (0, 0))[0], (call.span or (0, 0))[1], ordinal, call)
+         for ordinal, call in enumerate(property_calls)),
+        key=lambda event: (event[0], event[1], event[2]),
+    )
+    event_starts = [event[0] for event in events]
+
+    def run_span(start: int, end: int, state: PropertyState, *,
+                 record: bool) -> PropertyState:
+        lo = bisect_left(event_starts, start)
+        hi = bisect_left(event_starts, end, lo)
+        for _start, _end, _ordinal, call in events[lo:hi]:
+            state = apply_call(call, state, record=record)
+        return state
+
+    initial: PropertyState = {
+        name: (False, frozenset()) for name in properties
+    }
+    if facts.regions is None:
+        for _start, _end, _ordinal, call in events:
+            initial = apply_call(call, initial, record=True)
+        return frozenset(out)
+
+    from .flowsens import Branch, Loop, Seq, Span, TryFinally
+
+    def run(region, state: PropertyState, *, record: bool = True) -> PropertyState:
+        if isinstance(region, Seq):
+            for item in region.items:
+                state = run(item, state, record=record)
+            return state
+        if isinstance(region, Span):
+            return run_span(region.start, region.end, state, record=record)
+        if isinstance(region, Branch):
+            if region.taken is not None:
+                if region.taken < 0:
+                    return dict(state)
+                return run(region.arms[region.taken], dict(state), record=record)
+            outputs = [] if region.has_else else [dict(state)]
+            outputs.extend(
+                run(arm, dict(state), record=record) for arm in region.arms
+            )
+            return join(outputs)
+        if isinstance(region, Loop):
+            if region.taken is False and not region.at_least_once:
+                return dict(state)
+            incoming = dict(state)
+            current = dict(state)
+            while True:
+                after = run(region.body, dict(current), record=False)
+                following = join([incoming, after])
+                if following == current:
+                    break
+                current = following
+            if record:
+                run(region.body, dict(current), record=True)
+            return current
+        if isinstance(region, TryFinally):
+            exits = [
+                run(exit_region, dict(state), record=record)
+                for exit_region in region.exits
+            ]
+            return run(region.final, join(exits or [dict(state)]), record=record)
+        return state
+
+    run(facts.regions, initial)
+    return frozenset(out)
+
+
+def java_transparent_forwarder_span(
+        facts: FnFacts) -> tuple[int, int] | None:
+    """Span of the one pure Java parameter-forwarding call, if any.
+
+    This summary changes only traversal cost, never dataflow.  Locals, returns,
+    fields, fan-out and argument expressions outside the formal parameters all
+    reject it.  A zero-argument constructor used solely as the call receiver
+    (``new Worker().forward(value)``) is confined allocation, not fan-out.
+    Cycles remain bounded by the query engine's visited/budget sets.
+    """
+    if (not facts.params or facts.assigns or facts.returns
+            or not facts.calls or facts.instance_fields):
+        return None
+    params = set(facts.params)
+    carrying = []
+    for call in facts.calls:
+        paths = [path for _index, values in call.args for path in values]
+        if paths:
+            carrying.append((call, paths))
+    if len(carrying) != 1:
+        return None
+    primary, paths = carrying[0]
+    if not all(len(path) == 1 and path[0] in params for path in paths):
+        return None
+    primary_span = primary.span
+    receiver_type = (primary.receiver_type or "").rsplit(".", 1)[-1]
+    for call in facts.calls:
+        if call is primary:
+            continue
+        # Tree-sitter exposes the allocation in ``new C().call(param)`` as a
+        # nested constructor CallSite.  Only the exact, zero-argument receiver
+        # allocation is semantically confined; any other call is an effect or
+        # fan-out and must consume the normal depth budget.
+        if (not primary_span or not call.span or call.args
+                or not receiver_type or call.callee != receiver_type
+                or not (primary_span[0] <= call.span[0]
+                        and call.span[1] <= primary_span[1])):
+            return None
+    return primary_span
+
+
+def java_transparent_forwarder(facts: FnFacts) -> bool:
+    """Compatibility predicate for the transparent-forwarder summary."""
+    return java_transparent_forwarder_span(facts) is not None
+
+
+_JAVA_LIST_CTOR = re.compile(r"^(?:ArrayList|LinkedList|Vector)(?:<.*>)?$")
 _JAVA_MAP_CTOR = re.compile(r"^(?:HashMap|LinkedHashMap|TreeMap)(?:<.*>)?$")
 _JAVA_INT_LITERAL = re.compile(r"^[+-]?\d+$")
 _JAVA_MAP_KEY_LITERAL = re.compile(
@@ -847,37 +1480,53 @@ def analyze_java_constant_collections(
     # a loop. This is stricter than a boolean "conditional": a List created and
     # consumed inside the same arm is deterministic for that path, while a
     # nested/different arm can make a linearized overwrite optional.
-    flow_spans: list[tuple[int, int, tuple, bool]] = []
+    flow_spans: list[tuple[int, int, tuple, bool, bool]] = []
     branch_serial = 0
 
-    def collect_flow_context(region, context=(), in_loop=False):
+    def collect_flow_context(region, context=(), in_loop=False,
+                             reachable=True):
         nonlocal branch_serial
         if isinstance(region, Span):
-            flow_spans.append((region.start, region.end, context, in_loop))
+            flow_spans.append(
+                (region.start, region.end, context, in_loop, reachable))
         elif isinstance(region, Seq):
             for item in region.items:
-                collect_flow_context(item, context, in_loop)
+                collect_flow_context(item, context, in_loop, reachable)
         elif isinstance(region, Branch):
             branch_serial += 1
             branch_id = branch_serial
             for arm_index, arm in enumerate(region.arms):
+                arm_reachable = (reachable and (
+                    region.taken is None or region.taken == arm_index))
                 collect_flow_context(
-                    arm, context + ((branch_id, arm_index),), in_loop)
+                    arm, context + ((branch_id, arm_index),), in_loop,
+                    arm_reachable)
         elif isinstance(region, Loop):
-            collect_flow_context(region.body, context, True)
+            collect_flow_context(region.body, context, True, reachable)
 
     collect_flow_context(facts.regions)
 
     def span_context(span) -> tuple[tuple, bool]:
         pos = (span or (-1, -1))[0]
-        matches = [(context, in_loop, end - start)
-                   for start, end, context, in_loop in flow_spans
+        matches = [(context, in_loop, reachable, end - start)
+                   for start, end, context, in_loop, reachable in flow_spans
                    if start <= pos < end]
         if not matches:
             return (), False
-        context, in_loop, _width = max(
-            matches, key=lambda item: (len(item[0]), item[1], -item[2]))
+        context, in_loop, _reachable, _width = max(
+            matches, key=lambda item: (len(item[0]), item[1], -item[3]))
         return context, in_loop
+
+    def span_is_unreachable(span) -> bool:
+        pos = (span or (-1, -1))[0]
+        matches = [(context, reachable, end - start)
+                   for start, end, context, _in_loop, reachable in flow_spans
+                   if start <= pos < end]
+        if not matches:
+            return False
+        _context, reachable, _width = max(
+            matches, key=lambda item: (len(item[0]), -item[2]))
+        return not reachable
 
     def span_is_conditional(span) -> bool:
         context, in_loop = span_context(span)
@@ -904,15 +1553,63 @@ def analyze_java_constant_collections(
     def refs_local(paths) -> bool:
         return any(path and path[0] in local_names for path in paths)
 
+    def command_list_argument(call: CallSite) -> str | None:
+        """Return the local List consumed by a proven ProcessBuilder API."""
+        if call.callee == "ProcessBuilder":
+            pass
+        elif (call.callee == "command"
+              and (call.receiver_type or "").rsplit(".", 1)[-1]
+              == "ProcessBuilder"):
+            pass
+        else:
+            return None
+        paths = dict(call.args).get(0, set())
+        names = {path[0] for path in paths
+                 if len(path) == 1 and path[0] in local_lists}
+        return next(iter(names)) if len(names) == 1 else None
+
+    def transported_collection(call: CallSite) -> tuple[int, str] | None:
+        """One direct local-container argument crossing a call boundary."""
+        candidates = [
+            (index, path[0])
+            for index, paths in call.args for path in paths
+            if len(path) == 1 and path[0] in local_names
+        ]
+        return candidates[0] if len(candidates) == 1 else None
+
+    command_lists = {
+        name for call in facts.calls
+        if (name := command_list_argument(call)) is not None
+    }
+    aggregate_command_lists = {
+        name for name in command_lists
+        if all(
+            not call.qualified
+            or "." not in call.qualified
+            or call.qualified.rsplit(".", 1)[0] != name
+            or call.callee == "add"
+            for call in facts.calls
+        )
+    }
+    payload_collections = {
+        name for call in facts.calls
+        if command_list_argument(call) is None
+        and (transport := transported_collection(call)) is not None
+        for _index, name in (transport,)
+    }
+
     def contained_collection_call(span, exclude=None) -> bool:
         if not span:
             return False
         return any(
             call is not exclude and call.span
             and span[0] <= call.span[0] < call.span[1] <= span[1]
-            and call.qualified and "." in call.qualified
-            and call.qualified.rsplit(".", 1)[0] in local_names
-            and call.callee in {"get", "put", "remove"}
+            and (
+                (call.qualified and "." in call.qualified
+                 and call.qualified.rsplit(".", 1)[0] in local_names
+                 and call.callee in {"get", "put", "remove"})
+                or command_list_argument(call) is not None
+            )
             for call in facts.calls
         )
 
@@ -949,16 +1646,28 @@ def analyze_java_constant_collections(
                 path and path[0] in {"get", "put", "remove"}
                 for path in local_args[0]
             )
-            if len(local_args) != 1 or not nested or not operation_id:
+            command_list = command_list_argument(call)
+            payload_transport = (transported_collection(call)
+                                 if allow_unrelated_calls else None)
+            if (command_list is None
+                    and payload_transport is None
+                    and (len(local_args) != 1
+                         or not nested or not operation_id)):
                 return None
         if receiver in local_lists:
             context, in_loop = span_context(call.span)
-            if (method not in {"add", "remove", "get"} or in_loop
-                    or context != list_contexts.get(receiver)):
+            aggregate_add = (receiver in aggregate_command_lists
+                             or receiver in payload_collections
+                             and method == "add")
+            if (method not in {"add", "remove", "get"}
+                    or (not aggregate_add and (
+                        in_loop or context != list_contexts.get(receiver)))):
                 return None
         elif receiver in local_maps:
             if (method not in {"put", "get", "remove"}
-                    or span_is_conditional(call.span)):
+                    or (span_is_conditional(call.span)
+                        and not (receiver in payload_collections
+                                 and method == "put"))):
                 return None
         elif not allow_unrelated_calls:
             return None
@@ -975,13 +1684,69 @@ def analyze_java_constant_collections(
     # Chamada antes da atribuição que recebe seu retorno.
     events.sort(key=lambda event: (event[0], -event[1]))
 
+    scalar_env = {
+        path if isinstance(path, tuple) else (path,) for path in tainted
+    }
+
+    def update_scalar_env(assignment: Assign) -> None:
+        nonlocal scalar_env
+        sanitized = ((assignment.rhs_call is not None
+                      and assignment.rhs_call in sanitizers)
+                     or (assignment.span in nonprop
+                         and not isinstance(nonprop, dict)))
+        from_source = not sanitized and (
+            assign_reads_named_source(
+                assignment, sources, sanitizers, trusted_source_literals)
+            or assign_reads_framework_source(assignment, sanitizers)
+            or assignment.span in source_spans)
+        rhs_ids = effective_assignment_rhs_ids(facts, assignment, nonprop)
+        rhs_dirty = (not sanitized and any(
+            _is_tainted(path, scalar_env) for path in rhs_ids))
+        targets = {
+            target if isinstance(target, tuple) else (target,)
+            for target in assignment.targets
+        }
+        if from_source or rhs_dirty or (assignment.is_aug and any(
+                _is_tainted(target, scalar_env) for target in targets)):
+            scalar_env |= targets
+        elif (not assignment.is_aug
+              and not span_is_conditional(assignment.span)):
+            # A clean write in only one branch is not a definite kill.  The
+            # collection interpreter is linear, so retaining the may-taint is
+            # the sound join until both arms can be modeled explicitly.
+            scalar_env = {
+                path for path in scalar_env
+                if not any(len(path) >= len(target)
+                           and path[:len(target)] == target
+                           for target in targets)
+            }
+
     for _pos, kind, fact in events:
+        if span_is_unreachable(fact.span):
+            continue
         if kind == 0:
+            update_scalar_env(fact)
             continue
         call = fact
         if call.callee and (_JAVA_LIST_CTOR.match(call.callee)
                             or _JAVA_MAP_CTOR.match(call.callee)):
             continue
+        command_list = command_list_argument(call)
+        if command_list is not None and any(local_lists[command_list]):
+            for index, paths in call.args:
+                if index == 0:
+                    paths.add(_JAVA_COLLECTION_SENTINEL)
+        payload_transport = (transported_collection(call)
+                             if allow_unrelated_calls else None)
+        if payload_transport is not None:
+            payload_index, payload_name = payload_transport
+            payload_dirty = (any(local_lists[payload_name])
+                             if payload_name in local_lists
+                             else any(local_maps[payload_name].values()))
+            if payload_dirty:
+                for index, paths in call.args:
+                    if index == payload_index:
+                        paths.add(_JAVA_COLLECTION_SENTINEL)
         if not call.qualified or "." not in call.qualified:
             continue
         receiver, method = call.qualified.rsplit(".", 1)
@@ -989,9 +1754,25 @@ def analyze_java_constant_collections(
             continue
         args = dict(call.args)
         if receiver in local_lists and method == "add":
-            if set(args) != {0}:
+            if set(args) == {0}:
+                payload_index = 0
+                insert_index = len(local_lists[receiver])
+            elif set(args) == {0, 1}:
+                raw_index = call.arg_values.get(0, "").strip()
+                if not _JAVA_INT_LITERAL.match(raw_index):
+                    return None
+                insert_index = int(raw_index)
+                if insert_index < 0 or insert_index > len(local_lists[receiver]):
+                    return None
+                payload_index = 1
+            else:
                 return None
-            local_lists[receiver].append(bool(args[0]))
+            direct = dict(direct_source_args(call, sanitizers))
+            direct.update(dict(direct_named_source_args(
+                call, sources, sanitizers, trusted_source_literals)))
+            dirty = (payload_index in direct or any(
+                _is_tainted(path, scalar_env) for path in args[payload_index]))
+            local_lists[receiver].insert(insert_index, dirty)
             continue
 
         dirty_result = False
@@ -1015,7 +1796,14 @@ def analyze_java_constant_collections(
                 if set(args) != {0, 1}:
                     return None
                 dirty_result = state.get(raw_key, False)  # previous value
-                state[raw_key] = bool(args[1])
+                direct = dict(direct_source_args(call, sanitizers))
+                direct.update(dict(direct_named_source_args(
+                    call, sources, sanitizers, trusted_source_literals)))
+                new_dirty = (1 in direct or any(
+                    _is_tainted(path, scalar_env) for path in args[1]))
+                state[raw_key] = (new_dirty or (
+                    span_is_conditional(call.span)
+                    and state.get(raw_key, False)))
             elif method == "get":
                 if set(args) != {0}:
                     return None
@@ -1160,6 +1948,13 @@ def _is_tainted(path, tainted) -> bool:
     return False
 
 
+def _carries_tainted_payload(path, tainted) -> bool:
+    """Whether an object argument contains a dirty tracked subpath."""
+    return (_is_tainted(path, tainted)
+            or any(len(dirty) > len(path)
+                   and dirty[:len(path)] == path for dirty in tainted))
+
+
 def find_function_node(root, start_line: int, lang: str,
                        start_col: int | None = None):
     """Find one callable by its persisted tree-sitter start position.
@@ -1299,12 +2094,17 @@ def _nested_calls(source: bytes, node, call_types, idset,
                 if literal is not None:
                     literals.append((index, literal))
                 index += 1
+        site = _callee_site(node)
         out.append(NestedCall(
-            callee,
-            _rhs_qualified(source, node, call_types),
-            _rhs_receiver_type(source, node, call_types, declared_types),
-            tuple(guards),
-            tuple(literals),
+            callee=callee,
+            qualified=_rhs_qualified(source, node, call_types),
+            receiver_type=_rhs_receiver_type(
+                source, node, call_types, declared_types),
+            guards=tuple(guards),
+            arg_literals=tuple(literals),
+            line=site.start_point[0] + 1,
+            col=site.start_point[1],
+            span=(node.start_byte, node.end_byte),
         ))
         child_guards = guards + (callee,)
     for child in node.named_children:
@@ -1465,7 +2265,8 @@ def _facts_py(source, fn) -> FnFacts:
         recv = _receiver_last(source, call)
         cs = CallSite(callee, _callee_site(call).start_point[0] + 1, [],
                       (call.start_byte, call.end_byte),
-                      f"{recv}.{callee}" if recv and recv != callee else None)
+                      f"{recv}.{callee}" if recv and recv != callee else None,
+                      col=_callee_site(call).start_point[1])
         pos = 0
         for arg in args.named_children:
             if arg.type == "keyword_argument":
@@ -1584,7 +2385,8 @@ def _facts_js(source, fn) -> FnFacts:
         recv = _receiver_last(source, call)
         cs = CallSite(callee, _callee_site(call).start_point[0] + 1, [],
                       (call.start_byte, call.end_byte),
-                      f"{recv}.{callee}" if recv and recv != callee else None)
+                      f"{recv}.{callee}" if recv and recv != callee else None,
+                      col=_callee_site(call).start_point[1])
         pos = 0
         for arg in args.named_children:
             if arg.type == "comment":
@@ -1918,7 +2720,44 @@ def _java_declared_types(source: bytes, fn, body, stop) -> dict[str, str]:
     while class_body is not None and class_body.type != "class_body":
         class_body = class_body.parent
     if class_body is not None:
-        for declaration in class_body.named_children:
+        visible_class_bodies = [class_body]
+        current_class = class_body.parent
+        root = current_class
+        while root is not None and root.parent is not None:
+            root = root.parent
+        classes: dict[str, list] = {}
+        if root is not None:
+            pending = [root]
+            while pending:
+                current = pending.pop()
+                if current.type == "class_declaration":
+                    name_node = current.child_by_field_name("name")
+                    if name_node is not None:
+                        classes.setdefault(_text(source, name_node), []).append(current)
+                pending.extend(current.named_children)
+        seen_classes = set()
+        while current_class is not None:
+            name_node = current_class.child_by_field_name("name")
+            class_name = _text(source, name_node) if name_node is not None else None
+            if not class_name or class_name in seen_classes:
+                break
+            seen_classes.add(class_name)
+            superclass = current_class.child_by_field_name("superclass")
+            type_node = (next((child for child in superclass.named_children
+                               if child.type in {"type_identifier", "identifier"}), None)
+                         if superclass is not None else None)
+            if type_node is None:
+                break
+            matches = classes.get(_text(source, type_node), [])
+            if len(matches) != 1:
+                break
+            current_class = matches[0]
+            inherited_body = current_class.child_by_field_name("body")
+            if inherited_body is not None:
+                visible_class_bodies.append(inherited_body)
+
+        for visible_body in visible_class_bodies:
+          for declaration in visible_body.named_children:
             if declaration.type != "field_declaration":
                 continue
             typ = declaration.child_by_field_name("type")
@@ -1940,6 +2779,48 @@ def _java_declared_types(source: bytes, fn, body, stop) -> dict[str, str]:
 
     return {name: next(iter(types)) for name, types in candidates.items()
             if len(types) == 1}
+
+
+def _java_response_writer_aliases(facts: FnFacts) -> frozenset[str]:
+    """Prove locals whose value always comes from ``HttpServletResponse``.
+
+    ``PrintWriter`` is also used for files and logs, so its declared type is
+    not enough to classify ``print``/``format`` as an HTTP XSS sink.  This
+    deliberately small provenance proof accepts a direct ``getWriter()`` from
+    a servlet response and aliases whose every assignment is another proven
+    writer.  Reassignment, mixed origins and field/array aliases fail closed.
+    """
+    by_target: dict[str, list[Assign]] = {}
+    for assignment in facts.assigns:
+        if len(assignment.targets) != 1:
+            continue
+        target = next(iter(assignment.targets))
+        if len(target) == 1:
+            by_target.setdefault(target[0], []).append(assignment)
+
+    proven: set[str] = set()
+
+    def direct(assignment: Assign) -> bool:
+        receiver_type = assignment.rhs_receiver_type or ""
+        return (assignment.rhs_call == "getWriter"
+                and receiver_type.rsplit(".", 1)[-1]
+                == "HttpServletResponse")
+
+    changed = True
+    while changed:
+        changed = False
+        proven_paths = {(writer,) for writer in proven}
+        for target, assignments in by_target.items():
+            if target in proven or not assignments:
+                continue
+            if all(direct(assignment) or (
+                    assignment.rhs_call is None
+                    and len(assignment.rhs_ids) == 1
+                    and next(iter(assignment.rhs_ids)) in proven_paths
+            ) for assignment in assignments):
+                proven.add(target)
+                changed = True
+    return frozenset(proven)
 
 
 def _java_instance_scope(source: bytes, fn, body, stop):
@@ -2097,6 +2978,83 @@ def summarize_java_receiver_effect(
     )
 
 
+_JAVA_LAMBDA_INVOKERS = frozenset({
+    "run", "accept", "apply", "get", "test", "call",
+})
+
+
+def _java_lambda_units(source: bytes, body, outer: FnFacts) -> tuple:
+    """Extract locally-bound, non-escaping Java lambda flow units.
+
+    Lambda construction is deliberately absent from the enclosing CFG.  A
+    unit is callable only when its binding has one definition, is never
+    aliased/returned/passed as a callback, and is used solely through a known
+    functional-interface invocation.  Anything ambiguous remains deferred.
+    """
+    nodes: list = []
+    _walk(body, {"lambda_expression"},
+          GEN["java"]["func"] | {"lambda_expression"}, nodes)
+    units = []
+    for node in nodes:
+        definitions = [
+            assignment for assignment in outer.assigns
+            if assignment.span
+            and assignment.span[0] <= node.start_byte
+            and node.end_byte <= assignment.span[1]
+            and len(assignment.targets) == 1
+            and len(next(iter(assignment.targets))) == 1
+        ]
+        if len(definitions) != 1:
+            continue
+        definition = definitions[0]
+        binding = next(iter(definition.targets))[0]
+        writes = [
+            assignment for assignment in outer.assigns
+            if any(target == (binding,) for target in assignment.targets)
+        ]
+        if len(writes) != 1 or binding not in outer.local_names:
+            continue
+
+        invocation_calls = []
+        escaped = False
+        for call in outer.calls:
+            receiver = (call.qualified.rsplit(".", 1)[0]
+                        if call.qualified and "." in call.qualified else None)
+            if receiver == binding:
+                if call.callee not in _JAVA_LAMBDA_INVOKERS:
+                    escaped = True
+                    break
+                invocation_calls.append(call)
+            if any(path and path[0] == binding
+                   for _index, paths in call.args for path in paths):
+                escaped = True
+                break
+        if escaped or not invocation_calls:
+            continue
+        if any(
+                assignment is not definition
+                and any(path and path[0] == binding
+                        for path in assignment.rhs_ids)
+                for assignment in outer.assigns):
+            continue
+        if any(any(path and path[0] == binding for path in returned.ids)
+               for returned in outer.returns):
+            continue
+
+        inner = extract_facts(source, node, "java")
+        parameter_node = node.child_by_field_name("parameters")
+        if parameter_node is not None and parameter_node.type == "identifier":
+            params = [_text(source, parameter_node)]
+        else:
+            params = _params_generic(source, node, GEN["java"], GEN["java"]["id"])
+        if any(len(call.args) != len(params) for call in invocation_calls):
+            continue
+        inner.params = list(params)
+        inner.local_names = frozenset(set(inner.local_names) | set(params))
+        units.append(JavaLambdaUnit(binding, tuple(params), inner))
+    return tuple(units)
+
+
 def _facts_generic(source, fn, lang) -> FnFacts:
     # fontes que só são fontes NESTA linguagem (`params` do Rails)
     nuas = lang_bare_sources(lang)
@@ -2215,6 +3173,9 @@ def _facts_generic(source, fn, lang) -> FnFacts:
             ))
         facts.assigns.extend(loop_assigns)
 
+    response_writers = (_java_response_writer_aliases(facts)
+                        if lang == "java" else frozenset())
+
     # chamadas
     calls: list = []
     _walk(body, calls_t, stop, calls)
@@ -2222,12 +3183,20 @@ def _facts_generic(source, fn, lang) -> FnFacts:
         args = _args_of(call)
         callee = _callee_of(source, call, idset)
         recv = _receiver_last(source, call)
+        qualified = f"{recv}.{callee}" if recv else None
+        if lang == "java" and recv in response_writers:
+            qualified = f"getWriter.{callee}"
         cs = CallSite(callee, _callee_site(call).start_point[0] + 1, [],
                       (call.start_byte, call.end_byte),
-                      f"{recv}.{callee}" if recv else None,
+                      qualified,
                       receiver_kind=(
                           _java_receiver_kind(source, call)
-                          if lang == "java" else "unknown"))
+                          if lang == "java" else "unknown"),
+                      receiver_type=(
+                          _rhs_receiver_type(source, call, calls_t,
+                                             declared_types)
+                          if lang == "java" else None),
+                      col=_callee_site(call).start_point[1])
         if args is not None:
             pos = 0
             for arg in args.named_children:
@@ -2290,6 +3259,8 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                     _nested_calls(source, last, calls_t, idset, declared_types),
                 ))
     facts.regions = _build_regions(body, lang, source, facts.assigns)
+    if lang == "java":
+        facts.lambda_units = _java_lambda_units(source, body, facts)
     return facts
 
 
@@ -2414,7 +3385,9 @@ def _clj_facts_visit(source, node, facts: FnFacts) -> None:
                 _clj_facts_visit(source, c, facts)
         return
     if base not in _CLJ_SPECIAL:                      # aplicação de função → CallSite
-        cs = CallSite(base, node.start_point[0] + 1, [])
+        cs = CallSite(
+            base, node.start_point[0] + 1, [],
+            (node.start_byte, node.end_byte), col=node.start_point[1])
         for pos, arg in enumerate(node.named_children[1:]):
             ids: set = set()
             _clj_local_paths(source, arg, ids)
@@ -2449,10 +3422,14 @@ def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset(),
     while changed:
         changed = False
         for a in facts.assigns:
+            summarized = a.span in nonprop
+            summary_deps = (nonprop.get(a.span)
+                            if isinstance(nonprop, dict) else None)
             if ((a.rhs_call is not None and a.rhs_call in sanitizers)
-                    or a.span in nonprop):
+                    or (summarized and summary_deps is None)):
                 continue  # sanitizado, ou chamada que não devolve o argumento
-            rhs_hit = any(_is_tainted(p, tainted) for p in a.rhs_ids)
+            rhs_ids = effective_assignment_rhs_ids(facts, a, nonprop)
+            rhs_hit = any(_is_tainted(p, tainted) for p in rhs_ids)
             aug_hit = a.is_aug and any(_is_tainted(t, tainted) for t in a.targets)
             named_source = assign_reads_named_source(
                 a, sources, sanitizers, trusted_source_literals)
@@ -2466,17 +3443,23 @@ def analyze_facts(facts: FnFacts, tainted_init, sanitizers=frozenset(),
         direto = dict(direct_source_args(c, sanitizers))
         direto.update(dict(direct_named_source_args(
             c, sources, sanitizers, trusted_source_literals)))
+        evidence = dict(direct_source_evidence(
+            c, sources, sanitizers, trusted_source_literals))
         for idx, ids in c.args:
-            hit = [p for p in ids if _is_tainted(p, tainted)]
+            hit = [p for p in ids
+                   if _carries_tainted_payload(p, tainted)]
             if hit:
-                via = ".".join(sorted(hit)[0])
+                candidates = tuple(".".join(path) for path in sorted(hit))
+                via = candidates[0]
                 flow.arg_flows.append(
                     ArgFlow(c.callee, idx, c.line, via, c.qualified,
-                            direto.get(idx), c.span))
+                            direto.get(idx), c.span, c.receiver_type, c.col,
+                            evidence.get(idx), candidates))
             elif idx in direto:
                 flow.arg_flows.append(
                     ArgFlow(c.callee, idx, c.line, direto[idx], c.qualified,
-                            direto[idx], c.span))
+                            direto[idx], c.span, c.receiver_type, c.col,
+                            evidence.get(idx), (direto[idx],)))
     for r in facts.returns:
         if r.top_call is not None and r.top_call in sanitizers:
             continue
@@ -2513,34 +3496,52 @@ def return_reads_named_source(returned: ReturnExpr, sources,
             and returned.top_call not in sanitizers)
 
 
-def source_sites(facts: FnFacts, sources, sanitizers=frozenset(),
-                 source_spans=frozenset(), trusted_source_literals=()) -> list[tuple]:
-    """(caminho, linha, fonte) para cada atribuição a partir de uma fonte.
-    O caminho é uma tupla (semente para o motor); renderize com '.'.join()."""
-    out = []
+def source_site_evidence(
+        facts: FnFacts, sources, sanitizers=frozenset(),
+        source_spans=frozenset(), trusted_source_literals=()
+) -> list[SourceSite]:
+    """Return taint seeds with exact source-call provenance when available."""
+    out: list[SourceSite] = []
     for a in facts.assigns:
-        rotulo = None
+        evidence = None
         if assign_reads_named_source(
                 a, sources, sanitizers, trusted_source_literals):
-            rotulo = next((
-                label for call in a.nested_calls
-                if (label := _nested_named_source(
-                    call, sources, sanitizers,
-                    trusted_source_literals)) is not None
-            ), None)
-            if rotulo is None:  # extractor legado sem ``nested_calls``
+            for call in a.nested_calls:
+                label = _nested_named_source(
+                    call, sources, sanitizers, trusted_source_literals)
+                if label is not None:
+                    evidence = SourceEvidence(
+                        label, call.line or a.line, call.col, call.span,
+                        call.arg_literals)
+                    break
+            if evidence is None:  # extractor legado sem ``nested_calls``
                 typed = (f"{a.rhs_receiver_type}.{a.rhs_call}"
                          if a.rhs_receiver_type and a.rhs_call else None)
-                rotulo = (a.rhs_qualified if a.rhs_qualified in sources
-                          else typed if typed in sources else a.rhs_call)
+                label = (a.rhs_qualified if a.rhs_qualified in sources
+                         else typed if typed in sources else a.rhs_call)
+                if label is not None:
+                    evidence = SourceEvidence(label, a.line, span=a.span)
         elif assign_reads_framework_source(a, sanitizers):
-            rotulo = a.rhs_qualified or next(
+            label = a.rhs_qualified or next(
                 (".".join(p) for p in sorted(a.rhs_ids)
                  if is_framework_source_path(p)), "request")
+            evidence = SourceEvidence(label, a.line, span=a.span)
         elif a.span in source_spans:
-            rotulo = a.rhs_call or "source-wrapper"
-        if rotulo is None:
+            evidence = SourceEvidence(
+                a.rhs_call or "source-wrapper", a.line, span=a.span)
+        if evidence is None:
             continue
         for t in sorted(a.targets):
-            out.append((t, a.line, rotulo))
+            out.append(SourceSite(t, evidence))
     return out
+
+
+def source_sites(facts: FnFacts, sources, sanitizers=frozenset(),
+                 source_spans=frozenset(), trusted_source_literals=()) -> list[tuple]:
+    """Legacy ``(path, line, label)`` view of source-site evidence."""
+    return [
+        (site.path, site.evidence.line, site.evidence.label)
+        for site in source_site_evidence(
+            facts, sources, sanitizers, source_spans,
+            trusted_source_literals)
+    ]

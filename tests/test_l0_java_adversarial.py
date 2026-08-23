@@ -62,6 +62,158 @@ def test_syntactically_proven_local_types_are_used():
     assert {"Svc.run", "Reader.read", "Problem.report"} <= names
 
 
+def test_local_receiver_types_follow_declaration_order_and_block_scope():
+    calls = _calls("""
+        class C {
+          void f() {
+            handler.run();
+            { Dangerous handler = new Dangerous(); handler.run(); }
+            { Safe handler = new Safe(); handler.run(); }
+            handler.run();
+          }
+        }
+    """)
+    assert [r.dst_name for r in calls if r.dst_name.endswith("run")] == [
+        "run", "Dangerous.run", "Safe.run", "run",
+    ]
+
+
+def test_loop_receiver_type_does_not_escape_its_lexical_scope():
+    calls = _calls("""
+        class C {
+          void f(Items values) {
+            for (Service item : values) item.run();
+            item.run();
+          }
+        }
+    """)
+    assert [r.dst_name for r in calls if r.dst_name.endswith("run")] == [
+        "Service.run", "run",
+    ]
+
+
+def test_duplicate_local_receiver_type_fails_closed():
+    calls = _calls("""
+        class C {
+          void f() {
+            First handler = new First();
+            Second handler = new Second();
+            handler.run();
+          }
+        }
+    """)
+    assert [r.dst_name for r in calls if r.dst_name.endswith("run")] == ["run"]
+
+
+def test_lambda_parameters_shadow_outer_receiver_types():
+    calls = _calls("""
+        class C {
+          void f() {
+            Outer item = new Outer();
+            consume((Inner item) -> item.run());
+            consume(item -> item.run());
+            item.run();
+          }
+        }
+    """)
+    assert [r.dst_name for r in calls if r.dst_name.endswith("run")] == [
+        "Inner.run", "run", "Outer.run",
+    ]
+
+
+def test_lambda_spread_parameter_shadows_outer_receiver_type():
+    calls = _calls("""
+        class C {
+          void f() {
+            Outer items = new Outer();
+            consume((Inner... items) -> items.run());
+            items.run();
+          }
+        }
+    """)
+    assert [r.dst_name for r in calls if r.dst_name.endswith("run")] == [
+        "Inner.run", "Outer.run",
+    ]
+
+
+def test_lambda_spread_parameter_does_not_leak_after_body():
+    calls = _calls("""
+        class C {
+          void f() {
+            consume((Inner... values) -> values.run());
+            values.run();
+          }
+        }
+    """)
+    assert [r.dst_name for r in calls if r.dst_name.endswith("run")] == [
+        "Inner.run", "run",
+    ]
+
+
+def test_instanceof_pattern_type_is_scoped_to_positive_branch():
+    calls = _calls("""
+        class C {
+          void f(Object value) {
+            if (value instanceof Service service) service.run();
+            else service.run();
+            service.run();
+          }
+        }
+    """)
+    assert [r.dst_name for r in calls if r.dst_name.endswith("run")] == [
+        "Service.run", "run", "run",
+    ]
+
+
+def test_complex_instanceof_flow_fails_closed_without_cfg_proof():
+    calls = _calls("""
+        class C {
+          void f(Object value) {
+            if (value instanceof Service service && service.ready()) {
+              service.run();
+            }
+          }
+        }
+    """)
+    assert [r.dst_name for r in calls if r.dst_name.endswith(("ready", "run"))] == [
+        "ready", "run",
+    ]
+
+
+def test_switch_pattern_type_is_scoped_per_arrow_arm_and_guard():
+    calls = _calls("""
+        class C {
+          void f(Object value) {
+            switch (value) {
+              case Service item when item.ready() -> item.run();
+              case Other item -> item.run();
+              default -> item.run();
+            }
+            item.run();
+          }
+        }
+    """)
+    names = [r.dst_name for r in calls
+             if r.dst_name.endswith(("ready", "run"))]
+    assert names == ["Service.ready", "Service.run", "Other.run", "run", "run"]
+
+
+def test_switch_colon_pattern_does_not_leak_to_next_group():
+    calls = _calls("""
+        class C {
+          void f(Object value) {
+            switch (value) {
+              case Service item: item.run(); break;
+              default: item.run();
+            }
+          }
+        }
+    """)
+    assert [r.dst_name for r in calls if r.dst_name.endswith("run")] == [
+        "Service.run", "run",
+    ]
+
+
 def test_method_and_constructor_references_are_calls():
     names = {r.dst_name for r in _calls("""
         import a.b.Factory;

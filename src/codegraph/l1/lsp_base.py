@@ -102,6 +102,8 @@ class LspResolver:
     # limite de I/O por leitura: servidor que trava (aceita didOpen mas nunca
     # responde) não pode congelar a indexação — estourou, mata e desiste.
     io_timeout: float = 20.0
+    # Encerrar um servidor já degradado não pode repetir o timeout de análise.
+    shutdown_timeout: float = 2.0
 
     # -- descoberta / disponibilidade ----------------------------------------
 
@@ -139,6 +141,23 @@ class LspResolver:
         self._lines: dict[str, list[str]] = {}
         self._ready = False
         self._dead = False
+        # Observabilidade do protocolo. Language servers costumam comunicar
+        # falhas de import/build por notificacoes (e nao levantando uma excecao
+        # no processo cliente). Sem guardar esses sinais, um workspace sem
+        # modelo semantico podia parecer uma execucao limpa com 0 promocoes.
+        self._health_errors: list[str] = []
+        self._health_warnings: list[str] = []
+        self._diagnostics_by_uri: dict[str, list[str]] = {}
+        self._semantic_sites = 0
+        self._semantic_hits = 0
+        self._warmup_timed_out = False
+        # O timeout curto de ``shutdown`` usa o mesmo caminho de kill das
+        # falhas operacionais. Preserve se o servidor chegou saudável ao
+        # encerramento para que o teardown não reescreva retrospectivamente a
+        # saúde da análise; falhas ocorridas antes de ``close`` continuam
+        # visíveis por ``_ok``/``_dead`` e pelos diagnósticos observados.
+        self._shutdown_started_healthy = False
+        self._active_deadline: float | None = None
         # thread leitora dedicada + fila: dá timeout a cada leitura sem depender
         # de select() (indisponível em pipe no Windows). Um servidor travado é
         # detectado pelo timeout da fila, não bloqueia a thread principal.
@@ -203,6 +222,9 @@ class LspResolver:
 
     def _read(self, timeout: float | None = None) -> dict | None:
         """Próxima mensagem, com timeout de I/O. None = EOF ou servidor travou."""
+        if self._dead or self.proc.poll() is not None:
+            self._kill()
+            return None
         wait = self.io_timeout if timeout is None else max(0.0, timeout)
         try:
             msg = self._q.get(timeout=wait)
@@ -211,7 +233,10 @@ class LspResolver:
                         self.cmd_name, wait)
             self._kill()
             return None
-        return None if msg is _EOF else msg
+        if msg is _EOF:
+            self._kill()
+            return None
+        return msg
 
     def _kill(self) -> None:
         self._dead = True
@@ -221,7 +246,8 @@ class LspResolver:
         except Exception:
             pass
 
-    def _request(self, method: str, params, timeout_msgs: int = 2000):
+    def _request(self, method: str, params, timeout_msgs: int = 2000,
+                 *, timeout: float | None = None):
         if self._dead or self.proc.poll() is not None:
             return None
         self._seq += 1
@@ -230,7 +256,13 @@ class LspResolver:
                      "params": params})
         # Limite TOTAL: notificações de progresso não podem manter viva para
         # sempre uma requisição cuja resposta nunca chega.
-        deadline = time.monotonic() + self.io_timeout
+        now = time.monotonic()
+        budget = self.io_timeout if timeout is None else min(self.io_timeout,
+                                                              max(0.0, timeout))
+        deadline = now + budget
+        active = getattr(self, "_active_deadline", None)
+        if active is not None:
+            deadline = min(deadline, active)
         for _ in range(timeout_msgs):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -239,12 +271,168 @@ class LspResolver:
             msg = self._read(remaining)
             if msg is None:
                 return None
+            self._observe_message(msg)
             if msg.get("id") == rid and "method" not in msg:
+                if msg.get("error"):
+                    return None
                 return msg.get("result")
             if "id" in msg and "method" in msg:
                 self._write({"jsonrpc": "2.0", "id": msg["id"],
                              "result": self._server_request_result(msg)})
         return None
+
+    @staticmethod
+    def _health_text(value) -> str:
+        """Texto curto e estavel para diagnosticos retornados no relatorio."""
+        if isinstance(value, dict):
+            value = value.get("message") or value.get("detail") or value
+        text = " ".join(str(value or "falha LSP sem detalhe").split())
+        return text[:500]
+
+    def _record_health(self, severity: str, value) -> None:
+        text = self._health_text(value)
+        target = (self._health_errors if severity == "error"
+                  else self._health_warnings)
+        if text not in target and len(target) < 20:
+            target.append(text)
+
+    def _observe_message(self, msg: dict) -> None:
+        """Preserva sinais de saude que antes eram descartados pelo cliente.
+
+        O protocolo base cobre respostas JSON-RPC de erro e mensagens LSP
+        padrao. JDTLS tambem usa ``language/status`` e
+        ``language/actionableNotification`` para falhas de import/build.
+        Diagnostico de compilacao ``Error`` torna o resultado parcial: o
+        servidor pode continuar resolvendo parte do projeto, mas nao ha modelo
+        completo para declarar a passada saudavel.
+        """
+        if msg.get("error"):
+            self._record_health("error", msg["error"])
+            return
+
+        method = msg.get("method")
+        params = msg.get("params") or {}
+        if method == "textDocument/publishDiagnostics":
+            # publishDiagnostics contém o snapshot completo atual daquele URI.
+            # Uma publicação vazia limpa erros antigos; outro arquivo não deve
+            # apagar diagnósticos ainda ativos deste URI.
+            uri = str(params.get("uri") or "<unknown>")
+            errors = []
+            for diagnostic in params.get("diagnostics", []):
+                severity = diagnostic.get("severity")
+                if severity == 1:
+                    text = self._health_text(diagnostic)
+                    if text not in errors and len(errors) < 20:
+                        errors.append(text)
+            diagnostics = getattr(self, "_diagnostics_by_uri", None)
+            if diagnostics is None:
+                diagnostics = self._diagnostics_by_uri = {}
+            diagnostics[uri] = errors
+            return
+
+        if method in {"window/showMessage", "window/logMessage"}:
+            severity = params.get("type")
+            if severity == 1:
+                self._record_health("error", params)
+            elif severity == 2:
+                self._record_health("warning", params)
+            return
+
+        if method in {"language/status", "language/actionableNotification"}:
+            raw = params.get("type", params.get("severity", ""))
+            severity = str(raw).lower()
+            if raw == 1 or "error" in severity:
+                self._record_health("error", params)
+            elif raw == 2 or "warn" in severity:
+                self._record_health("warning", params)
+
+    def _drain_pending(self, timeout: float = 0.0) -> None:
+        """Observa mensagens já recebidas pelo reader sem exceder ``timeout``.
+
+        A resposta de shutdown pode anteceder um ``publishDiagnostics`` que o
+        reader já colocou (ou está prestes a colocar) na fila. Consumir somente
+        até a resposta esconderia esse erro do health report. O EOF é terminal,
+        mas depois de um shutdown iniciado saudável não reclassifica o teardown
+        normal como falha da análise.
+        """
+        pending = getattr(self, "_q", None)
+        if pending is None:
+            return
+        deadline = time.monotonic() + max(0.0, timeout)
+        reader = getattr(self, "_reader", None)
+        while True:
+            try:
+                msg = pending.get_nowait()
+            except queue.Empty:
+                remaining = deadline - time.monotonic()
+                is_alive = (reader is not None
+                            and getattr(reader, "is_alive", lambda: False)())
+                if remaining <= 0 or not is_alive:
+                    break
+                try:
+                    msg = pending.get(timeout=min(0.05, remaining))
+                except queue.Empty:
+                    continue
+            if msg is _EOF:
+                self._dead = True
+                self._ok = False
+                break
+            self._observe_message(msg)
+        if reader is not None:
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                join = getattr(reader, "join", None)
+                if join is not None:
+                    join(timeout=remaining)
+        # Uma mensagem pode ter sido colocada entre o último get e o join.
+        while True:
+            try:
+                msg = pending.get_nowait()
+            except queue.Empty:
+                break
+            if msg is _EOF:
+                self._dead = True
+                self._ok = False
+                break
+            self._observe_message(msg)
+
+    def health_report(self) -> dict:
+        """Saude observada da instancia, independente do numero de promocoes.
+
+        Zero promocoes e valido (por exemplo, chamadas apenas externas). Ele so
+        vira ``partial`` quando ha evidencia positiva de falha: inicializacao,
+        transporte/protocolo, diagnostico Error ou status Error do servidor.
+        Timeout de warmup sem definicao e mantido como aviso ``unverified``.
+        """
+        # Normalmente ``refine`` chama health depois de ``close``. O drain
+        # adicional torna a API direta segura para mensagens que já chegaram,
+        # sem esperar nem roubar tempo de uma requisição ativa.
+        self._drain_pending()
+        errors = list(getattr(self, "_health_errors", ()))
+        for current in getattr(self, "_diagnostics_by_uri", {}).values():
+            errors.extend(current)
+        errors = list(dict.fromkeys(errors))
+        warnings = list(getattr(self, "_health_warnings", ()))
+        ok = ((bool(getattr(self, "_ok", False))
+               and not getattr(self, "_dead", False))
+              or bool(getattr(self, "_shutdown_started_healthy", False)))
+        if not ok and "servidor LSP indisponivel ou sem handshake" not in errors:
+            errors.append("servidor LSP indisponivel ou sem handshake")
+        timed_out = bool(getattr(self, "_warmup_timed_out", False))
+        sites = int(getattr(self, "_semantic_sites", 0))
+        hits = int(getattr(self, "_semantic_hits", 0))
+        if timed_out and sites and hits == 0 and not errors:
+            warnings.append(
+                f"readiness semantica nao comprovada: 0/{sites} site(s) "
+                "obtiveram definicao durante o warmup")
+        return {
+            "status": "partial" if errors else "complete",
+            "errors": errors,
+            "warnings": list(dict.fromkeys(warnings)),
+            "sites": sites,
+            "resolved_sites": hits,
+            "warmup_timed_out": timed_out,
+        }
 
     def _server_request_result(self, msg: dict):
         """Resposta mínima correta às requisições usuais servidor→cliente."""
@@ -295,12 +483,32 @@ class LspResolver:
             return False
 
     def close(self) -> None:
+        proc = getattr(self, "proc", None)
+        if proc is None:
+            self._drain_pending()
+            return
+        running = not self._dead and proc.poll() is None
+        self._shutdown_started_healthy = bool(
+            running and getattr(self, "_ok", False))
+        deadline = time.monotonic() + max(0.0, self.shutdown_timeout)
+        if not running:
+            if proc.poll() is not None:
+                self._dead = True
+                self._ok = False
+            self._drain_pending()
+            return
         try:
-            self._request("shutdown", None, timeout_msgs=50)
-            self._notify("exit", None)
-            self.proc.wait(timeout=5)
+            remaining = max(0.0, deadline - time.monotonic())
+            self._request("shutdown", None, timeout_msgs=50,
+                          timeout=remaining)
+            if not self._dead and self.proc.poll() is None:
+                self._notify("exit", None)
+                remaining = max(0.0, deadline - time.monotonic())
+                self.proc.wait(timeout=remaining)
         except Exception:
-            self.proc.kill()
+            self._kill()
+        finally:
+            self._drain_pending(max(0.0, deadline - time.monotonic()))
 
     # -- resolução ------------------------------------------------------------
 
@@ -351,17 +559,32 @@ class LspResolver:
                   if any(sep in (edge["dst_name"] or "")
                          for sep in ("::", ".", "->"))), edges[0])
         col = self._query_col(rel, e["line"], e["col"], e["dst_name"])
-        deadline = time.time() + self.ready_timeout
-        while time.time() < deadline:
-            if self._definition(rel, e["line"] - 1, col):
-                break
-            # resposta VAZIA durante o warmup é "ainda indexando", não "não
-            # existe" — e não pode ficar no memo, senão a própria espera relê o
-            # "ainda não" cacheado e nunca vê o servidor ficar pronto. Servidores
-            # que seguram a requisição até indexar (gopls) nunca caem aqui; o
-            # intelephense responde [] na hora, e era isso que zerava o L1 de PHP.
-            self._defcache.pop((rel, e["line"] - 1, col), None)
-            time.sleep(1.0)
+        deadline = time.monotonic() + self.ready_timeout
+        ready = False
+        previous_deadline = getattr(self, "_active_deadline", None)
+        self._active_deadline = (deadline if previous_deadline is None
+                                 else min(deadline, previous_deadline))
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                proc = getattr(self, "proc", None)
+                if (remaining <= 0 or getattr(self, "_dead", False)
+                        or (proc is not None and proc.poll() is not None)):
+                    break
+                if self._definition(rel, e["line"] - 1, col):
+                    ready = True
+                    break
+                # resposta VAZIA durante o warmup é "ainda indexando", não "não
+                # existe" — e não pode ficar no memo, senão a própria espera relê o
+                # "ainda não" cacheado e nunca vê o servidor ficar pronto.
+                self._defcache.pop((rel, e["line"] - 1, col), None)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or getattr(self, "_dead", False):
+                    break
+                time.sleep(min(1.0, remaining))
+        finally:
+            self._active_deadline = previous_deadline
+        self._warmup_timed_out = not ready
         self._ready = True
 
     def _definition(self, rel: str, line0: int, char0: int):
@@ -419,6 +642,8 @@ class LspResolver:
         self._open(rel)
         if not self._ready:
             self._warmup(rel, edges)
+        if self._dead or self.proc.poll() is not None:
+            return 0
         promoted = 0
         seen_sites: set[tuple[int, int]] = set()
         for e in edges:
@@ -428,6 +653,9 @@ class LspResolver:
             seen_sites.add(site)
             col = self._query_col(rel, e["line"], e["col"], e["dst_name"])
             locs = self._definition(rel, e["line"] - 1, col)
+            self._semantic_sites += 1
+            if locs:
+                self._semantic_hits += 1
             # multi-def (overloads / interface+impls / decl+def) NÃO é descartado:
             # cada definição no repo vira um alvo; promote.apply decide certain
             # (1 alvo) vs fan-out inferred (2..MAX).

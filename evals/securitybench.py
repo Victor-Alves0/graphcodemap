@@ -32,9 +32,18 @@ from codegraph.eval.security_bench import (  # noqa: E402
     normalize_opengrep,
     normalize_sarif,
     run_graphcodemap,
+    sarif_execution_health,
 )
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _serialized_errors(value: object) -> list[str]:
+    if not value:
+        return []
+    items = value if isinstance(value, list) else [value]
+    return [item if isinstance(item, str) else json.dumps(
+        item, ensure_ascii=False, sort_keys=True) for item in items]
 
 
 def _binary(name: str) -> str | None:
@@ -111,18 +120,25 @@ def import_report(kind: str, input_path: Path, root: Path,
                   tool_name: str | None = None) -> dict:
     started = __import__("time").perf_counter()
     raw = json.loads(input_path.read_text(encoding="utf-8-sig"))
+    errors = _serialized_errors(raw.get("errors")
+                                if isinstance(raw, dict) else None)
+    exit_code: int | None = 0
     if kind == "sarif":
         findings, tool, warnings = normalize_sarif(
             raw, tool_hint=tool_name, root=root)
+        sarif_partial, sarif_errors, exit_code = sarif_execution_health(raw)
+        if sarif_partial:
+            errors.extend(sarif_errors)
     else:
         findings, tool, warnings = normalize_opengrep(
             raw, tool_hint=tool_name or "opengrep", root=root)
-    partial = bool(raw.get("errors")) if isinstance(raw, dict) else False
+    partial = bool(errors)
     return build_report(
         tool=tool, root=root, findings=findings,
         status="partial" if partial else "complete",
         duration_s=__import__("time").perf_counter() - started,
-        peak_rss_mb=None, command=[kind, str(input_path)], warnings=warnings,
+        peak_rss_mb=None, exit_code=exit_code,
+        command=[kind, str(input_path)], warnings=warnings, errors=errors,
         extra={"input": str(input_path.resolve()),
                "adapter_version": ADAPTER_VERSION})
 
@@ -183,6 +199,7 @@ def run_external(kind: str, root: Path, *, config: str | None = None,
         findings: list[dict] = []
         parsed_tool = tool
         parser_partial = False
+        report_exit_code = result["exit_code"]
         try:
             if kind == "run-opengrep":
                 native = json.loads(result["stdout"])
@@ -194,6 +211,12 @@ def run_external(kind: str, root: Path, *, config: str | None = None,
                 native = json.loads(sarif_path.read_text(encoding="utf-8-sig"))
                 findings, parsed_tool, warnings = normalize_sarif(
                     native, root=root, tool_hint=executable_name)
+                sarif_partial, sarif_errors, sarif_exit = (
+                    sarif_execution_health(native))
+                parser_partial = parser_partial or sarif_partial
+                errors.extend(sarif_errors)
+                if sarif_exit not in (None, 0) or report_exit_code is None:
+                    report_exit_code = sarif_exit
                 parsed_tool["version"] = version or parsed_tool["version"]
             else:
                 raise ValueError("a ferramenta não produziu o arquivo de resultado")
@@ -218,13 +241,14 @@ def run_external(kind: str, root: Path, *, config: str | None = None,
             errors.append(f"timeout após {timeout_s}s")
         elif result["exit_code"] not in (0,):
             errors.append(f"exit code {result['exit_code']}")
-        status = ("failed" if not findings and errors else
-                  "partial" if errors or parser_partial else "complete")
+        status = ("partial" if parser_partial else
+                  "failed" if not findings and errors else
+                  "partial" if errors else "complete")
         return build_report(
             tool=parsed_tool, root=root, findings=findings, status=status,
             duration_s=result["duration_s"], peak_rss_mb=result["peak_rss_mb"],
             memory_scope="process-tree" if result["peak_rss_mb"] is not None else None,
-            exit_code=result["exit_code"], command=command,
+            exit_code=report_exit_code, command=command,
             warnings=warnings, errors=errors,
             extra={"timeout_s": timeout_s,
                    "memory_note": "peak sum of the sampled process tree"})
@@ -322,7 +346,12 @@ def main() -> int:
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(render(report))
     print(f"output: {out}")
-    return 0 if report["invocation"]["status"] in {"complete", "partial"} else 1
+    status = report["invocation"]["status"]
+    if status == "complete":
+        return 0
+    if status == "partial":
+        return 2
+    return 1
 
 
 if __name__ == "__main__":

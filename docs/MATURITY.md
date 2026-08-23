@@ -27,13 +27,14 @@ Generated from `codegraph capabilities` after the August 2026 consolidation:
 - 23 dedicated extractors;
 - dataflow for 19 of 37 applicable recognized languages;
 - flow-sensitive analysis for 18 languages;
-- 19 L1 adapters: 11 with a live smoke test and 4 with real-repository evidence;
+- 19 L1 adapters: 11 with a live smoke test and 5 with real-repository evidence;
 - 5 languages with external security evidence.
 
-The strongest current language profiles are Python, JavaScript and PHP.
-Java now has labeled-benchmark security evidence plus real Maven/JDTLS evidence;
-Round 26 used JDTLS 1.60.0 on JDK 21, with 8,838 promotions and zero resolver
-errors. Gradle remains unproven. Ruby has real-application security evidence but its L1 adapter is only
+The strongest current language profiles are Python, JavaScript, PHP and Java.
+Java's Round 27 profile is operationally eligible: its corrected Juliet JDTLS
+overlay completed with 732/732 files, 4,408 `certain` promotions and zero
+warnings/errors. Ruby has
+real-application security evidence but its L1 adapter is only
 wired. Go has real-repository L1 evidence but still needs a labeled security
 corpus. The remaining languages must not be described as equivalent to those
 profiles.
@@ -47,7 +48,7 @@ Run `codegraph capabilities [language]` for the machine-readable current view.
 | Graph and freshness | Strong incremental core; policy-change cleanup now covered | Multiprocess stress and no known stale-read path |
 | L0 extraction | Broad and well unit-tested | Real call-edge oracles for every Tier-A language |
 | L1 resolution | Broadly wired, unevenly proven | Live integration plus real-repo evidence for Tier A |
-| Dataflow and taint | OWASP recall 96.2% with FPR 11.6%; Juliet CWE-23 holdout recall 69.4% with FPR 0%; all three pinned Java vulnerabilities are found and two patches clear their oracles | Extend heap summaries across invoked lambdas, wider fan-out and type hierarchies; clear OpenRefine without hiding vulnerable flows |
+| Dataflow and taint | Round 27 Java: OWASP 902/0/0/796, Juliet CWE-23 444/0/0/444; all three pinned Java vulnerabilities are found and all three fixes clear | Add independent CVEs/frameworks rather than treating two perfect corpora as universal proof |
 | CLI, library and MCP | Main surfaces implemented | Versioned response schemas and parity contract tests |
 | Visualization | Functional; script-breakout regression covered | Large-graph performance budget and browser smoke suite |
 | L3 descriptions | Experimental and optional | Provider-neutral quality/cost evaluation; not a v0.2 blocker |
@@ -63,6 +64,13 @@ behavior. The verified external snapshot is 868 / 92 / 34 / 704 on OWASP,
 outcomes. Exact environment, resource use and SHA-256 values are in the
 [Round 26 manifest](../evals/round26-external-gates-manifest.json) and summarized
 in [Security Benchmark](SECURITY_BENCHMARK.md#round-26-verified-java-gate).
+
+Round 27 supersedes Round 26 for Java: 902/0/0/796 on OWASP, 444/0/0/444 on
+Juliet and 3/3 vulnerable plus 3/3 fixed real-pair outcomes. The final local
+project gate is **1,778 passed, 27 skipped**. The corrected Juliet overlay
+distinguished shutdown bookkeeping from real diagnostics and completed with
+732/732 files, 4,408 `certain` promotions and no warnings/errors. Final
+pre-report analysis took 224.707 s on OWASP and 19.039 s on Juliet.
 
 ## Rule for adding scope
 

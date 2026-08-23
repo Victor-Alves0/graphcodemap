@@ -18,12 +18,15 @@ import tempfile
 import threading
 import time
 from collections import Counter
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Iterable
 from urllib.parse import unquote, urlparse
 
 SCHEMA_VERSION = 1
-ADAPTER_VERSION = "1.0"
+ADAPTER_VERSION = "1.1"
+_MAX_ARGUMENT_LITERAL_BYTES = 128
+_GIT_COMMIT_RE = re.compile(r"^[0-9a-f]{7,64}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 CWE_CATEGORY = {
     "22": "path-traversal",
@@ -149,20 +152,46 @@ def infer_graphcodemap_category(sink: str, raw: Any = None) -> str:
     return _SINK_CATEGORY.get(tail) or infer_category((), sink, raw)
 
 
+def _is_safe_relative_path(value: object, *, allow_dot: bool = False) -> bool:
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+        return False
+    normalized = value.strip().replace("\\", "/")
+    if normalized == ".":
+        return allow_dot
+    posix = PurePosixPath(normalized)
+    windows = PureWindowsPath(value.strip())
+    if posix.is_absolute() or windows.is_absolute() or windows.drive:
+        return False
+    return all(part not in {"", ".", ".."} for part in posix.parts)
+
+
 def normalize_path(value: str | None, root: str | Path | None = None) -> str | None:
     if not value:
         return None
     raw = unquote(str(value)).strip()
     parsed = urlparse(raw)
     if parsed.scheme == "file":
-        raw = (parsed.netloc + parsed.path).lstrip("/") if parsed.netloc else parsed.path
+        raw = (f"//{parsed.netloc}{parsed.path}"
+               if parsed.netloc else parsed.path)
         if re.match(r"^/[A-Za-z]:/", raw):
             raw = raw[1:]
+    elif (parsed.scheme and root
+          and not re.match(r"^[A-Za-z]:[\\/]", raw)):
+        return None
     raw = raw.replace("\\", "/")
     if root:
-        base = str(Path(root).resolve()).replace("\\", "/").rstrip("/")
-        if raw.lower().startswith(base.lower() + "/"):
-            raw = raw[len(base) + 1:]
+        if any(part == ".." for part in PurePosixPath(raw).parts):
+            return None
+        base = Path(root).resolve()
+        candidate = Path(raw) if (PurePosixPath(raw).is_absolute()
+                                  or PureWindowsPath(raw).is_absolute()) \
+            else base.joinpath(*PurePosixPath(raw).parts)
+        try:
+            relative = candidate.resolve(strict=False).relative_to(base)
+        except (OSError, ValueError):
+            return None
+        normalized = relative.as_posix()
+        return normalized if _is_safe_relative_path(normalized) else None
     while raw.startswith("./"):
         raw = raw[2:]
     return raw or None
@@ -176,9 +205,22 @@ def _line(value: Any) -> int | None:
         return None
 
 
+def _one_based_column(value: Any) -> int | None:
+    """Convert GraphCodeMap/tree-sitter zero-based columns for report JSON."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number + 1 if number >= 0 else None
+
+
 def location(path: str | None, line: Any = None, column: Any = None,
              label: str | None = None, symbol: str | None = None,
-             root: str | Path | None = None) -> dict | None:
+             root: str | Path | None = None, byte_span: Any = None,
+             argument_literals: Any = None,
+             parameter: str | None = None) -> dict | None:
     path = normalize_path(path, root)
     if not path:
         return None
@@ -190,6 +232,31 @@ def location(path: str | None, line: Any = None, column: Any = None,
         out["label"] = str(label)
     if symbol:
         out["symbol"] = str(symbol)
+    if isinstance(byte_span, dict):
+        start, end = byte_span.get("start"), byte_span.get("end")
+        if (isinstance(start, int) and not isinstance(start, bool)
+                and isinstance(end, int) and not isinstance(end, bool)
+                and 0 <= start <= end):
+            out["byte_span"] = {"start": start, "end": end}
+    if isinstance(argument_literals, dict):
+        published = {}
+        for index, value in argument_literals.items():
+            try:
+                normalized_index = int(index)
+            except (TypeError, ValueError):
+                continue
+            if (normalized_index < 0 or not isinstance(value, str)
+                    or not value or not value.isprintable()
+                    or len(value.encode("utf-8"))
+                    > _MAX_ARGUMENT_LITERAL_BYTES):
+                continue
+            published[str(normalized_index)] = value
+        if published:
+            out["argument_literals"] = published
+    if (isinstance(parameter, str) and parameter.isprintable()
+            and 0 < len(parameter.encode("utf-8"))
+            <= _MAX_ARGUMENT_LITERAL_BYTES):
+        out["parameter"] = parameter
     return out
 
 
@@ -209,9 +276,10 @@ def make_finding(*, rule_id: str, message: str = "", severity: str = "warning",
                  cwes: Iterable[str] = (), category: str = "unknown",
                  source: dict | None = None, sink: dict,
                  confidence: str | None = None,
-                 evidence: str | None = None) -> dict:
+                 evidence: str | None = None,
+                 steps: list[dict] | None = None) -> dict:
     cwe_list = sorted({str(int(c)) for c in cwes if str(c).isdigit()}, key=int)
-    finding = {
+    finding: dict[str, object] = {
         "rule_id": str(rule_id or "unknown"),
         "category": category or "unknown",
         "cwes": cwe_list,
@@ -222,6 +290,8 @@ def make_finding(*, rule_id: str, message: str = "", severity: str = "warning",
         "confidence": confidence,
         "evidence": evidence,
     }
+    if steps:
+        finding["steps"] = steps
     finding["fingerprint"] = _fingerprint(finding)
     return finding
 
@@ -238,10 +308,65 @@ def git_metadata(root: str | Path) -> dict:
             return None
 
     commit = git("rev-parse", "HEAD")
-    status = git("status", "--porcelain", "--untracked-files=no")
+    # Scope dirtiness to the scanned root, but include untracked inputs: an
+    # untracked source file can change findings just as much as a tracked edit.
+    status = git("status", "--porcelain", "--untracked-files=all", "--", ".")
     remote = git("config", "--get", "remote.origin.url")
+    top_level = git("rev-parse", "--show-toplevel")
+    if remote:
+        remote = remote.strip().rstrip("/")
+        scp = re.fullmatch(r"git@([^:]+):(.+)", remote)
+        ssh = re.fullmatch(r"ssh://git@([^/]+)/(.+)", remote)
+        if scp:
+            remote = f"https://{scp.group(1)}/{scp.group(2)}"
+        elif ssh:
+            remote = f"https://{ssh.group(1)}/{ssh.group(2)}"
+    scan_subdir = None
+    if top_level:
+        try:
+            relative = root.relative_to(Path(top_level).resolve())
+            scan_subdir = relative.as_posix() or "."
+        except ValueError:
+            pass
     return {"commit": commit, "dirty": bool(status) if status is not None else None,
-            "remote": remote}
+            "remote": remote, "top_level": top_level,
+            "scan_subdir": scan_subdir}
+
+
+def _source_tree_sha256(repo_root: Path) -> str | None:
+    """Hash the executable GraphCodeMap Python source deterministically."""
+    source_root = repo_root / "src" / "codegraph"
+    try:
+        files = sorted(path for path in source_root.rglob("*.py")
+                       if path.is_file())
+        if not files:
+            return None
+        digest = hashlib.sha256()
+        for path in files:
+            digest.update(path.relative_to(repo_root).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+            digest.update(b"\0")
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _engine_provenance(tool: dict) -> dict:
+    repo_root = Path(__file__).resolve().parents[3]
+    metadata = git_metadata(repo_root)
+    source_hash = _source_tree_sha256(repo_root)
+    provenance = dict(tool)
+    if (isinstance(metadata["commit"], str)
+            and isinstance(metadata["dirty"], bool)
+            and (not metadata["dirty"] or source_hash is not None)):
+        provenance.update({
+            "git_commit": metadata["commit"],
+            "git_dirty": metadata["dirty"],
+            "git_remote": metadata["remote"],
+            "source_tree_sha256": source_hash,
+        })
+    return provenance
 
 
 def _driver_rules(run: dict) -> dict[str, dict]:
@@ -271,6 +396,86 @@ def _sarif_flow(result: dict, root=None) -> tuple[dict | None, dict | None]:
                 if loc:
                     points.append(loc)
     return ((points[0], points[-1]) if points else (None, None))
+
+
+def _sarif_message(value: object) -> str:
+    if not isinstance(value, dict):
+        return ""
+    message = value.get("message")
+    if isinstance(message, dict):
+        return str(message.get("text") or message.get("markdown") or "").strip()
+    return str(message or "").strip()
+
+
+def sarif_execution_health(data: object) -> tuple[bool, list[str], int | None]:
+    """Return SARIF execution partial/errors/exit evidence, fail-closed.
+
+    A SARIF run may omit ``invocations`` entirely, but every invocation that is
+    present must publish the required ``executionSuccessful`` boolean. Error
+    notifications and non-zero embedded exit codes are execution failures even
+    when findings were serialized successfully.
+    """
+    if not isinstance(data, dict):
+        return True, ["SARIF root must be an object"], None
+    runs = data.get("runs")
+    if not isinstance(runs, list) or not runs:
+        return True, ["SARIF runs must be a non-empty array"], None
+    errors: list[str] = []
+    exit_codes: list[int] = []
+    unknown_failure_exit = False
+    for run_index, run in enumerate(runs):
+        if not isinstance(run, dict):
+            errors.append(f"SARIF run {run_index} must be an object")
+            unknown_failure_exit = True
+            continue
+        invocations = run.get("invocations")
+        if invocations is None:
+            continue
+        if not isinstance(invocations, list):
+            errors.append(f"SARIF run {run_index} invocations must be an array")
+            unknown_failure_exit = True
+            continue
+        for invocation_index, invocation in enumerate(invocations):
+            prefix = f"SARIF run {run_index} invocation {invocation_index}"
+            if not isinstance(invocation, dict):
+                errors.append(f"{prefix} must be an object")
+                unknown_failure_exit = True
+                continue
+            success = invocation.get("executionSuccessful")
+            if success is not True:
+                state = "false" if success is False else "missing or invalid"
+                errors.append(f"{prefix} executionSuccessful is {state}")
+            embedded_exit = invocation.get("exitCode")
+            if "exitCode" in invocation:
+                if isinstance(embedded_exit, bool) or not isinstance(embedded_exit, int):
+                    errors.append(f"{prefix} exitCode must be an integer")
+                    unknown_failure_exit = True
+                else:
+                    exit_codes.append(embedded_exit)
+                    if embedded_exit != 0:
+                        errors.append(f"{prefix} exitCode is {embedded_exit}")
+            elif success is not True:
+                unknown_failure_exit = True
+            notifications = invocation.get("toolExecutionNotifications") or []
+            if not isinstance(notifications, list):
+                errors.append(
+                    f"{prefix} toolExecutionNotifications must be an array")
+                unknown_failure_exit = True
+                continue
+            for notification_index, notification in enumerate(notifications):
+                if not isinstance(notification, dict):
+                    errors.append(
+                        f"{prefix} notification {notification_index} must be an object")
+                    continue
+                if notification.get("level") == "error":
+                    detail = _sarif_message(notification) or "tool execution error"
+                    errors.append(
+                        f"{prefix} notification {notification_index}: {detail}")
+    unique_errors = list(dict.fromkeys(errors))
+    nonzero = next((code for code in exit_codes if code != 0), None)
+    exit_code = nonzero if nonzero is not None else (
+        None if unique_errors and unknown_failure_exit else 0)
+    return bool(unique_errors), unique_errors, exit_code
 
 
 def normalize_sarif(data: dict, *, tool_hint: str | None = None,
@@ -422,11 +627,19 @@ def build_report(*, tool: dict, root: str | Path, findings: list[dict],
                  peak_rss_mb: float | None = None, exit_code: int | None = 0,
                  memory_scope: str | None = None,
                  command: list[str] | None = None, warnings: list[str] | None = None,
-                 errors: list[str] | None = None, extra: dict | None = None) -> dict:
+                 errors: list[str] | None = None, extra: dict | None = None,
+                 truncated: bool = False,
+                 analysis: dict | None = None) -> dict:
+    if status == "complete" and truncated is not False:
+        raise ValueError("status complete exige truncated=false")
+    if status == "complete" and errors:
+        raise ValueError("status complete exige errors=[]")
     target_git = git_metadata(root)
     normalized_findings = deduplicate(findings)
     report = {
         "schema_version": SCHEMA_VERSION,
+        "status": status,
+        "truncated": bool(truncated),
         "tool": tool,
         "target": {"name": Path(root).resolve().name,
                    "git_commit": target_git["commit"],
@@ -448,20 +661,90 @@ def build_report(*, tool: dict, root: str | Path, findings: list[dict],
         "errors": list(errors or []),
         "extra": extra or {},
     }
+    if (target_git["remote"] and target_git["commit"]
+            and target_git["scan_subdir"] is not None):
+        report["subject"] = {
+            "repository": target_git["remote"],
+            "commit": target_git["commit"],
+            "scan_subdir": target_git["scan_subdir"],
+        }
+    if analysis:
+        report["analysis"] = analysis
     report["summary"] = _summary(normalized_findings)
-    validate_report(report)
+    validate_report(report, root=root)
     return report
 
 
-def validate_report(report: dict) -> None:
+def validate_report(report: dict, *, root: str | Path | None = None) -> None:
     if report.get("schema_version") != SCHEMA_VERSION:
         raise ValueError("schema_version ausente ou incompatível")
-    for key in ("tool", "target", "invocation", "findings", "summary", "warnings", "errors"):
+    for key in ("status", "truncated", "tool", "target", "invocation",
+                "findings", "summary", "warnings", "errors"):
         if key not in report:
             raise ValueError(f"campo obrigatório ausente: {key}")
     if report["invocation"].get("status") not in {
             "complete", "partial", "failed", "unavailable"}:
         raise ValueError("invocation.status inválido")
+    if report["status"] != report["invocation"].get("status"):
+        raise ValueError("status diverge de invocation.status")
+    if report["status"] == "complete" \
+            and report["invocation"].get("exit_code") != 0:
+        raise ValueError("status complete exige invocation.exit_code zero")
+    if not isinstance(report["truncated"], bool):
+        raise ValueError("truncated deve ser boolean")
+    if (not isinstance(report["errors"], list)
+            or not all(isinstance(error, str) for error in report["errors"])):
+        raise ValueError("errors deve ser array de strings")
+    if report["status"] == "complete" and report["truncated"]:
+        raise ValueError("status complete exige truncated=false")
+    if report["status"] == "complete" and report["errors"]:
+        raise ValueError("status complete exige errors=[]")
+    target = report.get("target")
+    if not isinstance(target, dict):
+        raise ValueError("target deve ser objeto")
+    target_commit = target.get("git_commit")
+    if (target_commit is not None
+            and (not isinstance(target_commit, str)
+                 or not _GIT_COMMIT_RE.fullmatch(target_commit))):
+        raise ValueError("target.git_commit inválido")
+    if not isinstance(target.get("git_dirty"), (bool, type(None))):
+        raise ValueError("target.git_dirty deve ser boolean ou null")
+    if not isinstance(target.get("git_remote"), (str, type(None))):
+        raise ValueError("target.git_remote deve ser string ou null")
+    subject = report.get("subject")
+    if subject is not None:
+        if not isinstance(subject, dict):
+            raise ValueError("subject deve ser objeto")
+        if not _is_safe_relative_path(subject.get("scan_subdir"), allow_dot=True):
+            raise ValueError("subject.scan_subdir deve ser relativo ao repositório")
+        if (not isinstance(subject.get("commit"), str)
+                or not _GIT_COMMIT_RE.fullmatch(subject["commit"])):
+            raise ValueError("subject.commit inválido")
+        if target.get("git_commit") != subject.get("commit"):
+            raise ValueError("target.git_commit diverge de subject.commit")
+        target_remote = str(target.get("git_remote") or "").rstrip("/")
+        subject_remote = str(subject.get("repository") or "").rstrip("/")
+        if target_remote != subject_remote:
+            raise ValueError("target.git_remote diverge de subject.repository")
+    analysis = report.get("analysis")
+    engine = analysis.get("engine") if isinstance(analysis, dict) else None
+    if isinstance(engine, dict):
+        provenance_keys = {"git_commit", "git_dirty", "source_tree_sha256"}
+        if provenance_keys.intersection(engine):
+            commit = engine.get("git_commit")
+            dirty = engine.get("git_dirty")
+            tree_hash = engine.get("source_tree_sha256")
+            if (not isinstance(commit, str)
+                    or not _GIT_COMMIT_RE.fullmatch(commit)
+                    or not isinstance(dirty, bool)):
+                raise ValueError("analysis.engine provenance inválida")
+            if (tree_hash is not None
+                    and (not isinstance(tree_hash, str)
+                         or not _SHA256_RE.fullmatch(tree_hash))):
+                raise ValueError("analysis.engine source_tree_sha256 inválido")
+            if dirty and tree_hash is None:
+                raise ValueError(
+                    "analysis.engine dirty exige source_tree_sha256")
     seen: set[str] = set()
     for finding in report["findings"]:
         for key in ("fingerprint", "rule_id", "category", "cwes", "sink"):
@@ -470,8 +753,16 @@ def validate_report(report: dict) -> None:
         if finding["fingerprint"] in seen:
             raise ValueError("fingerprint duplicado")
         seen.add(finding["fingerprint"])
-        if not finding["sink"].get("path"):
-            raise ValueError("finding sem sink.path")
+        endpoints = [finding.get("source"), finding.get("sink")]
+        endpoints.extend(finding.get("steps") or [])
+        for endpoint in endpoints:
+            if endpoint is None:
+                continue
+            path = endpoint.get("path") if isinstance(endpoint, dict) else None
+            if not _is_safe_relative_path(path):
+                raise ValueError("finding contém path não relativo")
+            if root is not None and normalize_path(path, root) != path:
+                raise ValueError("finding path escapa da raiz ou atravessa symlink")
 
 
 def current_peak_rss_mb() -> float | None:
@@ -663,6 +954,72 @@ def execute(command: list[str], *, cwd: str | Path | None = None,
                     "peak_rss_mb": None, "stdout": "", "stderr": str(exc)}
 
 
+def _refine_report_health(stats: dict | None) -> tuple[bool, list[str], list[str]]:
+    """Translate L1 health into the normalized report envelope.
+
+    L1 keeps its aggregate error count separate from the detailed per-resolver
+    errors.  The benchmark report must retain both the partial state and those
+    details; otherwise a semantically incomplete refinement looks eligible to
+    downstream scorers.  Finding truncation remains a separate taint concern.
+    """
+    if stats is None:
+        return False, [], []
+
+    unavailable = stats.get("unavailable") or []
+    raw_errors = stats.get("errors") or 0
+    partial = bool(
+        stats.get("partial")
+        or stats.get("status") == "partial"
+        or raw_errors
+        or unavailable
+    )
+
+    top_warnings = [str(value) for value in stats.get("warnings") or ()]
+    error_markers: set[str] = set()
+    warnings: list[str] = []
+    errors: list[str] = []
+    runs = stats.get("runs") or ()
+    for run in runs:
+        resolver = str(run.get("resolver") or "resolver desconhecido")
+        root = run.get("root")
+        context = f"{resolver} ({root})" if root else resolver
+        for value in run.get("errors") or ():
+            detail = str(value)
+            errors.append(f"L1 {context}: {detail}")
+            error_markers.add(f"{context}: ERROR: {detail}")
+        for value in run.get("warnings") or ():
+            detail = f"{context}: {value}"
+            if detail not in top_warnings:
+                warnings.append(f"L1: {detail}")
+
+    # O agregador L1 também espelha erros de runs[] em warnings com ``ERROR``.
+    # Não os duplique em duas severidades no envelope normalizado.
+    warnings.extend(
+        f"L1: {value}" for value in top_warnings
+        if value not in error_markers
+    )
+
+    if isinstance(raw_errors, (list, tuple)):
+        errors.extend(f"L1: {value}" for value in raw_errors)
+    elif raw_errors and not errors:
+        errors.append(
+            f"L1: refinamento reportou {int(raw_errors)} erro(s) "
+            "sem detalhe estruturado"
+        )
+
+    # Defensive compatibility with third-party/older refiners that expose an
+    # unavailable resolver without the current friendly warning.
+    if unavailable and not warnings:
+        for item in unavailable:
+            languages = ", ".join(item.get("languages") or ()) or "desconhecida"
+            resolver = item.get("resolver") or item.get("server") or "desconhecido"
+            warnings.append(
+                f"L1: resolver indisponível para {languages} ({resolver})"
+            )
+
+    return partial, list(dict.fromkeys(warnings)), list(dict.fromkeys(errors))
+
+
 def run_graphcodemap(root: str | Path, *, refine: bool = False,
                      max_findings: int = 10 ** 9,
                      db_path: str | Path | None = None) -> dict:
@@ -679,6 +1036,11 @@ def run_graphcodemap(root: str | Path, *, refine: bool = False,
         g = CodeGraph(root, db_path=db_path)
         index_stats = g.index()
         refine_stats = l1.refine(g.indexer) if refine else None
+        refine_partial, refine_warnings, refine_errors = (
+            _refine_report_health(refine_stats)
+        )
+        warnings.extend(refine_warnings)
+        errors.extend(refine_errors)
         data, env = g.taint(max_findings=max_findings)
         warnings.extend(env.warnings)
         findings: list[dict] = []
@@ -694,22 +1056,53 @@ def run_graphcodemap(root: str | Path, *, refine: bool = False,
             if not cwes and category in CATEGORY_CWE:
                 cwes = [CATEGORY_CWE[category]]
             sink = location(sink_raw.get("site_path"), sink_raw.get("line"),
-                            label=sink_label, symbol=sink_raw.get("func_fqn"), root=root)
+                            _one_based_column(sink_raw.get("column")),
+                            label=sink_label, symbol=sink_raw.get("func_fqn"),
+                            root=root, byte_span=sink_raw.get("byte_span"))
             if sink is None:
                 warnings.append("GraphCodeMap finding sem sink path")
                 continue
-            source = location(src.get("path"), src.get("line"), label=src.get("what"),
-                              symbol=src.get("func_fqn"), root=root)
+            source = location(
+                src.get("path"), src.get("line"),
+                _one_based_column(src.get("column")), label=src.get("what"),
+                symbol=src.get("func_fqn"), root=root,
+                byte_span=src.get("byte_span"),
+                argument_literals=src.get("argument_literals"),
+                parameter=src.get("parameter"),
+            )
+            steps = []
+            for raw_step in raw.get("steps") or ():
+                normalized = location(
+                    raw_step.get("site_path"), raw_step.get("line"),
+                    _one_based_column(raw_step.get("column")),
+                    label=raw_step.get("callee"),
+                    symbol=raw_step.get("func_fqn"), root=root,
+                    byte_span=raw_step.get("byte_span"),
+                )
+                if normalized is None:
+                    continue
+                normalized.update({
+                    "callee": raw_step.get("callee"),
+                    "callee_fqn": raw_step.get("callee_fqn"),
+                    "arg_index": raw_step.get("arg_index"),
+                    "confidence": raw_step.get("confidence"),
+                    "resolved": bool(raw_step.get("resolved")),
+                })
+                steps.append(normalized)
             findings.append(make_finding(
                 rule_id=f"graphcodemap/{category}",
                 message=f"{src.get('what', 'input')} reaches {sink_label}",
                 severity="warning", cwes=cwes, category=category,
                 source=source, sink=sink, confidence=raw.get("confidence"),
-                evidence=raw.get("flow_evidence")))
-        status = "partial" if env.truncated else "complete"
+                evidence=raw.get("flow_evidence"), steps=steps))
+        status = "partial" if env.truncated or refine_partial else "complete"
+        tool = {"name": "graphcodemap", "version": __version__,
+                "adapter_version": ADAPTER_VERSION}
+        config_path = root / ".codegraph" / "taint.json"
+        config_hash = (hashlib.sha256(config_path.read_bytes()).hexdigest()
+                       if config_path.is_file() else None)
         report = build_report(
-            tool={"name": "graphcodemap", "version": __version__,
-                  "adapter_version": ADAPTER_VERSION},
+            tool=tool,
             root=root, findings=findings, status=status,
             duration_s=time.perf_counter() - started,
             peak_rss_mb=None, exit_code=0, memory_scope="process-tree",
@@ -717,7 +1110,16 @@ def run_graphcodemap(root: str | Path, *, refine: bool = False,
             errors=errors, extra={"index": index_stats, "refine": refine_stats,
                                   "limit_hit": data.get("limit_hit"),
                                   "db_path": str(Path(db_path).resolve())
-                                  if db_path else None})
+                                  if db_path else None},
+            truncated=env.truncated,
+            analysis={
+                "engine": _engine_provenance(tool),
+                "config": {
+                    "refine": bool(refine),
+                    "max_findings": max_findings,
+                    "taint_config_sha256": config_hash,
+                },
+            })
     finally:
         if g is not None:
             g.close()

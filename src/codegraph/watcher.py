@@ -67,16 +67,24 @@ class Watcher:
                     self._full_rescan = True
                 self._schedule()
             return
-        if rel.startswith(".codegraph/") or self.spec.match_file(rel):
+        if rel.startswith(".codegraph/"):
             return
-        if language_for(rel) is None:
+        from . import l1
+
+        marker = l1.is_project_marker(rel)
+        if self.spec.match_file(rel) and not marker:
+            return
+        if language_for(rel) is None and not marker:
             if rel in (".gitignore", ".codegraphignore"):
                 self.spec = load_ignore_spec(self.root)
                 with self._lock:
                     self._full_rescan = True
                 self._schedule()
             return
-        if not in_scope(rel, self._scopes):     # índice parcial: fora do escopo
+        # Marker pode ficar acima do diretório indexado e ainda mudar a raiz do
+        # language server daquele escopo. Arquivos-fonte continuam obedecendo à
+        # política persistida normalmente.
+        if not marker and not in_scope(rel, self._scopes):
             return
         with self._lock:
             self._pending.add(rel)
@@ -114,8 +122,13 @@ class Watcher:
             stats["indexed"] = repo_stats["indexed"]
             stats["removed"] = repo_stats["removed"]
             return stats
+        from . import l1
+
+        marker_batch = {rel for rel in batch if l1.is_project_marker(rel)}
         changed = False
         for rel in sorted(batch):
+            if rel in marker_batch:
+                continue  # evento semântico; marker não entra na tabela files
             path = self.root / rel
             try:
                 if path.is_file():
@@ -133,9 +146,8 @@ class Watcher:
                 log.debug("traceback de %s", rel, exc_info=True)
         if changed:
             self.ix.resolve_edges()
+        if changed or marker_batch:
             try:
-                from . import l1
-
                 l1.refine(self.ix, rels=sorted(batch))
             except Exception as e:
                 log.debug("watcher: refine L1 falhou no lote: %s: %s",

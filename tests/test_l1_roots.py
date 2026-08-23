@@ -98,6 +98,39 @@ def test_group_by_root_single_group_without_markers(tmp_path):
     assert len(groups[tmp_path.resolve()]) == 2
 
 
+def test_project_marker_matching_supports_exact_and_configured_glob():
+    assert roots.matches_project_marker("svc/pom.xml", ("pom.xml",))
+    assert roots.matches_project_marker("App/App.csproj", ("*.csproj",))
+    assert not roots.matches_project_marker("svc/notes.xml", ("pom.xml",))
+
+
+@pytest.mark.parametrize("marker", [
+    "pom.xml", "build.gradle", "settings.gradle", "go.mod", "Cargo.toml",
+])
+def test_catalog_recognizes_build_markers_without_language(marker):
+    from codegraph import l1
+
+    assert l1.is_project_marker(f"nested/{marker}")
+
+
+def test_watcher_accepts_configured_marker_but_not_arbitrary_unknown(
+        tmp_path, monkeypatch):
+    from codegraph import l1
+    from codegraph.watcher import Watcher
+
+    class CustomResolver:
+        root_markers = ("acme.workspace",)
+
+    monkeypatch.setattr(l1, "all_resolvers", lambda: [CustomResolver])
+    watcher = Watcher(tmp_path)
+    watcher._schedule = lambda: None
+
+    watcher._note(str(tmp_path / "acme.workspace"))
+    watcher._note(str(tmp_path / "random.unknown"))
+
+    assert watcher._pending == {"acme.workspace"}
+
+
 # ============================================================================
 # B. Contrato: todo resolver declara root_markers como tupla
 # ============================================================================

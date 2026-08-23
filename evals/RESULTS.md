@@ -1917,7 +1917,7 @@ Nos pares reais, as três revisões vulneráveis permanecem detectadas:
 ## Reprodutibilidade e gate local
 
 O [manifest incluído/versionado nesta rodada](round26-external-gates-manifest.json)
-será adicionado com o commit e preserva os valores
+preserva os valores
 necessários para reproduzir e auditar o snapshot; eles também são transcritos
 aqui: commit-fonte
 `da5b1610f15bb39ea4f13c0853a67fe105bbd83a`, diff de `src` SHA-256
@@ -1946,3 +1946,54 @@ invocadas, fan-out mais largo e fechamento de hierarquias de tipo. Os
 Esta rodada melhora o resultado nesta matriz oficial e nos holdouts fixados; não
 estabelece superioridade global sobre CodeQL, cujo conjunto de linguagens,
 frameworks, queries e integrações operacionais é mais amplo que o experimento.
+
+# Rodada 27 — fechamento semântico Java e proveniência exata (2026-08-22)
+
+Esta rodada preserva os resultados anteriores como histórico e substitui os
+gaps que agora possuem contratos executáveis verdes: identidade same-line,
+escopo lexical de receiver, `finally` obrigatório, fixpoint de loop, lambdas
+invocadas/deferred, sanitizers por contexto, estado de propriedades e
+proveniência exata entre fontes concorrentes.
+
+O gate final do projeto fecha em **1.778 passed, 27 skipped**, sem xfail. A
+seleção focada dos contratos/P1 também passa dentro desse gate amplo.
+
+## Gates semânticos (`INDEXER_VERSION=35`)
+
+| gate | TP | FP | FN | TN | tempo final pré-report |
+|---|---:|---:|---:|---:|---:|
+| OWASP Benchmark v1.2 | **902** | **0** | **0** | **796** | **224,707 s** |
+| NIST Juliet Java 1.3 CWE-23 | **444** | **0** | **0** | **444** | **19,039 s** |
+
+Os pares CVE também fecham o contrato hardened:
+
+| par | vulnerável → corrigido | Round 27 |
+|---|---:|---|
+| OpenRefine CVE-2024-49760 | **1 → 0** | origem `getParameterValues("lang")`, linha 83, preservada até `loadLanguage`/`FileInputStream` |
+| FitNesse CVE-2024-42499 | **2 → 0** | preservado |
+| openHAB CVE-2024-42468 | **3 → 0** | preservado |
+| **agregado** | **3/3 detectadas; 3/3 fixes limpos** | scorer hardened sem evidência inválida |
+
+Tempos, RSS, commits, subject e hashes byte a byte dos seis reports/DBs estão
+em [`java-real-pairs-round27-results.json`](java-real-pairs-round27-results.json).
+
+## Overlay health elegível
+
+O primeiro overlay revelou um falso resultado de handshake pós-shutdown e
+diagnostics Juliet causados por source root/classpath incorretos. A execução
+final corrigiu ambos sem filtrar erros: `src`, quatro JARs oficiais e a exclusão
+`antbuild` do build oficial. Resultado: 732/732 arquivos, **4.408** promoções
+`certain`, `status=complete`, zero warnings/errors.
+
+## Comparação justa com CodeQL
+
+As linhas CodeQL versionadas existentes não foram reescritas:
+
+| corpus | GraphCodeMap Round 27 | CodeQL `default` | CodeQL `security-extended` |
+|---|---:|---:|---:|
+| OWASP | 902/0/0/796 | 776/292/126/504 | 902/471/0/325 |
+| Juliet CWE-23 | 444/0/0/444 | 222/6/222/438 | 222/6/222/438 |
+
+GraphCodeMap vence essas linhas fixadas. Isso não estabelece superioridade
+universal: CodeQL cobre mais linguagens, queries, frameworks e integrações, e
+tem maturidade operacional que esta rodada ainda está validando.

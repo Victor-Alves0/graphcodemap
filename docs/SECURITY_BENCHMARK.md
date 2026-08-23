@@ -266,7 +266,7 @@ fixed manifest and file+bad/good endpoint scoring make the rows comparable;
 the small difference does not imply whole-product superiority in either
 direction.
 
-## Real vulnerable/fixed Java holdout
+## Real vulnerable/fixed Java holdout (Round 26 historical)
 
 Three published Java vulnerabilities were scanned at both the vulnerable and
 fixed revisions with isolated L0 databases. This is a deliberately small
@@ -304,9 +304,57 @@ real-pair aggregate remains 3/3 vulnerable flows detected and advances from
 1/3 to 2/3 patches distinguished. OpenRefine remains deliberately open because
 the trusted base is inherited dependency state that L0 cannot prove.
 
-The remaining Java risks are explicit: 34 OWASP false negatives and 92 false
+The remaining Round 26 Java risks were explicit: 34 OWASP false negatives and 92 false
 positives, invoked lambda/callback units, wider virtual fan-out and incomplete
 type-hierarchy closure. A process-local tainted
 `System.setProperty("user.dir", value)` is not propagated globally; its strict
 characterization remains the single expected failure rather than weakening the
 trusted-literal rule.
+
+## Round 27 Java semantic profile
+
+Round 27 closes the previously published Java semantic characterizations and
+the OpenRefine oracle. These values supersede Round 26 as semantic evidence;
+the Round 26 sections above remain unchanged as historical reproduction data.
+
+| gate | GraphCodeMap Round 27 | precision | recall | FPR | final pre-report time |
+|---|---:|---:|---:|---:|---:|
+| OWASP Benchmark v1.2 | 902 / 0 / 0 / 796 | 100% | 100% | 0% | 224.707 s |
+| NIST Juliet Java 1.3 CWE-23 | 444 / 0 / 0 / 444 | 100% | 100% | 0% | 19.039 s |
+
+The hardened real-pair scorer also reports:
+
+| pair | vulnerable → fixed | outcome |
+|---|---:|---|
+| OpenRefine CVE-2024-49760 | 1 → 0 | exact line-83 `getParameterValues("lang")` provenance retained |
+| FitNesse CVE-2024-42499 | 2 → 0 | preserved |
+| openHAB CVE-2024-42468 | 3 → 0 | preserved |
+| **aggregate** | **3/3 detected; 3/3 clear** | **all pinned patch oracles distinguished** |
+
+The final local project gate has **1,778 passing tests and 27 skips**, with no
+xfail. Focused P1/contract regressions also pass inside that project gate.
+
+### Operational health validation
+
+The first fresh runs exposed a false post-shutdown handshake result and Juliet
+project-root diagnostics. The final validation fixed both instead of filtering
+them: JDTLS health drains late diagnostics, and the isolated Juliet overlay uses
+source root `src`, its four official bundled JARs and the official `antbuild`
+exclusion. It completed 732/732 files with **4,408** `certain` promotions,
+`status=complete` and zero warnings/errors.
+
+### Existing CodeQL comparison, unchanged
+
+The versioned CodeQL CLI 2.26.2 / `java-queries` 1.11.7 rows remain the fair
+comparison on these pinned corpora:
+
+| corpus | GraphCodeMap Round 27 | CodeQL `default` | CodeQL `security-extended` |
+|---|---:|---:|---:|
+| OWASP | 902/0/0/796 | 776/292/126/504 | 902/471/0/325 |
+| Juliet CWE-23 | 444/0/0/444 | 222/6/222/438 | 222/6/222/438 |
+
+GraphCodeMap is stronger on these measured rows. CodeQL remains broader in
+languages, queries, framework models, integrations and operational maturity;
+this document does not claim whole-product superiority. Round 27 real-pair
+timings, RSS and byte hashes are versioned in
+[`evals/java-real-pairs-round27-results.json`](../evals/java-real-pairs-round27-results.json).

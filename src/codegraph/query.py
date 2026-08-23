@@ -943,22 +943,92 @@ class QueryEngine:
             fc.popitem(last=False)             # despeja o mais antigo
         return facts, lang
 
-    def _df_resolve_call(self, src_id, line, name=None):
-        """Alvo da chamada nesta linha. `name` desempata quando há mais de uma:
-        em `new Test().doSomething(x)` a linha tem duas arestas — a do `new`,
-        para a classe, e a do método — e sem o filtro sai a errada."""
-        extra = " AND s.name=?" if name else ""
-        args = (src_id, line, name) if name else (src_id, line)
+    def _df_resolve_calls(self, src_id, line, name=None, col=None):
+        """Todos os alvos de uma chamada, preservando overloads/fan-out L1."""
+        filters = []
+        args = [src_id, line]
+        if name:
+            filters.append("s.name=?")
+            args.append(name)
+        if col is not None:
+            filters.append("e.col=?")
+            args.append(col)
+        extra = (" AND " + " AND ".join(filters)) if filters else ""
         rows = self.conn.execute(
-            "SELECT e.dst, e.confidence, s.fqn, s.kind, s.start_line, "
+            "SELECT e.dst, e.col, e.confidence, s.fqn, s.kind, s.start_line, "
+            "s.parent_id, s.signature, s.visibility, s.name, "
             "f.path, f.language FROM edges e JOIN symbols s ON e.dst=s.id "
             "JOIN files f ON s.file_id=f.id WHERE e.src=? AND e.kind='calls' "
             f"AND e.line=? AND e.dst IS NOT NULL{extra} "
             "ORDER BY CASE e.confidence WHEN 'certain' THEN 0 "
-            "WHEN 'inferred' THEN 1 ELSE 2 END LIMIT 1", args).fetchall()
-        return dict(rows[0]) if rows else None
+            "WHEN 'inferred' THEN 1 ELSE 2 END, e.dst", tuple(args)).fetchall()
+        if col is None and len({row["col"] for row in rows}) > 1:
+            return []
+        return [dict(row) for row in rows]
 
-    def _nonprop_spans(self, sym_row, facts, nao_propaga_fqn, cache):
+    def _df_resolve_call(self, src_id, line, name=None, col=None):
+        """Alvo preferido da chamada; consumidores conservadores usam todos.
+
+        `name` desempata quando há mais de uma chamada na linha. Consumidores
+        que produzem uma prova negativa (por exemplo, ``não propaga``) não podem
+        escolher este primeiro representante: devem unir ``_df_resolve_calls``.
+        """
+        rows = self._df_resolve_calls(src_id, line, name, col)
+        return rows[0] if rows else None
+
+    def _df_unique_call_target(self, src_id, line, name, col=None) -> bool:
+        """True only for one resolved (non-possible) target at a callsite."""
+        col_filter = " AND e.col=?" if col is not None else ""
+        args = [src_id, line, name, f"%.{name}"]
+        if col is not None:
+            args.append(col)
+        rows = self.conn.execute(
+            "SELECT e.dst, e.col FROM edges e WHERE e.src=? AND e.kind='calls' "
+            "AND e.line=? AND e.dst IS NOT NULL "
+            "AND (e.dst_name=? OR e.dst_name LIKE ?) "
+            "AND e.confidence IN ('certain','inferred')" + col_filter,
+            tuple(args),
+        ).fetchall()
+        if col is None and len({row["col"] for row in rows}) > 1:
+            return False
+        return len({row["dst"] for row in rows}) == 1
+
+    def _df_java_exact_receiver_call(self, facts, arg_flow):
+        """Resolve ``Base x = new Concrete(); x.call(...)`` without guessing."""
+        calls = [
+            call for call in facts.calls
+            if call.span == arg_flow.span and call.callee == arg_flow.callee
+            and call.qualified and "." in call.qualified
+        ]
+        if len(calls) != 1:
+            return None
+        receiver = calls[0].qualified.rsplit(".", 1)[0]
+        if "." in receiver or receiver not in facts.local_names:
+            return None
+        definitions = [
+            assignment for assignment in facts.assigns
+            if assignment.span and calls[0].span
+            and assignment.span[0] < calls[0].span[0]
+            and assignment.targets == {(receiver,)}
+        ]
+        if len(definitions) != 1 or definitions[0].rhs_call is None:
+            return None
+        concrete = definitions[0].rhs_call.rsplit(".", 1)[-1].split("<", 1)[0]
+        rows = self.conn.execute(
+            "SELECT m.id AS dst, m.fqn, m.kind, m.start_line, f.path, "
+            "f.language FROM symbols m JOIN symbols owner ON m.parent_id=owner.id "
+            "JOIN files f ON m.file_id=f.id "
+            "WHERE owner.name=? AND m.name=? "
+            "AND m.kind IN ('method','function')",
+            (concrete, arg_flow.callee),
+        ).fetchall()
+        if len(rows) != 1:
+            return None
+        out = dict(rows[0])
+        out["confidence"] = "certain"
+        return out
+
+    def _nonprop_spans(self, sym_row, facts, return_dependencies, cache):
         """Spans cuja atribuição chama função que NÃO devolve o argumento.
 
         Exige `confidence='certain'`, isto é, chamada resolvida SEMANTICAMENTE
@@ -967,21 +1037,51 @@ class QueryEngine:
         reais do OWASP Benchmark, porque `doSomething` existe em centenas de
         arquivos com corpos diferentes. Sem L1 rodado, nada é morto — o motor
         volta a over-aproximar, que é o lado seguro."""
-        if not nao_propaga_fqn:
+        if not return_dependencies:
             return frozenset()
         chave = sym_row["id"]
         if chave in cache:
             return cache[chave]
-        out = set()
+        out = {}
         for a in facts.assigns:
             if a.rhs_call is None:
                 continue
-            alvo = self._df_resolve_call(chave, a.line, a.rhs_call)
-            if (alvo and alvo["confidence"] == "certain"
-                    and alvo["fqn"] in nao_propaga_fqn
-                    and a.span is not None):
-                out.add(a.span)
-        cache[chave] = frozenset(out)
+            sites = [
+                call for call in facts.calls
+                if call.callee == a.rhs_call and call.span and a.span
+                and a.span[0] <= call.span[0]
+                and call.span[1] <= a.span[1]
+            ]
+            site = sites[0] if len(sites) == 1 else None
+            targets = self._df_resolve_calls(
+                chave, a.line, a.rhs_call,
+                site.col if site is not None else None)
+            if not targets or a.span is None:
+                continue
+            dependencies: set[int] = set()
+            proven = True
+            for target in targets:
+                typed_closed = False
+                if site is not None and site.receiver_type:
+                    owner = self.conn.execute(
+                        "SELECT name FROM symbols WHERE id=?",
+                        (target.get("parent_id"),),
+                    ).fetchone()
+                    typed_closed = bool(
+                        owner
+                        and owner["name"]
+                        == site.receiver_type.rsplit(".", 1)[-1]
+                        and self._java_dispatch_is_closed(target)
+                    )
+                target_dependencies = return_dependencies.get(target["dst"])
+                if ((target["confidence"] != "certain" and not typed_closed)
+                        or target_dependencies is None):
+                    proven = False
+                    break
+                dependencies.update(target_dependencies)
+            if proven:
+                out[a.span] = frozenset(dependencies)
+        cache[chave] = out
         return cache[chave]
 
     def _source_wrapper_spans(self, sym_row, facts, wrapper_fqns):
@@ -1055,6 +1155,11 @@ class QueryEngine:
         parent_id = sym_row.get("parent_id")
         if parent_id is None:
             return []
+        col_filter = " AND e.col=?" if receiver_flow.col is not None else ""
+        args = [sym_row["id"], receiver_flow.line, receiver_flow.callee,
+                parent_id]
+        if receiver_flow.col is not None:
+            args.append(receiver_flow.col)
         rows = self.conn.execute(
             "SELECT DISTINCT e.dst, e.confidence, s.fqn, s.kind, "
             "s.start_line, s.parent_id, s.signature, s.visibility, s.name, "
@@ -1062,9 +1167,9 @@ class QueryEngine:
             "FROM edges e JOIN symbols s ON e.dst=s.id "
             "JOIN files f ON s.file_id=f.id "
             "WHERE e.src=? AND e.kind='calls' AND e.line=? "
-            "AND e.dst IS NOT NULL AND s.name=? AND s.parent_id=?",
-            (sym_row["id"], receiver_flow.line, receiver_flow.callee,
-             parent_id),
+            "AND e.dst IS NOT NULL AND s.name=? AND s.parent_id=?"
+            + col_filter,
+            tuple(args),
         ).fetchall()
         targets = {row["dst"]: dict(row) for row in rows}
         out = []
@@ -1218,17 +1323,28 @@ class QueryEngine:
             sinks = []
             for af in flow.arg_flows:
                 callee = self._df_resolve_call(
-                    sym_row["id"], af.line, af.callee)
+                    sym_row["id"], af.line, af.callee, af.col)
+                if flang == "java":
+                    callee = (self._df_java_exact_receiver_call(f, af)
+                              or callee)
                 sinks.append({
                     "callee_name": af.callee, "arg_index": af.arg_index,
-                    "line": af.line, "via": af.via, "depth": d,
+                    "line": af.line, "column": af.col,
+                    "byte_span": af.span, "via": af.via, "depth": d,
                     "site_path": sym_row["path"], "resolved": callee is not None,
                     "callee_fqn": callee["fqn"] if callee else None,
                     "confidence": callee["confidence"] if callee else None,
                     "callee_path": callee["path"] if callee else None,
                     "callee_line": callee["start_line"] if callee else None,
                 })
-                if (callee and d < depth and af.arg_index >= 0
+                free_forwarder = (
+                    flang == "java"
+                    and df.java_transparent_forwarder_span(f) == af.span
+                    and self._df_unique_call_target(
+                        sym_row["id"], af.line, af.callee, af.col)
+                )
+                next_depth = d if free_forwarder else d + 1
+                if (callee and next_depth <= depth and af.arg_index >= 0
                         and df.supported(callee["language"])):
                     key = (callee["dst"], af.arg_index)
                     if key not in visited:
@@ -1237,7 +1353,7 @@ class QueryEngine:
                         cf, _ = self._df_facts(crow, cache) if crow else (None, None)
                         if cf and af.arg_index < len(cf.params):
                             sinks.extend(trace(crow, {cf.params[af.arg_index]},
-                                               d + 1, visited))
+                                               next_depth, visited))
             for receiver_flow in flow.receiver_flows:
                 if d >= depth:
                     continue
@@ -1293,8 +1409,9 @@ class QueryEngine:
         - `depth=None` usa o default por modo (entry fundo, scan raso);
         - `deadline_ms`/`max_steps` limitam tempo/passos e devolvem PARCIAL;
         - `should_cancel()` é o hook cooperativo do host (abortar sem thread-zumbi);
-        - memoização GLOBAL `explored` colapsa subárvores compartilhadas entre
-          fontes. Qualquer corte marca `env.truncated=True` e devolve `limit_hit`.
+        - memoização GLOBAL `explored` colapsa subárvores compartilhadas para a
+          mesma proveniência; fontes distintas preservam explicações próprias.
+          Qualquer corte marca `env.truncated=True` e devolve `limit_hit`.
         """
         from . import dataflow as df
         from .taint_rules import load_rules
@@ -1310,16 +1427,94 @@ class QueryEngine:
         findings: list = []
         order = {"certain": 2, "inferred": 1, "possible": 0}
         budget = _Budget(deadline_ms, max_steps, should_cancel)
-        explored: set = set()          # memo GLOBAL (func_id, arg_index) entre traces
+        # Memo global por subtree *e proveniência*. Duas rotas da mesma fonte
+        # continuam colapsadas; fontes distintas que convergem no mesmo helper
+        # precisam atravessá-lo separadamente para publicar origens corretas.
+        explored: set = set()
         # fontes EFETIVAS p/ o motor flow-sensitive: ele precisa saber que
         # `x = fonte()` GERA sujeira no ponto do programa (senão mataria a
         # própria semente). Na varredura passa a incluir os wrappers.
         eff_src: set = set(rules.sources)
-        nao_propaga_fqn: set = set()      # preenchido na 1ª passada da varredura
-        nonprop_cache: dict = {}
-        src_func_fqns: set[str] = set()
+        profiles = ("xss", "non-xss") if "java" in langs else ("all",)
+        analysis_stats = {"summary_flow_runs": 0}
+        return_dependencies: dict[str, dict[str, frozenset[int]]] = {
+            profile: {} for profile in profiles
+        }
+        nonprop_cache: dict[str, dict] = {profile: {} for profile in profiles}
+        src_func_fqns: dict[str, set[str]] = {
+            profile: set() for profile in profiles
+        }
         receiver_summary_cache: dict = {}
         receiver_summary_building: set = set()
+
+        def profile_sanitizers(profile, language):
+            if profile == "all":
+                return rules.sanitizers
+            return rules.sanitizers_for_context(language, profile)
+
+        def nested_java_facts(facts):
+            """Yield a Java callable and its deferred lambda flow units."""
+            pending = [facts]
+            seen = set()
+            while pending:
+                current = pending.pop()
+                identity = id(current)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                yield current
+                pending.extend(
+                    unit.facts for unit in getattr(current, "lambda_units", ())
+                )
+
+        def scan_profiles(collected):
+            """Use contextual Java passes only when their semantic delta occurs.
+
+            The XSS and non-XSS sanitizer sets differ only for contextual HTML
+            encoders.  With no such call in the scanned facts, one ``all`` pass
+            is exactly equivalent to both.  If encoders exist but no XSS sink
+            does, only the conservative non-XSS pass can produce a finding.
+            """
+            if "java" not in langs:
+                return ("all",)
+            # A scoped scan may recurse into callees outside the selected rows.
+            # Without a closed-world proof over that transitive closure, keep
+            # both Java contexts rather than infer absence from an incomplete
+            # sample. Full-repository scans (the benchmark/default) are closed.
+            if scope:
+                return ("xss", "non-xss")
+            xss_sanitizers = rules.sanitizers_for_context("java", "xss")
+            non_xss_sanitizers = rules.sanitizers_for_context(
+                "java", "non-xss")
+            contextual = xss_sanitizers - non_xss_sanitizers
+            if not contextual:
+                return ("all",)
+            contextual_seen = False
+            xss_sink_seen = False
+            for _row, facts, language in collected:
+                if language != "java":
+                    continue
+                for unit_facts in nested_java_facts(facts):
+                    for call in unit_facts.calls:
+                        names = {call.callee, call.qualified}
+                        if names & contextual:
+                            contextual_seen = True
+                        if (rules.sink_context(
+                                call.callee, call.qualified, "java") == "xss"
+                                and any(
+                                    rules.is_sink(
+                                        call.callee, call.qualified, index,
+                                        language="java",
+                                        receiver_type=call.receiver_type,
+                                    )
+                                    for index, _paths in call.args
+                                )):
+                            xss_sink_seen = True
+                        if contextual_seen and xss_sink_seen:
+                            return ("xss", "non-xss")
+            if not contextual_seen:
+                return ("all",)
+            return ("non-xss",)
 
         def conf_min(a, b):
             if a is None:
@@ -1328,8 +1523,49 @@ class QueryEngine:
                 return a
             return a if order[a] <= order[b] else b
 
-        def java_receiver_effects(sym_row, facts):
+        def span_json(span):
+            if span is None:
+                return None
+            return {"start": span[0], "end": span[1]}
+
+        def provenance_identity(value):
+            """Forma hashable e estável da origem publicada no finding."""
+            if isinstance(value, dict):
+                return tuple(sorted(
+                    (str(key), provenance_identity(item))
+                    for key, item in value.items()
+                ))
+            if isinstance(value, (list, tuple)):
+                return tuple(provenance_identity(item) for item in value)
+            if isinstance(value, set):
+                return tuple(sorted(provenance_identity(item)
+                                    for item in value))
+            try:
+                hash(value)
+            except TypeError:
+                return repr(value)
+            return value
+
+        def source_origin(sym_row, evidence):
+            origin = {
+                "kind": "source", "func_fqn": sym_row["fqn"],
+                "path": sym_row["path"], "line": evidence.line,
+                "what": evidence.label + "()",
+            }
+            if evidence.col is not None:
+                origin["column"] = evidence.col
+            if evidence.span is not None:
+                origin["byte_span"] = span_json(evidence.span)
+            published = rules.published_source_arguments(
+                evidence.label, evidence.arg_literals)
+            if published:
+                origin["argument_literals"] = dict(published)
+                origin["parameter"] = published[0][1]
+            return origin
+
+        def java_receiver_effects(sym_row, facts, profile):
             """Exact-call effects for literal/implicit ``this`` receivers."""
+            sanitizers = profile_sanitizers(profile, "java")
             effects = {}
             for call in facts.calls:
                 if (call.span is None
@@ -1341,31 +1577,32 @@ class QueryEngine:
                     continue
                 candidates = []
                 for callee in callees:
-                    summary_key = callee["dst"]
+                    summary_key = (profile, callee["dst"])
                     if summary_key not in receiver_summary_cache:
                         if summary_key in receiver_summary_building:
                             continue
                         receiver_summary_building.add(summary_key)
                         try:
-                            crow = self._crow(summary_key)
+                            crow = self._crow(callee["dst"])
                             cf, clang = (self._df_facts(crow, cache)
                                          if crow else (None, None))
                             if cf is None or clang != "java":
                                 receiver_summary_cache[summary_key] = None
                             else:
-                                nested = java_receiver_effects(crow, cf)
+                                nested = java_receiver_effects(crow, cf, profile)
                                 same_receiver_calls = [
                                     site for site in cf.calls
                                     if site.receiver_kind in {
                                         "implicit_this", "explicit_this"}
                                 ]
                                 callee_nonprop = self._nonprop_spans(
-                                    crow, cf, nao_propaga_fqn, nonprop_cache)
+                                    crow, cf, return_dependencies[profile],
+                                    nonprop_cache[profile])
                                 callee_sources = self._source_wrapper_spans(
-                                    crow, cf, src_func_fqns)
+                                    crow, cf, src_func_fqns[profile])
                                 receiver_summary_cache[summary_key] = (
                                     df.summarize_java_receiver_effect(
-                                        cf, rules.sanitizers, eff_src,
+                                        cf, sanitizers, eff_src,
                                         callee_nonprop, callee_sources, nested,
                                         allow_overwrites=(
                                             callee["closed_dispatch"]
@@ -1388,7 +1625,7 @@ class QueryEngine:
 
         def trace(sym_row, tainted, origin, steps, d, visited, path_conf,
                   path_flow="flow-sensitive", seed_map=None,
-                  source_spans=frozenset()):
+                  source_spans=frozenset(), profile="all"):
             if budget.hit():
                 return
             budget.tick()
@@ -1400,11 +1637,16 @@ class QueryEngine:
             # caminho ter rodado no motor que over-aproxima.
             if not df.uses_flow_sensitive(f, flang):
                 path_flow = "over-approximated"
+            sanitizers = profile_sanitizers(profile, flang)
+            if flang == "java":
+                source_spans = (set(source_spans)
+                                | set(df.java_properties_source_spans(f)))
             nonprop_spans = self._nonprop_spans(
-                sym_row, f, nao_propaga_fqn, nonprop_cache)
-            receiver_effects = (java_receiver_effects(sym_row, f)
+                sym_row, f, return_dependencies[profile],
+                nonprop_cache[profile])
+            receiver_effects = (java_receiver_effects(sym_row, f, profile)
                                 if flang == "java" else None)
-            flow = df.analyze(f, tainted, rules.sanitizers, lang=flang,
+            flow = df.analyze(f, tainted, sanitizers, lang=flang,
                               sources=eff_src, nonprop=nonprop_spans,
                               source_spans=source_spans,
                               receiver_effects=receiver_effects,
@@ -1412,7 +1654,7 @@ class QueryEngine:
                                   rules.trusted_source_literals))
             if flang == "java":
                 collection_flow = df.analyze_java_constant_collections(
-                    f, tainted, rules.sanitizers, sources=eff_src,
+                    f, tainted, sanitizers, sources=eff_src,
                     nonprop=nonprop_spans, source_spans=source_spans,
                     allow_unrelated_calls=True,
                     receiver_effects=receiver_effects,
@@ -1423,12 +1665,17 @@ class QueryEngine:
                 if budget.hit():
                     return
                 callee = self._df_resolve_call(
-                    sym_row["id"], af.line, af.callee)
+                    sym_row["id"], af.line, af.callee, af.col)
+                if flang == "java":
+                    callee = (self._df_java_exact_receiver_call(f, af)
+                              or callee)
                 step = {
                     "func_fqn": sym_row["fqn"], "callee": af.callee,
                     "callee_fqn": callee["fqn"] if callee else None,
                     "site_path": sym_row["path"], "line": af.line,
+                    "column": af.col, "byte_span": span_json(af.span),
                     "arg_index": af.arg_index, "via": af.via,
+                    "via_candidates": af.via_candidates,
                     "confidence": callee["confidence"] if callee else None,
                     "resolved": callee is not None,
                 }
@@ -1437,30 +1684,52 @@ class QueryEngine:
                 # origem é aqui mesmo. Herdar a origem da função inteira daria
                 # um achado verdadeiro com uma explicação inventada.
                 here = origin
-                if af.source is not None:
-                    here = {"kind": "source", "func_fqn": sym_row["fqn"],
-                            "path": sym_row["path"], "line": af.line,
-                            "what": af.source}
-                elif seed_map is not None and af.via in seed_map:
+                if af.source_evidence is not None:
+                    here = source_origin(sym_row, af.source_evidence)
+                elif af.source is not None:
+                    here = {
+                        "kind": "source", "func_fqn": sym_row["fqn"],
+                        "path": sym_row["path"], "line": af.line,
+                        "what": af.source,
+                    }
+                    if af.col is not None:
+                        here["column"] = af.col
+                    if af.span is not None:
+                        here["byte_span"] = span_json(af.span)
+                elif seed_map is not None and (
+                        matching_seed := next((
+                            candidate for candidate in af.via_candidates
+                            if candidate in seed_map
+                        ), af.via if af.via in seed_map else None)
+                ) is not None:
                     # a função pode ter VÁRIAS fontes; atribuir a todos os
                     # achados a primeira delas dá um achado certo com uma
                     # origem errada. Quando a variável que chega ao sink é ela
                     # própria semente, a origem é a linha DELA.
-                    ln, rotulo = seed_map[af.via]
-                    here = {"kind": "source", "func_fqn": sym_row["fqn"],
-                            "path": sym_row["path"], "line": ln,
-                            "what": rotulo + "()"}
+                    here = source_origin(sym_row, seed_map[matching_seed])
                 # casa pelo nome simples OU pelo qualificado receptor.método:
                 # `getWriter.println` é sink de XSS, `out.println` não é.
-                if rules.is_sink(af.callee, af.qualified, af.arg_index,
-                                 language=flang):
+                sink_context = rules.sink_context(
+                    af.callee, af.qualified, flang)
+                profile_matches = (
+                    profile == "all" or sink_context == profile
+                    or (profile == "non-xss" and sink_context is None)
+                )
+                if (profile_matches
+                        and rules.is_sink(
+                            af.callee, af.qualified, af.arg_index,
+                            language=flang,
+                            receiver_type=af.receiver_type)):
                     if len(findings) < max_findings:
                         findings.append({
                             "origin": here,
                             "sink": {"callee": af.callee, "callee_fqn": step["callee_fqn"],
                                      "qualified": af.qualified,
                                      "site_path": sym_row["path"], "line": af.line,
+                                     "column": af.col,
+                                     "byte_span": span_json(af.span),
                                      "arg_index": af.arg_index, "via": af.via,
+                                     "via_candidates": af.via_candidates,
                                      "func_fqn": sym_row["fqn"]},
                             "confidence": cur_conf or "possible",
                             "flow_evidence": path_flow,
@@ -1468,11 +1737,22 @@ class QueryEngine:
                         })
                     else:
                         budget.note("findings")     # havia mais achados que o teto
-                if (callee and d < depth and af.arg_index >= 0
+                free_forwarder = (
+                    flang == "java"
+                    and df.java_transparent_forwarder_span(f) == af.span
+                    and self._df_unique_call_target(
+                        sym_row["id"], af.line, af.callee, af.col)
+                )
+                next_depth = d if free_forwarder else d + 1
+                if (callee and next_depth <= depth and af.arg_index >= 0
                         and df.supported(callee["language"])):
-                    key = (callee["dst"], af.arg_index)
-                    # per-path `visited` (ciclos) + `explored` GLOBAL (dedupe entre
-                    # fontes): uma subárvore (func,arg) é expandida uma vez só.
+                    key = (
+                        profile, sym_row["id"], af.line, af.col, af.span,
+                        callee["dst"], af.arg_index,
+                        provenance_identity(here),
+                    )
+                    # per-path `visited` corta ciclos; `explored` colapsa a
+                    # subárvore somente para a mesma proveniência de fonte.
                     if key not in visited and key not in explored:
                         visited.add(key)
                         explored.add(key)
@@ -1480,8 +1760,8 @@ class QueryEngine:
                         cf, _ = self._df_facts(crow, cache) if crow else (None, None)
                         if cf and af.arg_index < len(cf.params):
                             trace(crow, {cf.params[af.arg_index]}, here,
-                                  steps + [step], d + 1, visited, cur_conf,
-                                  path_flow)
+                                  steps + [step], next_depth, visited, cur_conf,
+                                  path_flow, profile=profile)
             for receiver_flow in flow.receiver_flows:
                 if budget.hit() or d >= depth:
                     return
@@ -1497,7 +1777,10 @@ class QueryEngine:
                     if not fields:
                         continue
                     receiver_visit_key = (
-                        callee["dst"], "this", tuple(sorted(fields)))
+                        profile, sym_row["id"], receiver_flow.line,
+                        receiver_flow.col, receiver_flow.span, callee["dst"],
+                        "this", tuple(sorted(fields)),
+                        provenance_identity(origin))
                     if (receiver_visit_key in visited
                             or receiver_visit_key in explored):
                         continue
@@ -1514,6 +1797,8 @@ class QueryEngine:
                         "callee_fqn": callee["fqn"],
                         "site_path": sym_row["path"],
                         "line": receiver_flow.line,
+                        "column": receiver_flow.col,
+                        "byte_span": span_json(receiver_flow.span),
                         "arg_index": -2,
                         "via": ", ".join(f"this.{field}"
                                          for field in sorted(fields)),
@@ -1524,7 +1809,61 @@ class QueryEngine:
                     visited.add(receiver_visit_key)
                     explored.add(receiver_visit_key)
                     trace(crow, field_seeds, origin, steps + [step], d + 1,
-                          visited, cur_conf, path_flow)
+                          visited, cur_conf, path_flow, profile=profile)
+            for static_flow in flow.static_flows:
+                if budget.hit() or d >= depth:
+                    return
+                callee = self._df_resolve_call(
+                    sym_row["id"], static_flow.line, static_flow.callee,
+                    static_flow.col)
+                if callee is None or not df.supported(callee["language"]):
+                    continue
+                crow = self._crow(callee["dst"])
+                cf, _ = (self._df_facts(crow, cache)
+                         if crow else (None, None))
+                if cf is None:
+                    continue
+                field_seeds: set[tuple[str, ...]] = set()
+                candidate_paths = set().union(*(
+                    [assignment.rhs_ids for assignment in cf.assigns]
+                    + [returned.ids for returned in cf.returns]
+                    + [paths for call in cf.calls
+                       for _index, paths in call.args]
+                )) if (cf.assigns or cf.returns or cf.calls) else set()
+                for field_name in static_flow.fields:
+                    field_seeds.add((field_name,))
+                    field_seeds |= {
+                        path for path in candidate_paths
+                        if path and path[-1] == field_name
+                    }
+                if not field_seeds:
+                    continue
+                visit_key = (
+                    profile, sym_row["id"], static_flow.line,
+                    static_flow.col, static_flow.span, callee["dst"], "static",
+                    tuple(sorted(static_flow.fields)),
+                    provenance_identity(origin),
+                )
+                if visit_key in visited or visit_key in explored:
+                    continue
+                step = {
+                    "func_fqn": sym_row["fqn"],
+                    "callee": static_flow.callee,
+                    "callee_fqn": callee["fqn"],
+                    "site_path": sym_row["path"],
+                    "line": static_flow.line,
+                    "column": static_flow.col,
+                    "byte_span": span_json(static_flow.span),
+                    "arg_index": -3,
+                    "via": ", ".join(sorted(static_flow.fields)),
+                    "confidence": callee["confidence"],
+                    "resolved": True,
+                }
+                cur_conf = conf_min(path_conf, callee["confidence"])
+                visited.add(visit_key)
+                explored.add(visit_key)
+                trace(crow, field_seeds, origin, steps + [step], d + 1,
+                      visited, cur_conf, path_flow, profile=profile)
 
         if entry:
             sym = self._resolve_fresh(entry, env)
@@ -1539,7 +1878,9 @@ class QueryEngine:
             origin = {"kind": "param", "func_fqn": sym["fqn"], "path": sym["path"],
                       "line": sym["start_line"],
                       "what": "parâmetros (assumidos não-confiáveis)"}
-            trace(sym, set(f.params), origin, [], 1, {(sym["id"], -1)}, None)
+            for profile in profiles:
+                trace(sym, set(f.params), origin, [], 1,
+                      {(profile, sym["id"], -1)}, None, profile=profile)
             scanned = 1
         else:
             self._repair_all(env)
@@ -1559,128 +1900,169 @@ class QueryEngine:
                 f, flang = self._df_facts(dict(r), cache)
                 if f is None:
                     continue
-                collected.append((dict(r), f))
-                direct = any(df.return_reads_named_source(
-                    rt, rules.sources, rules.sanitizers,
-                    rules.trusted_source_literals) for rt in f.returns)
-                seed = df.source_vars(
-                    f, rules.sources, rules.sanitizers,
-                    trusted_source_literals=rules.trusted_source_literals)
-                if direct or (seed and df.analyze(
-                        f, seed, lang=flang, sources=eff_src,
-                        trusted_source_literals=(
-                            rules.trusted_source_literals)).reaches_return):
-                    src_func_fqns.add(r["fqn"])
-                # SUMÁRIO DE RETORNO: esta função devolve o que recebe?
-                # Só funções COM parâmetros — `x = obj.metodo()` sem argumento
-                # ainda pode devolver dado do RECEPTOR (`sb.toString()`), e
-                # matá-lo apagaria fluxo real. Wrapper de fonte também fica de
-                # fora: ele não propaga o argumento, mas devolve dado sujo.
-                # Sem um `return` observável não há prova de que o alvo não
-                # propaga. Em Java, JDTLS resolve despacho de interface para a
-                # declaração abstrata (`String apply(String x);`): ela tem
-                # parâmetros, mas nenhum corpo/fato. Classificá-la como
-                # non-propagating apagou 142 TPs no OWASP Benchmark. Funções
-                # realmente usadas no RHS e que retornam constante/sanitizado
-                # possuem ao menos um ReturnFact e continuam elegíveis.
-                summary_safe = True
-                summary_flow = None
-                if flang == "java":
-                    # JDTLS resolves the call target, but arbitrary collection
-                    # aliases, virtual dispatch and context-specific encoders
-                    # are not return-flow proofs. The flow engine used to call
-                    # all of those "non-propagating" and erased 145 real OWASP
-                    # vulnerabilities. Accept call-free control flow, a tiny
-                    # set of pure operations, or the separately checked local
-                    # List add/remove/get domain with constant indices.
-                    pure_constant_calls = {
-                        "charAt", "length", "toUpperCase", "toLowerCase",
-                        "upper", "lower", "trim", "strip",
-                    }
-                    summary_safe = all(c.callee in pure_constant_calls
-                                       for c in f.calls)
-                    if not summary_safe:
-                        param_flow = df.analyze(
-                            f, set(f.params), rules.sanitizers, lang=flang,
+                collected.append((dict(r), f, flang))
+            profiles = scan_profiles(collected)
+            return_dependencies = {profile: {} for profile in profiles}
+            nonprop_cache = {profile: {} for profile in profiles}
+            src_func_fqns = {profile: set() for profile in profiles}
+            receiver_summary_cache.clear()
+            receiver_summary_building.clear()
+
+            for r, f, flang in collected:
+                if budget.hit():
+                    break
+                row_profiles = (profiles if flang == "java"
+                                else (profiles[-1],))
+                for profile in row_profiles:
+                    sanitizers = profile_sanitizers(profile, flang)
+                    property_spans = (df.java_properties_source_spans(f)
+                                      if flang == "java" else frozenset())
+                    direct = any(df.return_reads_named_source(
+                        rt, rules.sources, sanitizers,
+                        rules.trusted_source_literals) for rt in f.returns)
+                    seed = df.source_vars(
+                        f, rules.sources, sanitizers, property_spans,
+                        trusted_source_literals=rules.trusted_source_literals)
+                    if direct or (seed and df.analyze(
+                            f, seed, sanitizers, lang=flang, sources=eff_src,
+                            source_spans=property_spans,
                             trusted_source_literals=(
-                                rules.trusted_source_literals))
-                        if (param_flow.proven_sanitized_return
-                                and not param_flow.reaches_return):
-                            summary_flow = param_flow
-                            summary_safe = True
-                        else:
-                            summary_flow = df.analyze_java_constant_collections(
-                                f, set(f.params), rules.sanitizers,
+                                rules.trusted_source_literals)).reaches_return):
+                        src_func_fqns[profile].add(r["fqn"])
+
+                    # Nothing below can produce a callable RHS summary without
+                    # both formal parameters and an observable return.  Source
+                    # wrappers are deliberately excluded from non-propagation.
+                    if (not f.params or not f.returns
+                            or r["fqn"] in src_func_fqns[profile]):
+                        continue
+
+                    # SUMÁRIO PARAMÉTRICO DE RETORNO. Primeiro preservamos
+                    # as provas maduras do CFG/folding e do domínio fechado de
+                    # coleções. O slice paramétrico é apenas fallback para o
+                    # caso que elas recusam (por exemplo, trabalho morto seguido
+                    # de chamada virtual sobre receiver/argumentos limpos).
+                    sanitized_return = df.proves_sanitized_return(
+                        f, sanitizers)
+                    dependencies: frozenset[int] | None = None
+                    if flang == "java":
+                        structural_dependencies = (
+                            frozenset() if sanitized_return else
+                            df.java_return_param_dependencies(f, sanitizers))
+                        pure_constant_calls = {
+                            "charAt", "length", "toUpperCase", "toLowerCase",
+                            "upper", "lower", "trim", "strip",
+                        }
+                        summary_safe = (sanitized_return or all(
+                            call.callee in pure_constant_calls
+                            for call in f.calls))
+                        summary_flow = None
+                        param_flow = None
+                        if not summary_safe:
+                            analysis_stats["summary_flow_runs"] += 1
+                            param_flow = df.analyze(
+                                f, set(f.params), sanitizers, lang=flang,
                                 trusted_source_literals=(
                                     rules.trusted_source_literals))
-                            summary_safe = summary_flow is not None
-                if (summary_safe and f.params and f.returns
-                        and r["fqn"] not in src_func_fqns
-                        and not (summary_flow or df.analyze(
-                            f, set(f.params), rules.sanitizers,
-                            lang=flang, trusted_source_literals=(
-                                rules.trusted_source_literals))).reaches_return):
-                    nao_propaga_fqn.add(r["fqn"])
+                            if (param_flow.proven_sanitized_return
+                                    and not param_flow.reaches_return):
+                                summary_flow = param_flow
+                                summary_safe = True
+                            else:
+                                summary_flow = (
+                                    df.analyze_java_constant_collections(
+                                        f, set(f.params), sanitizers,
+                                        trusted_source_literals=(
+                                            rules.trusted_source_literals)))
+                                summary_safe = summary_flow is not None
+                        effective_flow = summary_flow or param_flow
+                        if effective_flow is None:
+                            analysis_stats["summary_flow_runs"] += 1
+                            effective_flow = df.analyze(
+                                f, set(f.params), sanitizers, lang=flang,
+                                trusted_source_literals=(
+                                    rules.trusted_source_literals))
+                        reaches = effective_flow.reaches_return
+                        if (summary_flow is not None and not reaches):
+                            # O domínio fechado já provou separadamente que
+                            # as mutações da coleção não escapam.
+                            dependencies = frozenset()
+                        elif (structural_dependencies is not None
+                              and summary_safe and not reaches):
+                            dependencies = frozenset()
+                        else:
+                            dependencies = structural_dependencies
+                    else:
+                        analysis_stats["summary_flow_runs"] += 1
+                        reaches = df.analyze(
+                                    f, set(f.params), sanitizers, lang=flang,
+                                    trusted_source_literals=(
+                                        rules.trusted_source_literals)
+                                ).reaches_return
+                        if sanitized_return or not reaches:
+                            dependencies = frozenset()
+                    if (dependencies is not None
+                            and all(index < len(f.params)
+                                    for index in dependencies)):
+                        return_dependencies[profile][r["id"]] = dependencies
             scanned = 0
-            for r, f in collected:
+            for r, f, flang in collected:
                 if budget.hit():
                     break
                 scanned += 1
-                wrapper_spans = self._source_wrapper_spans(
-                    r, f, src_func_fqns)
-                seeds = df.source_sites(
-                    f, rules.sources, rules.sanitizers, wrapper_spans,
-                    rules.trusted_source_literals)
-                # a fonte também pode estar escrita DENTRO do argumento, sem
-                # passar por variável — aí não há semente, mas há vulnerabilidade
-                # (`eval(req.body.x)`). Sem esta linha a função nem seria varrida.
-                direto = next(((c.line, s) for c in f.calls
-                               for _, s in (
-                                   list(df.direct_source_args(
-                                       c, rules.sanitizers))
-                                   + list(df.direct_named_source_args(
-                                       c, eff_src, rules.sanitizers,
-                                       rules.trusted_source_literals)))), None)
-                heap_source = None
-                if flang == "java":
-                    effects = java_receiver_effects(r, f)
-                    heap_source = next((
-                        (call.line, call.callee)
-                        for call in f.calls
-                        if call.span in effects
-                        and effects[call.span].always_dirty
+                row_profiles = (profiles if flang == "java"
+                                else (profiles[-1],))
+                for profile in row_profiles:
+                    sanitizers = profile_sanitizers(profile, flang)
+                    wrapper_spans = self._source_wrapper_spans(
+                        r, f, src_func_fqns[profile])
+                    if flang == "java":
+                        wrapper_spans = (set(wrapper_spans)
+                                         | set(df.java_properties_source_spans(f)))
+                    seeds = df.source_site_evidence(
+                        f, rules.sources, sanitizers, wrapper_spans,
+                        rules.trusted_source_literals)
+                    direto = next((
+                        evidence for call in f.calls
+                        for _, evidence in df.direct_source_evidence(
+                            call, eff_src, sanitizers,
+                            rules.trusted_source_literals)
                     ), None)
-                if not seeds and direto is None and heap_source is None:
-                    continue
-                names = {n for n, _, _ in seeds}
-                if seeds:
-                    origin = {
-                        "kind": "source", "func_fqn": r["fqn"],
-                        "path": r["path"], "line": seeds[0][1],
-                        "what": seeds[0][2] + "()",
+                    heap_source = None
+                    if flang == "java":
+                        effects = java_receiver_effects(r, f, profile)
+                        heap_source = next((
+                            df.SourceEvidence(
+                                call.callee, call.line, call.col, call.span)
+                            for call in f.calls
+                            if call.span in effects
+                            and effects[call.span].always_dirty
+                        ), None)
+                    if not seeds and direto is None and heap_source is None:
+                        continue
+                    names = {site.path for site in seeds}
+                    if seeds:
+                        origin = source_origin(r, seeds[0].evidence)
+                    elif direto is not None:
+                        origin = source_origin(r, direto)
+                    else:
+                        assert heap_source is not None
+                        origin = source_origin(r, heap_source)
+                    seed_map = {
+                        ".".join(site.path): site.evidence
+                        for site in seeds
                     }
-                elif direto is not None:
-                    origin = {
-                        "kind": "source", "func_fqn": r["fqn"],
-                        "path": r["path"], "line": direto[0],
-                        "what": direto[1],
-                    }
-                else:
-                    assert heap_source is not None
-                    origin = {
-                        "kind": "source", "func_fqn": r["fqn"],
-                        "path": r["path"], "line": heap_source[0],
-                        "what": heap_source[1] + "()",
-                    }
-                seed_map = {".".join(p): (ln, rot) for p, ln, rot in seeds}
-                # Flow-sensitive engines generate each source at its actual
-                # assignment. Seeding at function entry would let a later
-                # source write travel backwards across an earlier call.
-                initial = set() if f.regions is not None else names
-                trace(r, initial, origin, [], 1, {(r["id"], -2)}, None,
-                      seed_map=seed_map, source_spans=wrapper_spans)
+                    initial = set() if f.regions is not None else names
+                    trace(
+                        r, initial, origin, [], 1,
+                        {(profile, r["id"], -2)}, None,
+                        seed_map=seed_map, source_spans=wrapper_spans,
+                        profile=profile,
+                    )
+                    if len(findings) >= max_findings:
+                        budget.note("findings")
+                        break
                 if len(findings) >= max_findings:
-                    budget.note("findings")
                     break
 
         # Um mesmo par (origem, sink) pode ser alcançado por mais de um caminho —
@@ -1691,8 +2073,19 @@ class QueryEngine:
         # empate, a de cadeia mais curta — a explicação mais direta de conferir.
         unicos: dict = {}
         for f in findings:
-            k = (f["origin"]["path"], f["origin"]["line"], f["sink"]["site_path"],
-                 f["sink"]["line"], f["sink"]["callee"], f["sink"]["arg_index"])
+            origin_span = f["origin"].get("byte_span") or {}
+            sink_span = f["sink"].get("byte_span") or {}
+            arguments = f["origin"].get("argument_literals") or {}
+            k = (
+                f["origin"]["path"], f["origin"]["line"],
+                f["origin"].get("column"), origin_span.get("start"),
+                origin_span.get("end"), tuple(sorted(arguments.items())),
+                f["sink"]["site_path"], f["sink"]["line"],
+                f["sink"].get("column"), sink_span.get("start"),
+                sink_span.get("end"), f["sink"]["callee"],
+                f["sink"]["arg_index"], f["sink"].get("via"),
+                tuple(f["sink"].get("via_candidates") or ()),
+            )
             atual = unicos.get(k)
             if atual is None or (order[f["confidence"]], -len(f["steps"])) > (
                     order[atual["confidence"]], -len(atual["steps"])):
@@ -1716,7 +2109,11 @@ class QueryEngine:
         return {"mode": "entry" if entry else "scan",
                 "findings": findings, "scanned": scanned,
                 "elapsed_ms": budget.elapsed_ms(), "explored": len(explored),
-                "steps": budget.steps, "limit_hit": budget.limit_hit}, env
+                "steps": budget.steps, "limit_hit": budget.limit_hit,
+                "analysis": {
+                    "profiles": list(profiles),
+                    "summary_flow_runs": analysis_stats["summary_flow_runs"],
+                }}, env
 
     def visualize(self, mode: str | None = None, *, level: str | None = None,
                   scope: str | None = None, top: int = 250,

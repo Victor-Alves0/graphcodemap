@@ -4,13 +4,6 @@ from __future__ import annotations
 
 from .base import BaseExtractor
 
-# tipos de nó que abrem um escopo próprio: o coletor de locais não desce neles
-# (senão um local de um método vazaria para outro, ou para um lambda/anônima)
-_NESTED_SCOPE = {"method_declaration", "constructor_declaration",
-                 "compact_constructor_declaration",
-                 "class_declaration", "interface_declaration",
-                 "enum_declaration", "record_declaration", "lambda_expression"}
-
 _ACCESS = ("public", "private", "protected")
 
 
@@ -142,57 +135,246 @@ class JavaExtractor(BaseExtractor):
                 types[self.text(n)] = ty
         return types
 
-    def _collect_locals(self, node, into: dict[str, str | None]) -> None:
-        """Params + locais tipados de UM método. Aproximação assumida: um local
-        vale para o método todo (não do ponto da declaração em diante) — o
-        deslize é raro (usar antes de declarar não compila) e sempre rebaixável."""
-        for c in node.children:
-            t = c.type
-            if t == "formal_parameters":
-                for p in c.named_children:
-                    if p.type in ("formal_parameter", "spread_parameter"):
-                        ty = self._declared_type(p.child_by_field_name("type"))
-                        n = p.child_by_field_name("name")
-                        if n is None:      # spread_parameter guarda o nome no declarator
-                            n = next((g for g in p.named_children
-                                      if g.type == "variable_declarator"), None)
-                            if n is not None:
-                                n = n.child_by_field_name("name")
-                        if n is not None:
-                            into[self.text(n)] = ty
-            elif t == "local_variable_declaration":
-                ty = self._declared_type(c.child_by_field_name("type"))
-                for d in c.named_children:
-                    if d.type != "variable_declarator":
-                        continue
-                    n = d.child_by_field_name("name")
-                    # `var x = new Service()` esconde a anotação, mas não o tipo
-                    # sintático do initializer. Esta inferência é exata e barata
-                    # o bastante para L0; factory calls continuam deliberadamente
-                    # sem tipo até o L1.
-                    dty = ty
-                    if dty is None:
-                        value = d.child_by_field_name("value")
-                        if value is not None and value.type == "object_creation_expression":
-                            dty = self._declared_type(value.child_by_field_name("type"))
-                    if n is not None:
-                        into[self.text(n)] = dty
-            elif t in ("enhanced_for_statement", "resource"):
-                ty = self._declared_type(c.child_by_field_name("type"))
-                n = c.child_by_field_name("name")
-                if n is not None:
-                    into[self.text(n)] = ty
-                # initializer/corpo ainda pode conter outras declarações.
-                self._collect_locals(c, into)
-            elif t == "catch_formal_parameter":
-                n = c.child_by_field_name("name")
-                type_node = next((g for g in c.named_children
-                                  if g.type == "catch_type"), None)
-                ty = self._declared_type(type_node)
-                if n is not None:
-                    into[self.text(n)] = ty
-            elif t not in _NESTED_SCOPE:
-                self._collect_locals(c, into)
+    def _bind_type(self, name: str, ty: str | None) -> None:
+        """Registra uma declaração no escopo lexical corrente.
+
+        Declarações duplicadas no mesmo escopo não são Java válido. Ainda
+        assim, arquivos incompletos aparecem durante indexação incremental;
+        nesses casos o L0 perde a qualificação em vez de escolher um tipo por
+        ordem de travessia.
+        """
+        if not self._types:
+            return
+        scope = self._types[-1]
+        if name in scope:
+            scope[name] = None
+        else:
+            scope[name] = ty
+
+    def _parameter_types(self, node) -> dict[str, str | None]:
+        """Tipos dos parâmetros formais, cujo escopo cobre o corpo do método."""
+        types: dict[str, str | None] = {}
+        params = next((c for c in node.children
+                       if c.type == "formal_parameters"), None)
+        if params is None:
+            return types
+        for param in params.named_children:
+            if param.type not in ("formal_parameter", "spread_parameter"):
+                continue
+            type_node = param.child_by_field_name("type")
+            if type_node is None and param.type == "spread_parameter":
+                type_node = next(
+                    (child for child in param.named_children
+                     if child.type != "variable_declarator"),
+                    None,
+                )
+            ty = self._declared_type(type_node)
+            name = param.child_by_field_name("name")
+            if name is None:  # spread_parameter guarda o nome no declarator
+                declarator = next(
+                    (c for c in param.named_children
+                     if c.type == "variable_declarator"),
+                    None,
+                )
+                if declarator is not None:
+                    name = declarator.child_by_field_name("name")
+            if name is not None:
+                text = self.text(name)
+                types[text] = None if text in types else ty
+        return types
+
+    def _lexical_block(self, node) -> None:
+        """Visita um bloco em ordem, descartando seus locais ao sair."""
+        self._types.append({})
+        for child in node.children:
+            self.visit(child)
+        self._types.pop()
+
+    def _local_declaration(self, node) -> None:
+        """Visita initializers antes de tornar cada declarador visível.
+
+        Isso modela tanto o ponto da declaração quanto declarações múltiplas
+        (`A a = make(), b = a`) sem o antigo mapa flat por método.
+        """
+        declared = self._declared_type(node.child_by_field_name("type"))
+        for child in node.children:
+            if child.type != "variable_declarator":
+                self.visit(child)
+                continue
+            for part in child.children:
+                self.visit(part)
+            name = child.child_by_field_name("name")
+            if name is None:
+                continue
+            ty = declared
+            value = child.child_by_field_name("value")
+            if (ty is None and value is not None
+                    and value.type == "object_creation_expression"):
+                ty = self._declared_type(value.child_by_field_name("type"))
+            self._bind_type(self.text(name), ty)
+
+    def _enhanced_for(self, node) -> None:
+        """A variável do foreach existe no corpo, não no iterável."""
+        value = node.child_by_field_name("value")
+        if value is not None:
+            self.visit(value)
+        self._types.append({})
+        name = node.child_by_field_name("name")
+        if name is not None:
+            self._bind_type(
+                self.text(name),
+                self._declared_type(node.child_by_field_name("type")),
+            )
+        body = node.child_by_field_name("body")
+        if body is not None:
+            self.visit(body)
+        self._types.pop()
+
+    def _catch_clause(self, node) -> None:
+        """Limita o parâmetro de catch ao respectivo bloco."""
+        self._types.append({})
+        param = next((c for c in node.named_children
+                      if c.type == "catch_formal_parameter"), None)
+        if param is not None:
+            name = param.child_by_field_name("name")
+            type_node = next((c for c in param.named_children
+                              if c.type == "catch_type"), None)
+            if name is not None:
+                self._bind_type(self.text(name), self._declared_type(type_node))
+        body = node.child_by_field_name("body")
+        if body is not None:
+            self.visit(body)
+        self._types.pop()
+
+    def _resource(self, node) -> None:
+        """Torna um recurso visível somente depois de seu initializer."""
+        value = node.child_by_field_name("value")
+        if value is not None:
+            self.visit(value)
+        name = node.child_by_field_name("name")
+        if name is not None:
+            self._bind_type(
+                self.text(name),
+                self._declared_type(node.child_by_field_name("type")),
+            )
+
+    def _try_with_resources(self, node) -> None:
+        """Recursos vivem nos initializers seguintes e no corpo do try."""
+        resources = next((c for c in node.named_children
+                          if c.type == "resource_specification"), None)
+        body = node.child_by_field_name("body")
+        self._types.append({})
+        if resources is not None:
+            for resource in resources.named_children:
+                self.visit(resource)
+        if body is not None:
+            self.visit(body)
+        self._types.pop()
+        # Recursos não estão no escopo dos catches/finally.
+        for child in node.named_children:
+            if child not in (resources, body):
+                self.visit(child)
+
+    def _lambda(self, node) -> None:
+        """Parâmetros de lambda sombreiam receptores externos no seu corpo."""
+        params = node.child_by_field_name("parameters")
+        body = node.child_by_field_name("body")
+        self._types.append({})
+        if params is not None:
+            candidates = (params.named_children
+                          if params.type != "identifier" else [params])
+            for param in candidates:
+                if param.type in ("formal_parameter", "spread_parameter"):
+                    name = param.child_by_field_name("name")
+                    type_node = param.child_by_field_name("type")
+                    if type_node is None and param.type == "spread_parameter":
+                        type_node = next(
+                            (child for child in param.named_children
+                             if child.type != "variable_declarator"),
+                            None,
+                        )
+                    ty = self._declared_type(type_node)
+                    if name is None and param.type == "spread_parameter":
+                        declarator = next(
+                            (child for child in param.named_children
+                             if child.type == "variable_declarator"),
+                            None,
+                        )
+                        if declarator is not None:
+                            name = declarator.child_by_field_name("name")
+                elif param.type == "identifier":
+                    name, ty = param, None
+                else:
+                    continue
+                if name is not None:
+                    self._bind_type(self.text(name), ty)
+        if body is not None:
+            self.visit(body)
+        self._types.pop()
+
+    def _instanceof_binding(self, condition) -> tuple[str, str | None] | None:
+        """Binding do caso positivo simples ``value instanceof Type name``.
+
+        O escopo dependente de fluxo de negações, ``&&``/``||`` e saídas
+        abruptas pertence ao CFG. O L0 só qualifica o caso sintaticamente certo
+        e deixa os demais sem tipo, evitando inventar disponibilidade.
+        """
+        current = condition
+        while current is not None and current.type == "parenthesized_expression":
+            current = next(iter(current.named_children), None)
+        if current is None or current.type != "instanceof_expression":
+            return None
+        name = current.child_by_field_name("name")
+        type_node = current.child_by_field_name("right")
+        if name is None or type_node is None:
+            return None
+        return self.text(name), self._declared_type(type_node)
+
+    def _if_statement(self, node) -> None:
+        """Restringe pattern variable ao ramo positivo comprovado."""
+        condition = node.child_by_field_name("condition")
+        consequence = node.child_by_field_name("consequence")
+        alternative = node.child_by_field_name("alternative")
+        if condition is not None:
+            self.visit(condition)
+        binding = self._instanceof_binding(condition)
+        self._types.append({})
+        if binding is not None:
+            self._bind_type(*binding)
+        if consequence is not None:
+            self.visit(consequence)
+        self._types.pop()
+        if alternative is not None:
+            self.visit(alternative)
+
+    def _type_patterns(self, node) -> list[tuple[str, str | None]]:
+        """Bindings explícitos de um label de switch, sem inferência de fluxo."""
+        out: list[tuple[str, str | None]] = []
+
+        def collect(current) -> None:
+            if current.type == "type_pattern":
+                named = current.named_children
+                if len(named) >= 2 and named[-1].type == "identifier":
+                    out.append((self.text(named[-1]),
+                                self._declared_type(named[0])))
+                return
+            for child in current.named_children:
+                collect(child)
+
+        collect(node)
+        return out
+
+    def _switch_arm(self, node) -> None:
+        """Cada rule/grupo ganha os bindings apenas do próprio label."""
+        label = next((child for child in node.named_children
+                      if child.type == "switch_label"), None)
+        self._types.append({})
+        if label is not None:
+            for binding in self._type_patterns(label):
+                self._bind_type(*binding)
+        for child in node.children:
+            self.visit(child)
+        self._types.pop()
 
     def visit(self, node) -> None:
         t = node.type
@@ -211,6 +393,41 @@ class JavaExtractor(BaseExtractor):
         if t in ("method_declaration", "constructor_declaration",
                  "compact_constructor_declaration"):
             self._method(node)
+            return
+        if t in ("block", "switch_block"):
+            self._lexical_block(node)
+            return
+        if t == "local_variable_declaration":
+            self._local_declaration(node)
+            return
+        if t == "for_statement":
+            # O initializer do for permanece visível na condição, update e
+            # corpo, mas não pode vazar para a instrução seguinte.
+            self._types.append({})
+            for child in node.children:
+                self.visit(child)
+            self._types.pop()
+            return
+        if t == "enhanced_for_statement":
+            self._enhanced_for(node)
+            return
+        if t == "catch_clause":
+            self._catch_clause(node)
+            return
+        if t == "try_with_resources_statement":
+            self._try_with_resources(node)
+            return
+        if t == "resource":
+            self._resource(node)
+            return
+        if t == "lambda_expression":
+            self._lambda(node)
+            return
+        if t == "if_statement":
+            self._if_statement(node)
+            return
+        if t in ("switch_rule", "switch_block_statement_group"):
+            self._switch_arm(node)
             return
         if t == "method_invocation":
             self._invocation(node)
@@ -287,9 +504,7 @@ class JavaExtractor(BaseExtractor):
                      signature=self.sig_of(node, body), doc=self._doc(node),
                      visibility=self._visibility(node, default))
         self.scope.append((name, "function"))
-        locals_: dict[str, str | None] = {}
-        self._collect_locals(node, locals_)
-        self._types.append(locals_)
+        self._types.append(self._parameter_types(node))
         if body is not None:
             for c in body.children:
                 self.visit(c)

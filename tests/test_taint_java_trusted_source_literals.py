@@ -115,13 +115,6 @@ def test_dynamic_system_property_key_remains_a_source(tmp_path):
     assert "File" in _sinks(findings)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "global System.setProperty state is not modeled yet; an in-process "
-        "tainted write must eventually override literal trust"
-    ),
-)
 def test_tainted_setproperty_eventually_overrides_user_dir_trust(tmp_path):
     findings = _findings(
         tmp_path,

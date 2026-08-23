@@ -14,6 +14,11 @@ Modelo de confiança:
 - 0 alvos no repo → nada muda (externo/stdlib → segue como estava, fallback L0);
 - > MAX alvos     → nada muda (ambíguo demais; L0 permanece).
 
+Cada nova passada primeiro devolve provas L1 anteriores ao fallback L0. Isso é
+necessário porque o universo semântico pode mudar sem o arquivo chamador mudar
+(novo override, classpath/build model diferente). Uma falha parcial do resolver
+não pode conservar uma certeza produzida para outro universo.
+
 A camada de transparência (explain) distingue `l1`+`inferred` (overloads) do
 `l0`+`inferred` (alvo único por nome) pelo rótulo do resolver.
 """
@@ -36,6 +41,63 @@ NON_CALLABLE_KINDS = frozenset({
     "key", "section", "html_id", "css_class", "css_id", "type_alias",
     "interface", "enum",
 })
+
+
+def reset_sites(conn: sqlite3.Connection, languages, rels=None) -> int:
+    """Colapsa sites L1 do escopo em um representante dangling ``possible/l0``.
+
+    A operação inteira usa um savepoint: leitores nunca recebem um fan-out pela
+    metade e uma exceção não deixa clones parcialmente removidos. O chamador deve
+    rodar a resolução L0 depois, antes de iniciar os servidores semânticos.
+    Retorna o número de callsites cuja prova anterior foi invalidada.
+    """
+    languages = tuple(dict.fromkeys(languages))
+    if not languages:
+        return 0
+    where = ["e.kind='calls'", "e.resolver='l1'",
+             f"f.language IN ({','.join('?' * len(languages))})"]
+    args = list(languages)
+    if rels is not None:
+        rels = tuple(dict.fromkeys(rels))
+        if not rels:
+            return 0
+        where.append(f"f.path IN ({','.join('?' * len(rels))})")
+        args.extend(rels)
+    sites = conn.execute(
+        "SELECT DISTINCT e.file_id, e.line, e.col FROM edges e "
+        "JOIN files f ON f.id=e.file_id WHERE " + " AND ".join(where)
+        + " ORDER BY e.file_id, e.line, e.col",
+        args,
+    ).fetchall()
+    if not sites:
+        return 0
+
+    conn.execute("SAVEPOINT l1_reset_sites")
+    try:
+        for site in sites:
+            rows = conn.execute(
+                "SELECT id FROM edges WHERE kind='calls' AND file_id=? "
+                "AND line IS ? AND col IS ? ORDER BY id",
+                (site["file_id"], site["line"], site["col"]),
+            ).fetchall()
+            if not rows:
+                continue
+            keep = rows[0]["id"]
+            conn.execute(
+                "UPDATE edges SET dst=NULL, confidence='possible', resolver='l0' "
+                "WHERE id=?", (keep,),
+            )
+            if len(rows) > 1:
+                conn.executemany(
+                    "DELETE FROM edges WHERE id=?",
+                    ((row["id"],) for row in rows[1:]),
+                )
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT l1_reset_sites")
+        conn.execute("RELEASE SAVEPOINT l1_reset_sites")
+        raise
+    conn.execute("RELEASE SAVEPOINT l1_reset_sites")
+    return len(sites)
 
 
 def target_symbol(conn: sqlite3.Connection, drel: str, dline: int,
@@ -79,9 +141,8 @@ def apply(conn: sqlite3.Connection, file_id: int, edge, target_ids,
 
     `edge` precisa expor id, line, col. `target_ids` é a lista de símbolos que o
     servidor resolveu (duplicatas e ordem toleradas). Retorna 1 se promoveu o
-    site, 0 caso contrário. Idempotente: a aresta original vira `l1` e sai do
-    filtro `resolver='l0'` das próximas passadas; o índice único + INSERT OR
-    IGNORE impedem clones duplicados."""
+    site, 0 caso contrário. O índice único + INSERT OR IGNORE impedem clones
+    duplicados; um savepoint torna a substituição do fan-out atômica."""
     ids = list(dict.fromkeys(t for t in target_ids if t is not None))
     if not ids or len(ids) > MAX_L1_TARGETS:
         return 0
@@ -90,20 +151,27 @@ def apply(conn: sqlite3.Connection, file_id: int, edge, target_ids,
     # antes do UPDATE evita colisão no índice único e é idempotente: o alvo é
     # recriado abaixo com a confiança semântica correta.
     ph = ",".join("?" * len(ids))
-    conn.execute(
-        f"DELETE FROM edges WHERE kind='calls' AND file_id=? AND line=? AND col=? "
-        f"AND id!=? AND ((resolver='l0' AND confidence='possible') "
-        f"OR dst IN ({ph}))",
-        (file_id, edge["line"], edge["col"], edge["id"], *ids))
-    conn.execute(
-        "UPDATE edges SET dst=?, confidence=?, resolver=? WHERE id=?",
-        (ids[0], conf, resolver, edge["id"]))
-    # clones para os alvos extras (overloads): copia kind/src/dst_name/site da
-    # aresta original, trocando só o dst. dst distinto → passa no índice único.
-    for sid in ids[1:]:
+    conn.execute("SAVEPOINT l1_apply_site")
+    try:
         conn.execute(
-            "INSERT OR IGNORE INTO edges(kind, src, dst, dst_name, file_id, line, "
-            "col, confidence, resolver) SELECT kind, src, ?, dst_name, file_id, "
-            "line, col, ?, ? FROM edges WHERE id=?",
-            (sid, conf, resolver, edge["id"]))
+            f"DELETE FROM edges WHERE kind='calls' AND file_id=? AND line=? AND col=? "
+            f"AND id!=? AND ((resolver='l0' AND confidence='possible') "
+            f"OR dst IN ({ph}))",
+            (file_id, edge["line"], edge["col"], edge["id"], *ids))
+        conn.execute(
+            "UPDATE edges SET dst=?, confidence=?, resolver=? WHERE id=?",
+            (ids[0], conf, resolver, edge["id"]))
+        # clones para os alvos extras (overloads): copia kind/src/dst_name/site
+        # da original, trocando só o dst. dst distinto passa no índice único.
+        for sid in ids[1:]:
+            conn.execute(
+                "INSERT OR IGNORE INTO edges(kind, src, dst, dst_name, file_id, "
+                "line, col, confidence, resolver) SELECT kind, src, ?, dst_name, "
+                "file_id, line, col, ?, ? FROM edges WHERE id=?",
+                (sid, conf, resolver, edge["id"]))
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT l1_apply_site")
+        conn.execute("RELEASE SAVEPOINT l1_apply_site")
+        raise
+    conn.execute("RELEASE SAVEPOINT l1_apply_site")
     return 1
