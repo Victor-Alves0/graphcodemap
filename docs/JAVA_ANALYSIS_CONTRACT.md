@@ -82,7 +82,8 @@ after another site has returned a definition. This does not suppress JDTLS
 errors: the real PetClinic rerun proved readiness with 345 resolved definitions
 but remained partial because the server also emitted an internal diagnostic
 error. See the full disposition and environment details in
-[Round 28 Real-world Feedback](REAL_WORLD_FEEDBACK_ROUND28.md).
+[Round 28 Real-world Feedback](REAL_WORLD_FEEDBACK_ROUND28.md) and its
+[clean operational manifest](../evals/round28-real-world-feedback-manifest.json).
 
 ### Fair CodeQL comparison
 

@@ -420,6 +420,9 @@ template:
   scoring and fair comparison boundaries.
 - [Round 28 feedback ledger](REAL_WORLD_FEEDBACK_ROUND28.md) shows how a strong
   semantic profile can still fail its first-run and real-framework journey.
+- [Round 28 operational manifest](../evals/round28-real-world-feedback-manifest.json)
+  demonstrates valid fail-closed evidence that is deliberately not promoted to
+  semantic-complete evidence.
 
 ## Questions a release reviewer must answer
 

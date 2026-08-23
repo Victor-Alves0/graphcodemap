@@ -1,0 +1,110 @@
+{
+  "schema_version": "1.0",
+  "run": {
+    "date": "2026-08-23",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.10",
+    "graphcodemap": "0.1.0",
+    "indexer_version": 36,
+    "engine_commit": "9b0065e785449ea3400307c41f614195fb320616",
+    "engine_git_dirty": false,
+    "engine_source_tree_sha256": "00af060efb086396916026253664b32cc857d020090191c38b95b162c91969b1"
+  },
+  "local_gates": {
+    "pytest": {
+      "passed": 1821,
+      "skipped": 28,
+      "failed": 0,
+      "duration_s": 133.45
+    },
+    "ruff_src": "passed",
+    "configured_mypy": "passed",
+    "diff_check": "passed",
+    "build": "passed",
+    "twine": "passed",
+    "installed_wheel_smoke": {
+      "status": "passed",
+      "install": "graphcodemap[mcp,l1] from the built wheel into a new venv",
+      "mcp": "1.29.0",
+      "jedi": "0.20.0",
+      "fastmcp_import": true,
+      "cli_help": true,
+      "mcp_cli_help": true
+    },
+    "packages": {
+      "graphcodemap-0.1.0-py3-none-any.whl": {
+        "sha256": "5a4fb4f8867cd38c681b3776939c54440dc4d5c0c5e0fa9b12ee396c175fe2fa"
+      },
+      "graphcodemap-0.1.0.tar.gz": {
+        "sha256": "38b35fd82b8c0d3270f445a55798fb21d11f0b94de791c3c15ffd16f5c345cf9"
+      }
+    }
+  },
+  "spring_petclinic_operational_replay": {
+    "target_repository": "https://github.com/spring-projects/spring-petclinic.git",
+    "target_commit": "88e37c15cf6fc8490b01bc3e8e2c800cec1ac272",
+    "target_git_dirty": false,
+    "scan_root": ".",
+    "initial_l0_files": 87,
+    "final_files_after_freshness": 85,
+    "java_files": 49,
+    "parse_errors": 0,
+    "resume_note": "The desktop turn interrupted after the fresh L0 database was complete and before l1_last_run existed. Refine resumed against that unchanged v36 L0 snapshot.",
+    "refine_command": "python -m codegraph.cli --root %PETCLINIC_ROOT% --db %GRAPHCODEMAP_DB% refine --jdtls-ready-timeout 300 --jdtls-io-timeout 360",
+    "path_placeholders": {
+      "PETCLINIC_ROOT": "clean checkout of target_repository at target_commit",
+      "GRAPHCODEMAP_DB": "fresh temporary v36 database"
+    },
+    "refine_exit_code": 1,
+    "refine_duration_s": 351.57,
+    "status": "partial",
+    "errors": 1,
+    "health": {
+      "sites": 1575,
+      "resolved_sites": 345,
+      "warmup_timed_out": true,
+      "io_timed_out": false,
+      "diagnostic_class": "JDTLS Publish Diagnostics NullPointerException",
+      "attempted_promotions": 345,
+      "rolled_back_promotions": 345,
+      "published_promotions": 0
+    },
+    "final_java_calls": {
+      "inferred_l0": 229,
+      "possible_l0": 1402,
+      "certain_l1": 0
+    },
+    "doctor": {
+      "partial_state_persisted": true,
+      "sanitized_message": "JdtlsResolver: passada parcial por erro do resolver; consulte a saída original de refine para detalhes",
+      "absolute_path_or_stack_persisted": false,
+      "blind_retry_recommended": false
+    },
+    "canonical_fqn_query": {
+      "query": "org.springframework.samples.petclinic.owner.OwnerController.processFindForm",
+      "resolved": true,
+      "stored_fqn_unchanged": "src.main.java.org.springframework.samples.petclinic.owner.OwnerController.OwnerController.processFindForm",
+      "path": "src/main/java/org/springframework/samples/petclinic/owner/OwnerController.java",
+      "line": 94
+    },
+    "artifact": {
+      "database": "%GRAPHCODEMAP_DB%",
+      "sha256": "6f954f7aa02d4f0bdf8e9baf5acdabcf46024e6d02a2dd9b20813ba578a9256f"
+    },
+    "eligibility": {
+      "operational_fail_closed_evidence": true,
+      "semantic_complete_gate": false,
+      "release_eligible_semantic_evidence": false,
+      "reason": "JDTLS emitted an internal Error diagnostic; GraphCodeMap correctly rolled back the root instead of publishing certain edges."
+    }
+  },
+  "java_environment": {
+    "jdtls_version": "1.60.0",
+    "jdtls_core_jar_sha256": "e83035adc685b4519f2d8a8d42fe8651ce7ea4f4daf396f47ec453b5bff07be5",
+    "jdtls_runtime": "Oracle JDK 21.0.11+9-LTS-211",
+    "project_toolchain": "Temurin 17.0.20+8",
+    "project_toolchain_archive_sha256": "418497be5cf585bdd2203d6486a565d66d3f5e992d5630d45104cb873fab8122",
+    "project_build_before_replay": "gradlew.bat classes --no-daemon: passed"
+  },
+  "scope_note": "This manifest proves the operational fail-closed and canonical-query contracts on one real Spring repository. Because resolver health is partial, it is not evidence of complete Java semantic coverage or universal SAST superiority."
+}

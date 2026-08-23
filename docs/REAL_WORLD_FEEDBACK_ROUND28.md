@@ -70,9 +70,11 @@ queried sites proves that JDTLS answered semantically, while unresolved library
 or framework calls do not by themselves prove a readiness failure. The final
 Round 28 gate must keep genuine request/process timeouts fail-closed while not
 requiring every queried call to have an in-repository definition. This case is
-covered by a minimal operational regression. A clean replay manifest with exact
-commands, JDTLS/JDK versions, duration, logs and hashes is still required before
-the PetClinic result becomes release-eligible evidence.
+covered by a minimal operational regression. The
+[clean replay manifest](../evals/round28-real-world-feedback-manifest.json)
+records the engine/target commits, exact command, JDTLS/JDK versions, duration,
+health, rollback and artifact hashes. It is valid evidence of fail-closed
+operation, but not V4 semantic evidence because the resolver run is partial.
 
 ## What this feedback changed in the language process
 

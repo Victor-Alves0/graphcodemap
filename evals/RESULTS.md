@@ -1999,3 +1999,24 @@ As linhas CodeQL versionadas existentes não foram reescritas:
 GraphCodeMap vence essas linhas fixadas. Isso não estabelece superioridade
 universal: CodeQL cobre mais linguagens, queries, frameworks e integrações, e
 tem maturidade operacional que esta rodada ainda está validando.
+
+# Rodada 28 — feedback real, onboarding e falha segura (2026-08-23)
+
+Esta rodada converteu o feedback de uso no Aethros e no Spring PetClinic em
+contratos verificáveis de instalação, descoberta, resolução e observabilidade.
+O gate local final passou com **1.821 testes**, 28 skips, `ruff`, `mypy`, build,
+`twine check` e smoke do wheel limpo com MCP 1.29.0 e Jedi 0.20.0.
+
+No replay limpo do PetClinic no commit
+`88e37c15cf6fc8490b01bc3e8e2c800cec1ac272`, usando o motor
+`9b0065e785449ea3400307c41f614195fb320616`, o JDTLS encontrou 345 de 1.575
+sites semânticos, mas emitiu uma exceção interna de Publish Diagnostics. O
+GraphCodeMap classificou a passada como `partial`, reverteu as 345 promoções e
+publicou zero arestas `certain`. O `doctor` preservou o diagnóstico acionável
+sem persistir caminho absoluto ou stack trace, e a consulta pelo FQN canônico
+do `OwnerController.processFindForm` continuou funcionando.
+
+Esse resultado comprova o contrato **fail-closed** e a recuperação operacional;
+não comprova semântica Java completa nesse replay nem superioridade geral sobre
+outros analisadores. Comandos, versões, hashes e resultados estão fixados no
+[`manifesto Round 28`](round28-real-world-feedback-manifest.json).
