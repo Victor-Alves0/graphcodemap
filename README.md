@@ -204,7 +204,7 @@ cover all 19 dedicated code-language identifiers; 18 are flow-sensitive.
 ## Status
 
 **Alpha (v0.1.0).** The main query surfaces are implemented. The Round 28
-real-world-feedback gate is **1,820 passed, 28 skipped**, with no expected
+real-world-feedback gate is **1,821 passed, 28 skipped**, with no expected
 failures. The separately versioned Round 27 release evidence remains **1,778
 passed, 27 skipped**, and its corrected JDTLS overlay is healthy. CI spans Linux and Windows on
 Python 3.10–3.12. Language depth and

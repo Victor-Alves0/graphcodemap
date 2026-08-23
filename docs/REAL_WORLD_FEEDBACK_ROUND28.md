@@ -21,7 +21,7 @@ State labels in this ledger are deliberately strict:
   commands, versions, health, duration and artifact hashes;
 - **deferred** names an acceptance criterion and remains open.
 
-Round 28 is implemented and locally verified by 1,820 passing tests, 28 skips,
+Round 28 is implemented and locally verified by 1,821 passing tests, 28 skips,
 Ruff, configured mypy, build, Twine and an installed-wheel smoke. The
 Aethros and PetClinic numbers below are external exploratory observations, not
 yet `V4` release evidence. Round 27 remains the latest clean Java release

@@ -250,7 +250,10 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
              "servers": 0, "rolled_back": 0,
              "status": "partial" if unavailable else "complete",
              "partial": bool(unavailable),
-             "warnings": missing_warnings, "runs": [],
+             # Keep the public detailed list independent from the sanitized
+             # persistence seed. Resolver diagnostics may contain absolute
+             # paths and must never mutate ``missing_warnings`` by alias.
+             "warnings": list(missing_warnings), "runs": [],
              "applicable": applicable, "attempted": [],
              "unavailable": unavailable,
              "revalidated": 0,
@@ -307,7 +310,8 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
                     and not unresolved_readiness
                     and not run.get("io_timed_out")):
                 safe_warnings.append(
-                    f"{resolver_name}: passada parcial; execute `refine` para detalhes")
+                    f"{resolver_name}: passada parcial por erro do resolver; "
+                    "consulte a saída original de `refine` para detalhes")
         record = {key: stats[key] for key in (
             "status", "partial", "errors", "applicable",
             "attempted", "unavailable", "files", "promoted", "rolled_back")}

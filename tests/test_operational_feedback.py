@@ -197,6 +197,54 @@ def test_doctor_preserves_last_partial_refine_and_does_not_suggest_retry(
     assert "considere rodar `refine`" not in output
 
 
+def test_doctor_prioritizes_sanitized_error_over_informational_probe(
+        tmp_path, monkeypatch):
+    graph = _java_graph(tmp_path)
+
+    class DiagnosticJava:
+        languages = ("java",)
+        root_markers = ()
+
+        def __init__(self, *_a, **_k):
+            pass
+
+        def refine_file(self, *_a):
+            return 0
+
+        def close(self):
+            pass
+
+        def health_report(self):
+            return {
+                "status": "partial",
+                "errors": [f"Publish Diagnostics failed at {tmp_path}"],
+                "warnings": ["probe unresolved, but 345/1575 sites resolved"],
+                "sites": 1575,
+                "resolved_sites": 345,
+                "warmup_timed_out": True,
+                "io_timed_out": False,
+                "ready_timeout_s": 300,
+                "io_timeout_s": 360,
+            }
+
+    monkeypatch.setattr(l1, "all_resolvers", lambda: [DiagnosticJava])
+    monkeypatch.setattr(l1, "available_resolvers", lambda _root: [DiagnosticJava])
+    stats = l1.refine(graph.indexer)
+    doctor = graph.doctor()
+    output = render.doctor(doctor)
+    graph.close()
+
+    persisted = json.dumps(doctor["l1_last_run"], ensure_ascii=False)
+    assert stats["partial"] is True
+    assert str(tmp_path) in stats["runs"][0]["errors"][0]
+    assert str(tmp_path) not in persisted
+    assert "Publish Diagnostics" not in persisted
+    assert doctor["l1_last_run"]["warnings"][0].startswith(
+        "DiagnosticJava: passada parcial por erro do resolver")
+    assert "passada parcial por erro do resolver" in output
+    assert "probe unresolved" not in output
+
+
 def test_java_unavailable_message_distinguishes_jdtls_from_runtime(
         tmp_path, monkeypatch):
     monkeypatch.delenv("CODEGRAPH_JDTLS", raising=False)
