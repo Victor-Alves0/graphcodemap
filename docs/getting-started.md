@@ -8,16 +8,24 @@ about your codebase in about five minutes.
 GraphCodeMap needs **Python 3.10+**. The parser is C (via tree-sitter), so the
 hot path is not Python.
 
-For the recommended first experience, install Python semantic resolution too:
+Install the small local-first core:
 
 ```bash
-pip install "graphcodemap[l1]"
+pip install graphcodemap
 ```
 
-The smaller `pip install graphcodemap` install is intentionally L0-only. It can
-answer structural questions, but Python call edges cannot become `certain`
-without Jedi. GraphCodeMap reports that degradation; it does not silently turn
-name guesses into semantic facts.
+Then let GraphCodeMap detect the repository languages, reuse tools already
+present and offer an explicit, versioned setup plan:
+
+```bash
+codegraph setup --install
+```
+
+Nothing is downloaded without `--install` and confirmation. For CI, use
+`--install --yes`. Direct downloads have fixed URLs and SHA-256; package-manager
+installs use fixed versions. Paths are stored in the user's local GraphCodeMap
+configuration, never in the analyzed repository. The shortcut
+`pip install "graphcodemap[l1]"` remains available for Python/Jedi only.
 
 Optional extras, installed only when you need them:
 
@@ -35,6 +43,8 @@ shorter alias `codegraph` — they are the same program.
 From the root of any repository:
 
 ```bash
+codegraph index . --install       # setup + index + L1 in one explicit command
+# or, after setup:
 codegraph index . --l1
 codegraph doctor
 ```
@@ -136,9 +146,12 @@ codegraph stats         # counts
 ## Wire it into an AI agent
 
 ```bash
-pip install "graphcodemap[mcp,l1]"
-graphcodemap-mcp --root .
+codegraph mcp --install
 ```
+
+This prepares bounded MCP 1.x and semantic tooling for the detected repository
+languages before starting stdio. Plain `codegraph mcp` never installs anything
+and reports exact remediation when MCP is missing or incompatible.
 
 Then register the stdio server with your agent. For Claude Code, add a
 `.mcp.json` at the repo root:

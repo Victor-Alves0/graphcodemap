@@ -125,7 +125,17 @@ class LspResolver:
     def _popen_argv(self) -> list[str]:
         """Argv para lançar o servidor. Servidores simples = binário no PATH;
         subclasses com launcher (jdtls: java -jar equinox…) sobrescrevem."""
-        return [self._binary(), *self.cmd_args]
+        binary = self._binary()
+        # Launchers de ecossistema no Windows (gem/coursier/Gradle) costumam
+        # ser .cmd/.bat. CreateProcess não os executa diretamente; use o cmd
+        # apenas para esse launcher já descoberto, mantendo shell=False e um
+        # argv construído, sem interpolar conteúdo do repositório analisado.
+        if (os.name == "nt" and binary
+                and Path(binary).suffix.lower() in {".cmd", ".bat"}):
+            command = subprocess.list2cmdline([binary, *self.cmd_args])
+            return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c",
+                    command]
+        return [binary, *self.cmd_args]
 
     def __init__(self, root: Path, project_root: Path | None = None) -> None:
         # `root` é a raiz do REPO — usada para abrir arquivos repo-relativos e

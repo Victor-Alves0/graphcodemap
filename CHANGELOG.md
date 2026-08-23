@@ -6,6 +6,22 @@ on [Keep a Changelog](https://keepachangelog.com/); this project uses
 
 ## [Unreleased]
 
+### Added — setup explícito de toolchains
+
+- `codegraph setup [linguagem] --install` detecta primeiro o que já existe e
+  prepara todas as 14 famílias L1 com versões fixadas; `index`, `refine` e
+  `mcp` aceitam o mesmo opt-in via `--install` (`--yes` em automação).
+- Downloads diretos usam URL versionada, SHA-256, limite de tamanho e extração
+  confinada; nenhuma instalação ocorre apenas por abrir/indexar um repo.
+  Caminhos verificados são persistidos fora do repositório e variáveis
+  explícitas do host sempre têm precedência.
+- Java foi validado de uma configuração vazia até JDK 21 + JDTLS 1.60.0
+  descobertos em um novo processo. MCP 1.29.0 foi instalado pelo próprio setup
+  em um wheel/venv limpo e o FastMCP foi reconhecido no mesmo fluxo.
+- O gate do projeto passa com **1.835 testes e 28 skips**, Ruff, mypy, build,
+  Twine e smoke do wheel. As cinco pendências estritamente Java estão isoladas
+  em `docs/JAVA_ANALYSIS_CONTRACT.md`.
+
 ### Added / Changed — consolidação de segurança e entrega
 
 - **Round 27 fecha o perfil semântico Java (`INDEXER_VERSION=35`):** OWASP em

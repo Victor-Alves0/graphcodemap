@@ -61,8 +61,9 @@ win.
 ## Quick start
 
 ```bash
-pip install "graphcodemap[l1]"       # includes Python semantic resolution (jedi)
+pip install graphcodemap
 
+codegraph setup --install         # detect languages; show + confirm a pinned plan
 codegraph index . --l1            # build the index and promote semantic edges
 codegraph doctor                  # verify resolver health and % certain
 codegraph overview                # ranked map of the repo (PageRank)
@@ -76,13 +77,15 @@ codegraph visualize --mode impact --symbol validate_token   # investigate as HTM
 Point any MCP-capable agent at your repo:
 
 ```bash
-pip install "graphcodemap[mcp,l1]"
-graphcodemap-mcp --root .         # stdio server; indexes/refreshes on boot
+pip install graphcodemap
+codegraph mcp --install           # prepares MCP + repo languages, then starts
 ```
 
 `pip install graphcodemap` remains the lightweight L0-only install. It is useful,
-but Python call edges cannot become `certain` until the `l1` extra is installed;
-JS/TS and other languages also need their documented language server/runtime.
+but semantic call edges cannot become `certain` until their resolver is ready.
+`codegraph setup` first reuses installed/repo-local tools, then offers an
+explicit versioned installation; it never downloads merely because a repo was
+opened. `pip install "graphcodemap[l1]"` remains the direct Python/Jedi shortcut.
 See [Languages & Resolvers](docs/languages.md#activating-a-resolver).
 
 ```jsonc
@@ -204,7 +207,7 @@ cover all 19 dedicated code-language identifiers; 18 are flow-sensitive.
 ## Status
 
 **Alpha (v0.1.0).** The main query surfaces are implemented. The Round 28
-real-world-feedback gate is **1,821 passed, 28 skipped**, with no expected
+real-world-feedback/setup gate is **1,835 passed, 28 skipped**, with no expected
 failures. The separately versioned Round 27 release evidence remains **1,778
 passed, 27 skipped**, and its corrected JDTLS overlay is healthy. CI spans Linux and Windows on
 Python 3.10–3.12. Language depth and

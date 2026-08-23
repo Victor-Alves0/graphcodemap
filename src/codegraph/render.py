@@ -422,17 +422,21 @@ def doctor(d) -> str:
                      "(rode com CODEGRAPH_LOG=warning para ver o motivo)")
     if not d["l1_resolvers"]:
         flags.append("nenhum resolver L1 ativo — arestas ficam em 'inferred'/"
-                     "'possible' (instale: pip install \"graphcodemap[l1]\")")
+                     "'possible' (rode `codegraph setup --install`; para Python, "
+                     "`pip install \"graphcodemap[l1]\"` também funciona)")
     for m in d.get("l1_missing", []):
         langs = ", ".join(m["languages"])
         if m.get("reason"):
             action = f"; {m['action']}" if m.get("action") else ""
             flags.append(f"L1 indisponível para {langs}: {m['reason']}{action} "
-                         "— resolução fica em 'inferred'/'possible'")
+                         f"— rode `codegraph setup {m['languages'][0]} --install`; "
+                         "resolução fica em 'inferred'/'possible'")
         else:
             env = f" (ou defina ${m['env']})" if m.get("env") else ""
             flags.append(f"L1 indisponível para {langs}: '{m['server']}' não está no "
-                         f"PATH{env} — resolução fica em 'inferred'/'possible'")
+                         f"PATH{env} — rode `codegraph setup "
+                         f"{m['languages'][0]} --install`; resolução fica em "
+                         "'inferred'/'possible'")
     last_l1 = d.get("l1_last_run") or {}
     if last_l1.get("partial"):
         warnings = last_l1.get("warnings") or []

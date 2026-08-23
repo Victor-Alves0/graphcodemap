@@ -11,6 +11,20 @@ pip install "graphcodemap[mcp]"
 graphcodemap-mcp --root /path/to/repo
 ```
 
+Or start from the core install and prepare MCP plus the repository's semantic
+toolchains explicitly:
+
+```bash
+pip install graphcodemap
+codegraph mcp --install          # asks before installing
+# CI/non-interactive:
+codegraph mcp --install --yes
+```
+
+Setup pins MCP to the tested 1.x FastMCP-compatible release. Plain
+`codegraph mcp` performs no installation and prints an actionable command if
+the optional dependency is missing or incompatible.
+
 The server speaks stdio, indexes/refreshes on boot, and runs a background watcher
 so the index stays hot. Pass `--no-watch` to disable the watcher (read-repair
 still guarantees freshness on every query).

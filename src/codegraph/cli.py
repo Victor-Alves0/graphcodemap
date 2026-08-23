@@ -82,9 +82,66 @@ def _add_jdtls_timeout_options(parser) -> None:
              "omitido, acompanha readiness (env: CODEGRAPH_JDTLS_IO_TIMEOUT)")
 
 
+def _confirm_install(args, plans) -> bool:
+    if getattr(args, "yes", False):
+        return True
+    if not sys.stdin.isatty():
+        print("erro: instalação requer consentimento; em CI/non-interactive use "
+              "--install --yes", file=sys.stderr)
+        return False
+    names = ", ".join(plan.target for plan in plans if not plan.ready)
+    answer = input(f"instalar dependências fixadas para {names}? [y/N] ").strip().lower()
+    return answer in {"y", "yes", "s", "sim"}
+
+
+def _install_plans(args, plans) -> bool:
+    from . import setup_tools
+
+    missing = [plan for plan in plans if not plan.ready]
+    print(setup_tools.render(plans))
+    if not missing:
+        return True
+    if not _confirm_install(args, plans):
+        print("instalação cancelada", file=sys.stderr)
+        return False
+    results = setup_tools.install(
+        plans, base_dir=getattr(args, "tools_dir", None),
+        progress=lambda message: print(f"setup: {message}", flush=True),
+    )
+    print(setup_tools.render(plans, results))
+    return not any(result["status"] == "failed" for result in results)
+
+
+def _prepare_repo_tools(args, *, include_mcp: bool = False) -> bool:
+    if not getattr(args, "install", False):
+        return True
+    from . import setup_tools
+
+    targets = setup_tools.detect_targets(args.root)
+    if include_mcp:
+        targets.append("mcp")
+    plans = setup_tools.build_plans(
+        args.root, targets, base_dir=getattr(args, "tools_dir", None))
+    if not _install_plans(args, plans):
+        return False
+    verified = setup_tools.build_plans(
+        args.root, targets, base_dir=getattr(args, "tools_dir", None))
+    still_missing = [plan.target for plan in verified if not plan.ready]
+    if still_missing:
+        print("erro: setup terminou, mas estes resolvers continuam indisponíveis: "
+              + ", ".join(still_missing), file=sys.stderr)
+        print(setup_tools.render(verified), file=sys.stderr)
+        return False
+    return True
+
+
 def cmd_index(args) -> int:
     if args.path:
         args.root = str(Path(args.path).resolve())
+    if getattr(args, "install", False):
+        args.l1 = True
+        if not _prepare_repo_tools(args):
+            return 3
     ix = Indexer(args.root, args.db)
     t0 = time.perf_counter()
     stats = ix.index_repo(force=args.force, scope=getattr(args, "scope", None),
@@ -112,6 +169,8 @@ def cmd_index(args) -> int:
 def cmd_refine(args) -> int:
     from . import l1
 
+    if not _prepare_repo_tools(args):
+        return 3
     ix = Indexer(args.root, args.db)
     t0 = time.perf_counter()
     with _jdtls_timeout_env(args):
@@ -331,6 +390,29 @@ def cmd_capabilities(args) -> int:
     return 0
 
 
+def cmd_setup(args) -> int:
+    from . import setup_tools
+
+    try:
+        plans = setup_tools.build_plans(
+            args.root, args.targets, all_languages=args.all,
+            base_dir=args.tools_dir)
+    except ValueError as error:
+        print(f"erro: {error}", file=sys.stderr)
+        return 2
+    if not args.install:
+        print(setup_tools.render(plans))
+        return 1 if any(not plan.ready for plan in plans) else 0
+    if not _install_plans(args, plans):
+        return 3
+    verified = setup_tools.build_plans(
+        args.root, args.targets, all_languages=args.all,
+        base_dir=args.tools_dir)
+    print("\nverificação final")
+    print(setup_tools.render(verified))
+    return 1 if any(not plan.ready for plan in verified) else 0
+
+
 def cmd_doctor(args) -> int:
     engine = _engine(args)
     d = engine.doctor()
@@ -394,9 +476,27 @@ def cmd_watch(args) -> int:
 
 
 def cmd_mcp(args) -> int:
-    from .mcp_server import serve
+    if not _prepare_repo_tools(args, include_mcp=True):
+        return 3
+    try:
+        from .mcp_server import serve
+    except ModuleNotFoundError as error:
+        if error.name and (error.name == "mcp" or error.name.startswith("mcp.")):
+            print("erro: suporte MCP ausente/incompatível; rode "
+                  "`codegraph setup mcp --install` ou instale "
+                  "`graphcodemap[mcp]`", file=sys.stderr)
+            return 3
+        raise
 
-    serve(args.root, args.db, watch=not args.no_watch)
+    try:
+        serve(args.root, args.db, watch=not args.no_watch)
+    except ModuleNotFoundError as error:
+        if error.name and (error.name == "mcp" or error.name.startswith("mcp.")):
+            print("erro: suporte MCP ausente/incompatível; rode "
+                  "`codegraph setup mcp --install` ou instale "
+                  "`graphcodemap[mcp]`", file=sys.stderr)
+            return 3
+        raise
     return 0
 
 
@@ -415,6 +515,10 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--force", action="store_true", help="re-indexa tudo mesmo sem mudanças")
     sp.add_argument("--l1", "--refine", dest="l1", action="store_true",
                     help="roda refinamento L1 após indexar")
+    sp.add_argument("--install", action="store_true",
+                    help="instala explicitamente toolchains ausentes e implica --l1")
+    sp.add_argument("--yes", action="store_true",
+                    help="confirma instalação sem prompt (CI/automação)")
     sp.add_argument("--scope", default=None,
                     help="indexa só esta subárvore do repo (parcial; acumula "
                          "entre execuções e é lembrado nas próximas)")
@@ -429,6 +533,10 @@ def main(argv: list[str] | None = None) -> int:
     sp.set_defaults(fn=cmd_index)
 
     sp = sub.add_parser("refine", help="refinamento L1: promove arestas a 'certain'")
+    sp.add_argument("--install", action="store_true",
+                    help="instala explicitamente toolchains ausentes antes do refine")
+    sp.add_argument("--yes", action="store_true",
+                    help="confirma instalação sem prompt (CI/automação)")
     _add_jdtls_timeout_options(sp)
     sp.set_defaults(fn=cmd_refine)
 
@@ -598,6 +706,20 @@ def main(argv: list[str] | None = None) -> int:
                         help="mapa por linguagem: o que está pronto e o que falta")
     sp.set_defaults(fn=cmd_capabilities)
 
+    sp = sub.add_parser("setup",
+                        help="descobre/prepara toolchains semânticos e MCP")
+    sp.add_argument("targets", nargs="*", metavar="ALVO",
+                    help="linguagens ou mcp; vazio detecta as linguagens do repo")
+    sp.add_argument("--all", action="store_true",
+                    help="considera todas as famílias L1 (não inclui MCP)")
+    sp.add_argument("--install", action="store_true",
+                    help="executa o plano; sem esta flag o comando é somente leitura")
+    sp.add_argument("--yes", action="store_true",
+                    help="confirma instalação sem prompt (CI/automação)")
+    sp.add_argument("--tools-dir", default=None,
+                    help="diretório gerenciado (default: dados locais do usuário)")
+    sp.set_defaults(fn=cmd_setup)
+
     sp = sub.add_parser("vacuum", help="reconstrói o índice e recupera espaço "
                         "(re-index --force + VACUUM; preserva descrições L3)")
     sp.set_defaults(fn=cmd_vacuum)
@@ -608,6 +730,10 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("mcp", help="inicia o servidor MCP (stdio)")
     sp.add_argument("--no-watch", action="store_true",
                     help="desliga o watcher em background (read-repair continua)")
+    sp.add_argument("--install", action="store_true",
+                    help="instala MCP/toolchains ausentes antes de iniciar")
+    sp.add_argument("--yes", action="store_true",
+                    help="confirma instalação sem prompt (CI/automação)")
     sp.set_defaults(fn=cmd_mcp)
 
     args = p.parse_args(argv)

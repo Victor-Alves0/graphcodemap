@@ -7,6 +7,13 @@ import pytest
 from codegraph import CodeGraph
 
 
+@pytest.fixture(autouse=True)
+def isolated_user_tool_config(monkeypatch, tmp_path):
+    """Unit tests never inherit a developer's persisted setup state."""
+    monkeypatch.setenv("CODEGRAPH_TOOL_CONFIG",
+                       str(tmp_path / "user-config" / "toolchains.json"))
+
+
 AUTH_PY = '''
 """Autenticação."""
 import hashlib

@@ -115,9 +115,26 @@ concurrency and broader framework evidence remain conservative boundaries.
 
 ### Activating a resolver
 
-An LSP-backed language activates **automatically when its server is on `PATH`**
-(or pointed at via `CODEGRAPH_<SERVER>`, e.g. `CODEGRAPH_JDTLS` for the JDT LS
-install dir). Then:
+The recommended path is repository-aware setup:
+
+```bash
+codegraph setup                 # read-only: detect readiness and print the plan
+codegraph setup --install       # explicit consent; fixed versions/checksums
+codegraph index --l1
+# one-command equivalent:
+codegraph index --install
+```
+
+Setup covers every wired L1 family: Python, JS/TS/TSX, Go, Rust, C/C++/CUDA,
+Lua/Luau, Clojure, PHP, Ruby, Kotlin, Java, C#, Scala and Swift. It first finds
+tools already installed or colocated in a monorepo. Only missing components are
+planned, and nothing is installed without `--install`; automation additionally
+uses `--yes`. When a safe managed recipe is unavailable on a platform, setup
+fails high with the exact prerequisite instead of running an unverified script.
+
+An LSP-backed language also activates **automatically when its server is on
+`PATH`** (or pointed at via `CODEGRAPH_<SERVER>`, e.g. `CODEGRAPH_JDTLS` for the
+JDT LS install dir). Then:
 
 ```bash
 codegraph refine        # promote edges to certain across the index

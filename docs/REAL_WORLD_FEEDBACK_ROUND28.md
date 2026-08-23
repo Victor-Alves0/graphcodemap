@@ -21,7 +21,8 @@ State labels in this ledger are deliberately strict:
   commands, versions, health, duration and artifact hashes;
 - **deferred** names an acceptance criterion and remains open.
 
-Round 28 is implemented and locally verified by 1,821 passing tests, 28 skips,
+Round 28 plus the pinned setup follow-up is locally verified by 1,835 passing
+tests, 28 skips,
 Ruff, configured mypy, build, Twine and an installed-wheel smoke. The
 Aethros and PetClinic numbers below are external exploratory observations, not
 yet `V4` release evidence. Round 27 remains the latest clean Java release
@@ -48,7 +49,7 @@ manifest.
 | Missing JDTLS was reported as missing `java` | Discovery must identify the actual missing/incompatible component | Implemented and locally verified | [Operational regressions](../tests/test_operational_feedback.py) distinguish JDTLS home/layout, runtime absence and incompatible Java version |
 | Canonical Java FQN from a stack trace did not resolve | Query identity must accept the language's canonical user-facing name | Implemented, locally verified and externally explored | [Canonical-query regressions](../tests/test_java_canonical_queries.py); real PetClinic FQN resolved without rewriting persisted identity and overload ambiguity is preserved |
 | Every JDTLS run imports into a fresh temporary workspace | Performance state reuse must not compromise freshness, locking or tool-version isolation | Deferred P2 | Acceptance: repo-keyed workspace includes an exclusive lock, JDTLS/build-model version key, create/change/delete invalidation, crash recovery and two-process regression |
-| Setup required several manual discoveries | Discover installed tools, fail with exact remediation, then offer explicit pinned setup | Partially resolved; setup helper deferred P2 | Acceptance: `codegraph setup <language>` is explicit, version/checksum pinned, proxy/offline aware and never executes an unverified download |
+| Setup required several manual discoveries | Discover installed tools, fail with exact remediation, then offer explicit pinned setup | Implemented and locally verified | `codegraph setup`, `index/refine/mcp --install`, fixed package versions, SHA-256 direct downloads, non-interactive consent and archive-confinement contracts live in [setup regressions](../tests/test_setup_tools.py) |
 | Overview was polluted and could exceed a useful reading budget | Ranking must not amplify false fallback edges; output remains explicitly bounded | Root cause implemented; broader UX deferred P2/P3 | Acceptance: entry-point ranking beats generic hubs on a labeled repo-navigation oracle; CLI/docs language policy is explicit and tested |
 
 ## Real Spring PetClinic validation

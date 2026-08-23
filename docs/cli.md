@@ -26,7 +26,8 @@ Commands are grouped below by what you're trying to do.
 ### `index`
 
 ```
-codegraph index [path] [--force] [--l1] [--scope SCOPE] [--workers N]
+codegraph index [path] [--force] [--l1] [--install] [--yes]
+                [--scope SCOPE] [--workers N]
                 [--exclude PATTERN] [--jdtls-ready-timeout SEC]
                 [--jdtls-io-timeout SEC]
 ```
@@ -38,6 +39,8 @@ are re-parsed.
 |---|---|
 | `--force` | Re-index everything, even unchanged files. |
 | `--l1` | Run L1 semantic refinement right after indexing. |
+| `--install` | Detect and explicitly install missing pinned toolchains before indexing; implies `--l1`. |
+| `--yes` | Confirm `--install` without a prompt (CI/non-interactive use). |
 | `--scope SCOPE` | Index only this subtree. **Persisted and additive** across runs; the freshness sweep then walks only indexed scopes. |
 | `--workers N` | Threads for the prepare phase (read+parse+extract). Default `min(4, CPUs)`; auto for repos ≥ 1000 files. The SQLite writer is always serial. |
 | `--exclude PATTERN` | gitignore-style exclusion, repeatable. Stored *in the index* (nothing written to the repo); replaces the prior policy. Use `--exclude ''` to clear. |
@@ -47,12 +50,31 @@ are re-parsed.
 ### `refine`
 
 ```
-codegraph refine [--jdtls-ready-timeout SEC] [--jdtls-io-timeout SEC]
+codegraph refine [--install] [--yes] [--jdtls-ready-timeout SEC]
+                 [--jdtls-io-timeout SEC]
 ```
 
 Runs L1 semantic resolution over the index, promoting call edges to `certain`
 where a language server (or jedi for Python) resolves a single definition. See
 [Languages & Resolvers](languages.md).
+
+### `setup`
+
+```
+codegraph setup [LANGUAGE ...] [--all] [--install] [--yes]
+                [--tools-dir PATH]
+```
+
+Without targets, detects the code languages present in `--root`. Without
+`--install`, it is read-only and prints the exact plan. With `--install`, it
+reuses existing tools first, asks for consent, installs fixed versions and
+persists only verified tool paths in the user's local configuration. `--yes`
+is required for non-interactive installation. Aliases such as `ts`, `c++`,
+`c#`, `jvm` and `clj` are accepted; `mcp` is an operational target too.
+
+`index --install` is the one-command form of setup + index + refine. Automatic
+installation is opt-in: opening/indexing a repository without that flag never
+downloads or executes third-party tooling.
 
 ### `watch`
 

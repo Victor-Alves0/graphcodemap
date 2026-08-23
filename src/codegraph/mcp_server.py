@@ -344,14 +344,38 @@ def serve(root: str | Path, db_path: str | Path | None = None,
 
 def main() -> None:
     import argparse
+    import sys
 
     p = argparse.ArgumentParser(prog="codegraph-mcp")
     p.add_argument("--root", default=".", help="raiz do repo")
     p.add_argument("--db", default=None)
     p.add_argument("--no-watch", action="store_true",
                    help="desliga o watcher em background")
+    p.add_argument("--install", action="store_true",
+                   help="instala explicitamente MCP/toolchains ausentes")
+    p.add_argument("--yes", action="store_true",
+                   help="confirma instalação sem prompt")
     args = p.parse_args()
-    serve(str(Path(args.root).resolve()), args.db, watch=not args.no_watch)
+    root = str(Path(args.root).resolve())
+    if args.install:
+        # Reutiliza exatamente o contrato/consentimento da CLI principal.
+        from .cli import main as cli_main
+        from .setup_tools import detect_targets
+
+        targets = [*detect_targets(root), "mcp"]
+        code = cli_main(["--root", root, "setup", *targets, "--install",
+                         *(["--yes"] if args.yes else [])])
+        if code:
+            raise SystemExit(code)
+    try:
+        serve(root, args.db, watch=not args.no_watch)
+    except ModuleNotFoundError as error:
+        if error.name and (error.name == "mcp" or error.name.startswith("mcp.")):
+            print("erro: suporte MCP ausente/incompatível; rode "
+                  "`codegraph setup mcp --install` ou instale "
+                  "`graphcodemap[mcp]`", file=sys.stderr)
+            raise SystemExit(3) from error
+        raise
 
 
 if __name__ == "__main__":

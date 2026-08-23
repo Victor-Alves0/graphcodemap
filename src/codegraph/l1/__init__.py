@@ -62,6 +62,12 @@ def _available(cls, root=None) -> bool:
 
 
 def available_resolvers(root=None) -> list[type]:
+    # Toolchains instalados por ``codegraph setup`` ficam numa configuração do
+    # usuário. Aplicar aqui cobre CLI, biblioteca e MCP sem exigir que cada
+    # superfície repita o bootstrap.
+    from ..tool_config import apply_saved_environment
+
+    apply_saved_environment()
     out = []
     for cls in all_resolvers():
         try:
@@ -81,6 +87,9 @@ def missing_resolvers(languages, is_available=None, root=None) -> list[dict]:
     usuário merece saber por quê. `is_available` é injetável (testes).
 
     Retorna ``[{"languages": [...], "server": "gopls", "env": "GOPLS_BIN"}]``."""
+    from ..tool_config import apply_saved_environment
+
+    apply_saved_environment()
     langs = set(languages)
     avail = is_available or (lambda cls: _available(cls, root))
     out: list[dict] = []

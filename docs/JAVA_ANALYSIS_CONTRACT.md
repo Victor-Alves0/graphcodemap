@@ -42,7 +42,7 @@ a red semantic or health contract.
 | Heap and dispatch | Receiver summaries separate may-dirty effects from must-clean overwrites; fan-out unions dirty state and intersects kills; aliases/escape block unsafe kills. Static/process state and ordered property reads/writes are modeled by the current Java contracts. | Focused heap, alias, dispatch and global-state contracts are green; FitNesse and openHAB fixed revisions clear their oracles. | This is not a whole-JVM points-to analysis: arbitrary object graphs, reflection, concurrency and framework-managed state remain conservative. |
 | Rules | Rules are receiver/type/category/argument-role aware. Sanitizer effects are context-compatible instead of one universal kill set. | The semantic OWASP gate scores 902/0/0/796; Juliet CWE-23 scores 444/0/0/444. | These corpora cover a bounded category and coding-style surface; independent projects and more vulnerability families are still required. |
 | Reporting | Source, sink and steps preserve column/span; allowed request-parameter literals are explicit; fingerprints and dedupe retain site/provenance distinctions; subject, engine and resolver health participate in report validity. Contradictory/partial/SARIF-aborted evidence fails closed. | Hardened scorer reports 3/3 vulnerable revisions detected and 3/3 fixes clear; path, subject and invocation adversarials pass. | Dirty engine worktrees are identified by a source-tree hash; release evidence is repinned after commit. |
-| Real-repository operation | Java queries reconstruct canonical package aliases without rewriting stored identity. JDTLS has separate server/project runtimes, configurable readiness/I/O budgets, actionable component discovery and persisted sanitized health. A warmup probe is not treated as a global failure after other sites prove semantic readiness. | Operational regressions cover timeout, process death, persisted `doctor`, discovery causes and canonical FQN lookup. An exploratory Spring PetClinic run indexed 49/49 Java files and promoted 345 definitions after the project toolchain was supplied. | The exploratory PetClinic run still emitted a JDTLS `Publish Diagnostics` NPE and therefore correctly remained partial; it is not Round 28 release evidence. Persistent JDTLS workspace reuse is deferred until locking/version/invalidation are designed. |
+| Real-repository operation | Java queries reconstruct canonical package aliases without rewriting stored identity. JDTLS has separate server/project runtimes, configurable readiness/I/O budgets, actionable component discovery, explicit pinned setup and persisted sanitized health. A warmup probe is not treated as a global failure after other sites prove semantic readiness. | Operational regressions cover timeout, process death, persisted `doctor`, discovery causes, setup safety and canonical FQN lookup. A clean Spring PetClinic replay indexed 49/49 Java files and resolved 345 definitions after the project toolchain was supplied. | JDTLS still emitted a `Publish Diagnostics` NPE, so GraphCodeMap correctly rolled back all 345 provisional promotions and remained partial. Persistent workspace reuse is also pending. |
 
 ## Verified Round 27 evidence
 
@@ -85,6 +85,23 @@ error. See the full disposition and environment details in
 [Round 28 Real-world Feedback](REAL_WORLD_FEEDBACK_ROUND28.md) and its
 [clean operational manifest](../evals/round28-real-world-feedback-manifest.json).
 
+### What remains before Java is “redondinho”
+
+Only Java-specific open gates belong in this list:
+
+| Remaining gate | Acceptance condition |
+|---|---|
+| Healthy Spring/JDTLS completion | A clean PetClinic replay finishes `complete`, publishes nonzero `certain` edges, emits no error diagnostics and repeats successfully from a new process. The current internal Publish Diagnostics NPE keeps this gate open. |
+| Warm, persistent JDTLS workspace | Repo-keyed cache has an exclusive lock, JDTLS/build-model version key, source/build-marker invalidation, bounded cleanup and crash recovery; warm replay is measurably faster without changing graph output. |
+| Canonical persisted Java identity | Newly indexed symbols store declared-package FQNs without `src.main.java` or duplicate owner segments; a migration/alias layer preserves existing DBs and overload ambiguity. Query aliases already solve lookup, but displayed/stored identity still carries debt. |
+| Spring framework semantics | Executable fixtures cover controller entry points, dependency injection, bean/repository dispatch and async/event callbacks without fabricating calls. Unmodeled runtime wiring remains explicitly non-`certain`. |
+| Representative Java portfolio | At least four pinned clean real repos cover Maven, Gradle, multi-module and Spring; each has a manifest with setup→build→index→refine→doctor, resolver health and sampled precision. One partial PetClinic replay is not enough. |
+
+OWASP/Juliet benchmark recall is not on this remaining list: the measured Java
+profile already closes those pinned gates. The work above is operational,
+identity and framework generalization—the difference between passing a corpus
+and behaving predictably in a customer's Java repository.
+
 ### Fair CodeQL comparison
 
 The following CodeQL rows are existing versioned measurements using CodeQL CLI
@@ -110,6 +127,9 @@ operational tooling. Neither table justifies a universal superiority claim.
 | Semantic OWASP/Juliet score | Complete for the measured `INDEXER_VERSION=35` profile |
 | Broad final project regression | Complete: 1,778 passed, 27 skipped |
 | JDTLS overlay health | Complete: 732/732, 4,408 certain, zero warnings/errors |
+| Explicit Java environment setup | Complete: JDK 21/JDTLS discovery, pinned JDTLS archive with SHA-256, persisted user-local paths and opt-in consent |
+| Spring PetClinic semantic completion | Open: current clean replay failed closed on a JDTLS Publish Diagnostics NPE and rolled back 345 provisional promotions |
+| Persistent JDTLS workspace | Open: locking/version/invalidation/crash-recovery contract required before reuse |
 | Broader independent Java evidence | Pending additional CVEs, frameworks and vulnerability families |
 | Whole-product parity with CodeQL | Not claimed |
 
