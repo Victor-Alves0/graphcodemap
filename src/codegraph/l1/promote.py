@@ -42,6 +42,13 @@ NON_CALLABLE_KINDS = frozenset({
     "interface", "enum",
 })
 
+# Declarações de tipo podem ser destinos legítimos de construção, mas não
+# de uma chamada de método comum. O chamador semântico precisa provar que o site
+# é uma construção antes de aceitar um desses contêineres amplos.
+TYPE_DECLARATION_KINDS = frozenset({
+    "class", "interface", "enum", "record", "struct", "trait",
+})
+
 
 def reset_sites(conn: sqlite3.Connection, languages, rels=None) -> int:
     """Colapsa sites L1 do escopo em um representante dangling ``possible/l0``.
@@ -101,13 +108,16 @@ def reset_sites(conn: sqlite3.Connection, languages, rels=None) -> int:
 
 
 def target_symbol(conn: sqlite3.Connection, drel: str, dline: int,
-                  dcol: int | None = None, dname: str | None = None):
+                  dcol: int | None = None, dname: str | None = None,
+                  *, allow_type: bool = True):
     """Menor símbolo chamável que contém a posição devolvida pelo L1.
 
     ``dcol`` é opcional porque LSPs genéricos antigos só entregam linha. JS/TS
     fornece a coluna exata, reduzindo colisões quando várias definições ocupam a
     mesma linha. Retorna ``None`` para defs externas, ausentes ou cujo menor
-    contêiner seja dado/configuração em vez de código chamável.
+    contêiner seja dado/configuração em vez de código chamável. Quando
+    ``allow_type`` é falso, uma definição que cai apenas no span de uma classe
+    ou tipo falha fechada em vez de fabricar uma chamada ao contêiner.
     """
     drow = conn.execute("SELECT id FROM files WHERE path=?", (drel,)).fetchone()
     if drow is None:
@@ -130,7 +140,8 @@ def target_symbol(conn: sqlite3.Connection, drel: str, dline: int,
             "ORDER BY (end_line-start_line), (end_col-start_col) LIMIT 1",
             (drow["id"], dline, dline, dcol,
              dline, dline, dcol, *name_args)).fetchone()
-    if srow is None or srow["kind"] in NON_CALLABLE_KINDS:
+    if (srow is None or srow["kind"] in NON_CALLABLE_KINDS
+            or (not allow_type and srow["kind"] in TYPE_DECLARATION_KINDS)):
         return None
     return srow["id"]
 

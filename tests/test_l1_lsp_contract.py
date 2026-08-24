@@ -80,6 +80,137 @@ def test_definition_column_converts_utf16_back_to_utf8(tmp_path):
         "😀 void ".encode("utf-8"))
 
 
+def _refine_java_edge_to_definition(graph, source_rel, target_rel,
+                                    target_line0, target_char0):
+    root = graph.indexer.root
+    resolver = _bare_resolver(root)
+    resolver.languages = ("java",)
+    resolver.language_id = "java"
+    resolver.cmd_name = "jdtls"
+    resolver._ok = True
+    resolver._ready = True
+    resolver._opened = set()
+    resolver._semantic_sites = 0
+    resolver._semantic_hits = 0
+    resolver._notify = lambda *_a, **_k: None
+    resolver.proc = type("Proc", (), {"poll": lambda self: None})()
+    resolver._definition = lambda *_a: [(
+        (root / target_rel).as_uri(), target_line0, target_char0)]
+    file_row = graph.indexer.conn.execute(
+        "SELECT id FROM files WHERE path=?", (source_rel,)).fetchone()
+    assert file_row is not None
+    return resolver.refine_file(
+        graph.indexer.conn, root, source_rel, file_row["id"])
+
+
+def test_jdtls_method_call_cannot_promote_enclosing_class(tmp_path):
+    """Uma definition inexata na classe não fabrica um alvo de método."""
+    (tmp_path / "ArrayOps.java").write_text(
+        "class ArrayOps {\n"
+        "  static boolean sameType(Object a, Object b) { return true; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Check.java").write_text(
+        "class Check { void run() { ArrayOps.sameType(null, null); } }\n",
+        encoding="utf-8",
+    )
+    graph = CodeGraph(tmp_path)
+    try:
+        graph.index()
+        promoted = _refine_java_edge_to_definition(
+            graph, "Check.java", "ArrayOps.java", 0, len("class "))
+        edge = graph.indexer.conn.execute(
+            "SELECT e.confidence, e.resolver, s.kind, s.name "
+            "FROM edges e LEFT JOIN symbols s ON s.id=e.dst "
+            "WHERE e.kind='calls' AND e.dst_name='ArrayOps.sameType'"
+        ).fetchone()
+        assert promoted == 0
+        assert edge is not None
+        assert (edge["resolver"], edge["confidence"]) == ("l0", "inferred")
+        assert (edge["kind"], edge["name"]) == ("method", "sameType")
+    finally:
+        graph.close()
+
+
+def test_jdtls_constructor_definition_can_promote_class(tmp_path):
+    """O filtro de contêiner preserva construtor implícito resolvido à classe."""
+    (tmp_path / "Widget.java").write_text(
+        "class Widget {}\n", encoding="utf-8")
+    (tmp_path / "App.java").write_text(
+        "class App { void run() { new Widget(); } }\n", encoding="utf-8")
+    graph = CodeGraph(tmp_path)
+    try:
+        graph.index()
+        promoted = _refine_java_edge_to_definition(
+            graph, "App.java", "Widget.java", 0, len("class "))
+        edge = graph.indexer.conn.execute(
+            "SELECT e.confidence, e.resolver, s.kind, s.name "
+            "FROM edges e JOIN symbols s ON s.id=e.dst "
+            "WHERE e.kind='calls' AND e.dst_name='Widget'"
+        ).fetchone()
+        assert promoted == 1
+        assert edge is not None
+        assert (edge["resolver"], edge["confidence"]) == ("l1", "certain")
+        assert (edge["kind"], edge["name"]) == ("class", "Widget")
+    finally:
+        graph.close()
+
+
+def test_jdtls_constructor_reference_can_promote_class(tmp_path):
+    """`Widget::new` é construção mesmo sem o token `new` antes do tipo."""
+    (tmp_path / "Widget.java").write_text(
+        "class Widget {}\n", encoding="utf-8")
+    (tmp_path / "App.java").write_text(
+        "class App { java.util.function.Supplier<Widget> maker = Widget::new; }\n",
+        encoding="utf-8",
+    )
+    graph = CodeGraph(tmp_path)
+    try:
+        graph.index()
+        promoted = _refine_java_edge_to_definition(
+            graph, "App.java", "Widget.java", 0, len("class "))
+        edge = graph.indexer.conn.execute(
+            "SELECT e.confidence, e.resolver, s.kind, s.name "
+            "FROM edges e JOIN symbols s ON s.id=e.dst "
+            "WHERE e.kind='calls' AND e.dst_name='Widget'"
+        ).fetchone()
+        assert promoted == 1
+        assert edge is not None
+        assert (edge["resolver"], edge["confidence"]) == ("l1", "certain")
+        assert (edge["kind"], edge["name"]) == ("class", "Widget")
+    finally:
+        graph.close()
+
+
+def test_jdtls_method_reference_cannot_promote_class(tmp_path):
+    """`Widget::label` não herda a exceção reservada a `::new`."""
+    (tmp_path / "Widget.java").write_text(
+        "class Widget { static String label() { return \"ok\"; } }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "App.java").write_text(
+        "class App { java.util.function.Supplier<String> maker = Widget::label; }\n",
+        encoding="utf-8",
+    )
+    graph = CodeGraph(tmp_path)
+    try:
+        graph.index()
+        promoted = _refine_java_edge_to_definition(
+            graph, "App.java", "Widget.java", 0, len("class "))
+        edge = graph.indexer.conn.execute(
+            "SELECT e.confidence, e.resolver, s.kind, s.name "
+            "FROM edges e LEFT JOIN symbols s ON s.id=e.dst "
+            "WHERE e.kind='calls' AND e.dst_name='Widget.label'"
+        ).fetchone()
+        assert promoted == 0
+        assert edge is not None
+        assert (edge["resolver"], edge["confidence"]) == ("l0", "inferred")
+        assert (edge["kind"], edge["name"]) == ("method", "label")
+    finally:
+        graph.close()
+
+
 def test_workspace_configuration_has_one_result_per_requested_item(tmp_path):
     r = _bare_resolver(tmp_path)
     got = r._server_request_result({

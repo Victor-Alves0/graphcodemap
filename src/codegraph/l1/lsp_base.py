@@ -730,6 +730,44 @@ class LspResolver:
             return _lsp_character(src, idx)
         return _lsp_character(src, start)
 
+    def _java_constructor_call(self, rel: str, line1: int, col: int,
+                               dst_name: str) -> bool:
+        """Prova lexical mínima de que o site Java é uma construção.
+
+        JDTLS pode devolver o span da classe quando não encontra uma seleção
+        de método. Classes continuam sendo alvos válidos para ``new Type()``,
+        mas uma chamada comum nunca deve ser promovida ao contêiner só porque
+        ele cobre a linha retornada pelo servidor.
+        """
+        lines = self._lines.get(rel)
+        if not lines or not (1 <= line1 <= len(lines)):
+            return False
+        segment = ((dst_name or "").replace("::", ".")
+                   .replace("->", ".").split(".")[-1].strip())
+        if not segment:
+            return False
+        source = lines[line1 - 1]
+        start = _py_index_from_byte_col(source, col)
+        index = source.find(segment, start)
+        if index < 0:
+            index = source.find(segment)
+        if index < 0:
+            return False
+        suffix = source[index + len(segment):]
+        if re.match(
+                r"(?:\s*<[^(){};]*>)?\s*::\s*new\b", suffix):
+            return True
+        # Inclua duas linhas anteriores para construções quebradas depois de
+        # ``new``. O sufixo entre ``new`` e o tipo aceita qualificadores e
+        # genéricos simples, mas não atravessa outra chamada/expressão.
+        prefix = "\n".join(
+            [*lines[max(0, line1 - 3):line1 - 1], source[:index]])
+        return bool(re.search(
+            r"\bnew\s+(?:[A-Za-z_$][\w$]*"
+            r"(?:\s*<[^(){};]*>)?\s*\.\s*)*$",
+            prefix,
+        ))
+
     def _warmup(self, rel: str, edges) -> None:
         """Espera o servidor ficar pronto (indexação assíncrona) consultando a
         aresta mais representativa até responder ou estourar ready_timeout.
@@ -893,6 +931,11 @@ class LspResolver:
             # cada definição no repo vira um alvo; promote.apply decide certain
             # (1 alvo) vs fan-out inferred (2..MAX).
             targets = []
+            definition_name = ((e["dst_name"] or "").replace("::", ".")
+                               .replace("->", ".").split(".")[-1].strip())
+            allow_type = (self.cmd_name != "jdtls"
+                          or self._java_constructor_call(
+                              rel, e["line"], e["col"], e["dst_name"]))
             for uri, line0, char0 in locs:
                 dpath = _uri_to_path(uri)
                 if dpath is None:
@@ -902,7 +945,11 @@ class LspResolver:
                 except ValueError:
                     continue  # definição fora do repo (stdlib/módulo externo)
                 dcol = self._definition_byte_col(drel, line0, char0)
-                sid = promote.target_symbol(conn, drel, line0 + 1, dcol)
+                sid = promote.target_symbol(
+                    conn, drel, line0 + 1, dcol,
+                    dname=definition_name or None,
+                    allow_type=allow_type,
+                )
                 if sid is not None:
                     targets.append(sid)
             promoted += promote.apply(conn, file_id, e, targets)
