@@ -452,8 +452,16 @@ def doctor(d) -> str:
              f"  indexer v{d['indexer_version']}  •  último scan completo: "
              f"{_age(d['last_full_scan_age_s'])}"]
 
+    lifecycle = d.get("l1") or {"status": "not_started"}
+    l1_status = lifecycle.get("status", "not_started")
+
     # sinais de alerta primeiro (o que o usuário precisa ver)
     flags = []
+    if l1_status == "running":
+        flags.append("L1 em execução — consultas leem o último snapshot publicado")
+    elif l1_status == "partial" and not lifecycle.get("published", True):
+        flags.append("última tentativa L1 falhou antes da publicação; "
+                     "snapshot anterior preservado")
     if d["parse_failed_total"]:
         flags.append(f"{d['parse_failed_total']} arquivo(s) falharam no parse "
                      "(rode com CODEGRAPH_LOG=warning para ver o motivo)")
@@ -495,6 +503,7 @@ def doctor(d) -> str:
     lines.append(f"  chamadas: {d['call_edges']} arestas ({conf or 'nenhuma'}); "
                  f"{d['certain_pct']}% certain, {d['dangling']} dangling")
     lines.append(f"  L1 ativo: {', '.join(d['l1_resolvers']) or 'nenhum'}")
+    lines.append(f"  L1 lifecycle: {l1_status}")
     langs = "  ".join(f"{k}={v}" for k, v in d["by_language"].items())
     lines.append(f"  linguagens: {langs}")
 
@@ -510,11 +519,16 @@ def doctor(d) -> str:
 
 def stats(s) -> str:
     total = s["edges"] or 1
-    return (f"arquivos: {s['files']}  símbolos: {s['symbols']}  "
+    revision = s.get("current_revision_id") or "-"
+    l1_status = (s.get("l1") or {}).get("status", "not_started")
+    return (f"snapshot físico: {s.get('repository_files', 0)} arquivos / "
+            f"{s.get('repository_nodes', 0)} nós  revisão: {revision} "
+            f"({s.get('graph_revisions', 0)} registradas)\n"
+            f"código indexado: {s['files']} arquivos  símbolos: {s['symbols']}  "
             f"arestas: {s['edges']} ({s['edges_resolved']} resolvidas, "
             f"{s['edges_dangling']} pendentes = "
             f"{100 * s['edges_dangling'] / total:.0f}%)\n"
-            f"parse parcial/falho: {s['parse_partial']}  "
+            f"parse parcial/falho: {s['parse_partial']}  L1: {l1_status}  "
             f"linguagens: {s['by_language']}")
 
 

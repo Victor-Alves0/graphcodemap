@@ -3,11 +3,13 @@ from __future__ import annotations
 from .base import Ref, Sym
 
 
-def extract(lang: str, source: bytes, module_fqn: str, tree) -> tuple[list[Sym], list[Ref]]:
+def extract(lang: str, source: bytes, module_fqn: str, tree, *,
+            is_package: bool = False) -> tuple[list[Sym], list[Ref]]:
     if lang == "python":
         from .python import PythonExtractor
 
-        return PythonExtractor(source, module_fqn).run(tree)
+        return PythonExtractor(
+            source, module_fqn, is_package=is_package).run(tree)
     if lang in ("typescript", "tsx", "javascript"):
         from .tsjs import TsJsExtractor
 

@@ -15,7 +15,8 @@ import json
 import time
 
 from ..community import mark_dirty as mark_community_dirty
-from ..db import record_current_stage
+from ..db import (read_l1_lifecycle, record_current_stage,
+                  write_l1_lifecycle)
 from ..indexer import Indexer
 from ..log import get as _get_log
 from ..rank import mark_dirty
@@ -118,6 +119,69 @@ def is_project_marker(rel: str) -> bool:
 
 
 def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
+    """Publish one L1 snapshot atomically and expose its lifecycle.
+
+    Readers keep seeing the previous committed edge snapshot while the resolver
+    pass is ``running``.  Reset-to-L0, healthy promotions, the final lifecycle
+    and ``l1_last_run`` become visible together in one WAL commit.  A fatal
+    exception rolls the candidate snapshot back and records ``partial`` while
+    preserving the last published edges.
+    """
+    conn = indexer.conn
+    started_at = int(time.time())
+    previous = read_l1_lifecycle(conn)
+    running = {
+        "status": "running",
+        "started_at": started_at,
+        "previous_status": previous.get("status", "not_started"),
+        "published": False,
+    }
+    write_l1_lifecycle(conn, running)
+    conn.commit()
+
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        stats = _refine_candidate(indexer, rels=rels)
+        final = {
+            "status": stats["status"],
+            "started_at": started_at,
+            "finished_at": int(time.time()),
+            "published": True,
+            "applicable": stats.get("applicable", []),
+            "attempted": stats.get("attempted", []),
+            "files": stats.get("files", 0),
+            "promoted": stats.get("promoted", 0),
+            "errors": stats.get("errors", 0),
+        }
+        write_l1_lifecycle(conn, final)
+        record_current_stage(
+            conn, "l1", "resolver-set", final["status"], {
+                "files": final["files"], "promoted": final["promoted"],
+                "errors": final["errors"], "attempted": final["attempted"],
+                "unavailable": stats.get("unavailable", []),
+            }, commit=False)
+        conn.commit()
+    except BaseException as error:
+        if conn.in_transaction:
+            conn.rollback()
+        failed = {
+            "status": "partial",
+            "started_at": started_at,
+            "finished_at": int(time.time()),
+            "published": False,
+            "preserved_previous": True,
+            "error_type": type(error).__name__,
+        }
+        write_l1_lifecycle(conn, failed)
+        conn.commit()
+        raise
+
+    stats["lifecycle"] = final
+    return stats
+
+
+def _refine_candidate(indexer: Indexer,
+                      rels: list[str] | None = None) -> dict:
     """Roda os resolvers disponíveis. `rels` identifica arquivos alterados.
 
     Monorepo: os arquivos de cada linguagem são AGRUPADOS pela raiz de projeto
@@ -287,7 +351,7 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
         # antes para que nenhum leitor observe o grafo novo como rank/current.
         mark_dirty(conn)
         mark_community_dirty(conn)
-        indexer.resolve_edges()
+        indexer.resolve_edges(atomic=True)
     def persist_last_run() -> None:
         safe_runs = [{key: run[key] for key in (
             "resolver", "files", "promoted", "status",
@@ -336,13 +400,6 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
             "INSERT INTO meta(key, value) VALUES('l1_last_run', ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (json.dumps(record, ensure_ascii=False),))
-        conn.commit()
-        record_current_stage(
-            conn, "l1", "resolver-set", record["status"], {
-                "files": record["files"], "promoted": record["promoted"],
-                "errors": record["errors"], "attempted": record["attempted"],
-                "unavailable": record["unavailable"],
-            })
 
     if not resolvers:
         persist_last_run()
@@ -476,6 +533,5 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
     if stats["promoted"]:
         mark_dirty(conn)
         mark_community_dirty(conn)
-    conn.commit()
     persist_last_run()
     return stats

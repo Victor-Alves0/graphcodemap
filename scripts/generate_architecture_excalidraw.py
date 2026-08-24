@@ -307,9 +307,9 @@ def build() -> dict:
               target_side="bottom", color=OPTIONAL, bidirectional=True,
               via=[(2180, 1160), (3055, 1160)])
     d.box("readiness-gap", 2260, 770, 1225, 125,
-          "Gate aberto: ciclo de vida semântico",
-          "L1 precisa publicar not_started/running/complete/partial de modo atômico; uma consulta nunca pode ver reset vazio como resultado completo.",
-          fill=RED, stroke=FUTURE, stroke_style="dashed", body_size=15)
+          "Ciclo de vida semântico atômico",
+          "not_started/running/complete/partial em todas as APIs; leitores mantêm o snapshot anterior até edges + status + stage publicarem juntos.",
+          fill=GREEN, body_size=15)
 
     # 4. Dataflow and vulnerability analysis.
     d.section("section-flow", 2215, 980, 1335, 520,
@@ -389,8 +389,8 @@ def build() -> dict:
 
     gates = [
         ("g0", 2260, 1835, "G0 · Observabilidade", "PARCIAL\nestados/coverage completos", YELLOW),
-        ("g1", 2680, 1835, "G1 · Grafo estrutural", "CORE FEITO\nfalta prova em canários", YELLOW),
-        ("g2", 3100, 1835, "G2 · Linking semântico", "calls confiáveis\nreadiness atômica", RED),
+        ("g1", 2680, 1835, "G1 · Grafo estrutural", "CORE + GOLDENS\nfaltam repos comuns", YELLOW),
+        ("g2", 3100, 1835, "G2 · Linking semântico", "LIFECYCLE FEITO\nfalta validar calls", YELLOW),
         ("g3", 2260, 1995, "G3 · Dataflow persistente", "def-use + fluxo\nentre funções", RED),
         ("g4", 2680, 1995, "G4 · Vulnerabilidades", "Java/Python sobre\no mesmo flow graph", RED),
         ("g5", 3100, 1995, "G5 · Aceitação", "wheel + CLI + MCP\nrepos comuns pinados", RED),
@@ -408,7 +408,7 @@ def build() -> dict:
     d.connect("g4-g5", "g4", "g5")
 
     d.box("truth", 2260, 2170, 1220, 145, "Estado honesto em 2026-08-24",
-          "Alpha structural graph: árvore física, hashes/revisões e Java/Python estrutural persistem. Ainda NÃO é CPG completo: flows_to interprocedural e linking semântico robusto permanecem gates.",
+          "Alpha structural graph: árvore física, revisões, goldens Java/Python e lifecycle L1 atômico persistem. Ainda NÃO é CPG completo: flows_to e cobertura semântica em repos comuns permanecem gates.",
           fill=YELLOW, body_size=16)
 
     return {

@@ -93,7 +93,9 @@ def test_response_serializes_to_stable_schema():
     r = agent.build("t", Envelope(), results=[])
     d = r.model_dump()
     assert set(d) == {"text", "results", "confidence", "fresh",
-                      "completeness", "truncated", "warnings"}
+                      "semantic_status", "completeness", "truncated",
+                      "warnings"}
+    assert d["semantic_status"] == "not_started"
     assert set(d["completeness"]) == {
         "static_analysis", "unresolved_edges", "dynamic_dispatch_possible"}
 
@@ -292,9 +294,30 @@ def test_mcp_returns_structured_envelope(tmp_path):
     srv = build_server(tmp_path, watch=False)
     _content, structured = _call(srv, "change_impact", {"paths_or_diff": "svc.py"})
     assert set(structured) >= {"text", "results", "confidence", "fresh",
-                               "completeness", "truncated"}
+                               "semantic_status", "completeness", "truncated"}
     assert set(structured["completeness"]) == {
         "static_analysis", "unresolved_edges", "dynamic_dispatch_possible"}
+
+
+def test_mcp_reports_current_l1_lifecycle(tmp_path, monkeypatch):
+    from codegraph import l1
+    from codegraph.db import write_l1_lifecycle
+    from codegraph.indexer import Indexer
+    from codegraph.mcp_server import build_server
+
+    (tmp_path / "a.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    monkeypatch.setattr(l1, "refine", lambda _indexer: None)
+    srv = build_server(tmp_path, watch=False)
+    writer = Indexer(tmp_path)
+    write_l1_lifecycle(writer.conn, {
+        "status": "running", "started_at": 1, "published": False,
+    })
+    writer.conn.commit()
+    writer.close()
+
+    _content, structured = _call(srv, "find_symbol", {"query": "f"})
+
+    assert structured["semantic_status"] == "running"
 
 
 def test_mcp_error_path_is_structured(tmp_path):

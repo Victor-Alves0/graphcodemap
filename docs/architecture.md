@@ -35,7 +35,10 @@ is the only writer.
   `writes`/simple `returns` facts. Extractors emit calls, imports, inheritance
   and conservative framework wiring. Runs locally with no semantic server.
 - **L1 — semantic.** An async LSP/jedi resolver promotes edges to `certain`.
-  Optional; see [Languages & Resolvers](languages.md).
+  Its lifecycle is `not_started`/`running`/`complete`/`partial`; reset,
+  promotions, final status and stage receipt publish in one transaction, while
+  readers retain the previous committed snapshot. Optional; see
+  [Languages & Resolvers](languages.md).
 - **L2 — graph metrics.** PageRank (centrality) and Louvain (communities),
   recomputed lazily.
 - **L3 — descriptions.** On-demand LLM summaries, cached and body-hash invalidated.

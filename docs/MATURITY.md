@@ -53,8 +53,8 @@ readable view.
 | Subsystem | Current state | Exit criterion |
 |---|---|---|
 | Graph and freshness | Physical folders/files, exact hashes, per-file incremental relinking and Git-aware stage revisions work | Broader ordinary-repository proof and public schema versioning |
-| L0 extraction | Shared Java/Python parameters, locals, fields/properties, containment, definitions, reads/writes and simple returns persist | Broader golden/canary structural graph and persistent `flows_to` in G3 |
-| L1 resolution | Jedi/JDTLS materially improve impact; lifecycle/readiness is not yet atomic to readers | Explicit ready/running/partial state and real-repo canaries |
+| L0 extraction | Shared Java/Python parameters, locals, fields/properties, containment, definitions, reads/writes and simple returns persist; focused golden canaries cover Python packaging and Java lexical shadowing | Broader ordinary-repository canaries and persistent `flows_to` in G3 |
+| L1 resolution | Lifecycle is explicit and publication is atomic; readers keep the prior snapshot during running/fatal failure | Direct/imported/typed/inherited/interface acceptance plus real-repo coverage summaries |
 | Dataflow and taint | Flow-sensitive engine exists on demand; Java has bounded benchmark evidence | Persist def-use/flow graph, then validate Java and Python separately |
 | CLI, library and MCP | Main surfaces exist; MCP doctor crash fixed during reset, other readiness/coverage gaps remain | Installed acceptance journey and equivalent result sets |
 | Visualization | Functional; script-breakout regression covered | Large-graph performance budget and browser smoke suite |

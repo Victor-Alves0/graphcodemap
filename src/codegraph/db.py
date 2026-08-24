@@ -16,6 +16,47 @@ import time
 from pathlib import Path
 
 SCHEMA_VERSION = "6"
+L1_LIFECYCLE_STATUSES = frozenset({
+    "not_started", "running", "complete", "partial",
+})
+
+
+def read_l1_lifecycle(conn: sqlite3.Connection) -> dict:
+    """Return the semantic-refinement lifecycle with a stable default.
+
+    The lifecycle lives in ``meta`` rather than the derived edge tables so a
+    reader can distinguish "L1 has never run" from a completed L0-only graph.
+    Malformed legacy/user-edited metadata fails closed as ``not_started``.
+    """
+    row = conn.execute(
+        "SELECT value FROM meta WHERE key='l1_lifecycle'"
+    ).fetchone()
+    if row is None:
+        return {"status": "not_started"}
+    try:
+        value = json.loads(row["value"])
+    except (TypeError, ValueError):
+        return {"status": "not_started"}
+    if (not isinstance(value, dict)
+            or value.get("status") not in L1_LIFECYCLE_STATUSES):
+        return {"status": "not_started"}
+    return value
+
+
+def write_l1_lifecycle(conn: sqlite3.Connection, value: dict) -> None:
+    """Write lifecycle metadata in the caller's transaction.
+
+    Deliberately does not commit: final ``complete``/``partial`` must publish in
+    the same SQLite commit as the corresponding semantic edge snapshot.
+    """
+    status = value.get("status")
+    if status not in L1_LIFECYCLE_STATUSES:
+        raise ValueError(f"status L1 inválido: {status!r}")
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('l1_lifecycle', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (json.dumps(value, ensure_ascii=False, sort_keys=True),),
+    )
 
 
 def retry_on_locked(fn, tries: int = 6, base_delay: float = 0.05):
@@ -34,8 +75,14 @@ def retry_on_locked(fn, tries: int = 6, base_delay: float = 0.05):
 
 def record_current_stage(conn: sqlite3.Connection, stage: str,
                          stage_version: str, status: str,
-                         details: dict | None = None) -> int | None:
-    """Version a derived stage against the current repository revision."""
+                         details: dict | None = None, *,
+                         commit: bool = True) -> int | None:
+    """Version a derived stage against the current repository revision.
+
+    ``commit=False`` lets a producer publish the stage receipt in the same
+    transaction as its derived artifacts and readiness metadata.  Existing
+    callers retain the historical auto-commit behavior.
+    """
     row = conn.execute(
         "SELECT r.id, r.source_snapshot_hash FROM graph_revisions r "
         "JOIN meta m ON m.key='current_graph_revision' "
@@ -57,7 +104,8 @@ def record_current_stage(conn: sqlite3.Connection, stage: str,
         "completed_at=excluded.completed_at",
         (row["id"], stage, stage_version, status, artifact, payload, now, now),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return int(row["id"])
 
 _SCHEMA = """

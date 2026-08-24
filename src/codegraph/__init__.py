@@ -126,6 +126,10 @@ class CodeGraph:
     def stats(self) -> dict:
         return self.query.stats()
 
+    def l1_status(self) -> dict:
+        """Semantic lifecycle: not_started/running/complete/partial."""
+        return self.query.l1_status()
+
     def doctor(self, failed_limit: int = 20) -> dict:
         return self.query.doctor(failed_limit=failed_limit)
 

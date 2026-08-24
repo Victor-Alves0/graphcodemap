@@ -53,6 +53,7 @@ cg.overview(scope=None, token_budget=2000)
 cg.communities(limit=20, min_size=3)
 cg.repository_tree(path="", depth=4, refresh=True)
 cg.graph_history(limit=20, git_commit=None)
+cg.l1_status()                              # semantic snapshot lifecycle
 cg.data_flow(selector, depth=2)
 cg.taint(scope=None, entry=None, depth=4)
 cg.reaches(selector, sink="http", via=None, depth=8)

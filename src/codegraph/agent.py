@@ -48,6 +48,7 @@ class Response(BaseModel):
     results: list[dict[str, Any]] = []
     confidence: str = "n/a"
     fresh: bool = True
+    semantic_status: str = "not_started"
     completeness: Completeness
     truncated: bool = False
     warnings: list[str] = []
@@ -76,6 +77,7 @@ def build(text: str, env, results: list[dict] | None = None,
         confidence=confidence if confidence is not None
         else aggregate_confidence(results),
         fresh=env.fresh,
+        semantic_status=getattr(env, "semantic_status", "not_started"),
         truncated=env.truncated,
         warnings=list(env.warnings),
         completeness=Completeness(

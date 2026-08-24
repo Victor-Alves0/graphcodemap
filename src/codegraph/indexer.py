@@ -20,7 +20,8 @@ from pathlib import Path
 import pathspec
 
 from . import community, extract, rank
-from .db import SCHEMA_VERSION, connect, default_db_path, retry_on_locked
+from .db import (SCHEMA_VERSION, connect, default_db_path, read_l1_lifecycle,
+                 retry_on_locked, write_l1_lifecycle)
 from .extract.base import Sym
 from .languages import MARKUP, get_parser, language_for
 from .log import get as _get_log
@@ -100,7 +101,7 @@ STYLE_DEF_KINDS = ("css_class", "html_id")
 
 # Versão da lógica de extração/resolução: mudou → força re-index completo,
 # mesmo com content-hashes iguais (o índice é derivado de código+extractor).
-INDEXER_VERSION = "40"
+INDEXER_VERSION = "41"
 
 DEFAULT_IGNORES = [
     ".git/", ".codegraph/", "__pycache__/", ".venv/", "venv/", "node_modules/",
@@ -404,13 +405,15 @@ def scan_repository_snapshot(
                         if not file_spec.match_file(rel):
                             ensure_directory(rel.rpartition("/")[0])
                             st = entry.stat(follow_symlinks=False)
+                            target = os.readlink(entry.path)
                             entries[rel] = {
                                 "id": repository_node_uid("symlink", rel),
                                 "parent_id": repository_node_uid(
                                     "directory" if "/" in rel else "repository",
                                     rel.rpartition("/")[0]),
                                 "path": rel, "kind": "symlink",
-                                "content_hash": None, "size": st.st_size,
+                                "content_hash": content_hash(
+                                    os.fsencode(target)), "size": st.st_size,
                                 "mtime": st.st_mtime_ns, "language": None,
                                 "index_state": "skipped",
                                 "state_reason": "symlink_not_followed",
@@ -500,7 +503,10 @@ def _extract_file(lang: str, data: bytes, rel: str, tree, h: str,
     prepare (serial e paralelo) passam por aqui, senão o grafo dependeria de
     quantos workers rodaram."""
     module_fqn = module_fqn_for(rel, root=root, language=lang)
-    syms, refs = extract.extract(lang, data, module_fqn, tree)
+    syms, refs = extract.extract(
+        lang, data, module_fqn, tree,
+        is_package=(lang == "python" and rel.rsplit("/", 1)[-1] == "__init__.py"),
+    )
     syms.append(_file_symbol(rel, data, h, module_fqn))
     enrich_structural(lang, data, tree, syms, refs)
     return syms, refs                         # continua ganhando no fqn_to_uid
@@ -728,6 +734,20 @@ class Indexer:
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (str(revision_id),),
         )
+        semantic_invalidated = any(
+            index_stats.get(key, 0) for key in ("indexed", "removed", "errors")
+        )
+        if semantic_invalidated:
+            previous_l1 = read_l1_lifecycle(self.conn)
+            if previous_l1.get("status") != "not_started":
+                write_l1_lifecycle(self.conn, {
+                    "status": "not_started",
+                    "published": False,
+                    "previous_status": previous_l1.get(
+                        "status", "not_started"),
+                    "reason": "l0_revision_changed",
+                    "revision_id": revision_id,
+                })
         self.conn.commit()
         self.record_stage(
             revision_id, "filesystem", "1", "complete",
@@ -874,7 +894,9 @@ class Indexer:
             tree = get_parser(lang).parse(data)
             extract.extract(
                 lang, data,
-                module_fqn_for(rel, root=self.root, language=lang), tree)
+                module_fqn_for(rel, root=self.root, language=lang), tree,
+                is_package=(lang == "python"
+                            and rel.rsplit("/", 1)[-1] == "__init__.py"))
         except Exception as e:
             return f"{type(e).__name__}: {e}"
         return None
@@ -1264,7 +1286,15 @@ class Indexer:
 
         def _ref_src_uid(ref) -> str | None:
             if not ref.src_fqn:
-                return None
+                # Module-level references still have a concrete graph owner:
+                # the persisted file symbol.  Leaving ``src`` NULL made imports
+                # visible in storage but unreachable to traversal/impact APIs.
+                file_symbols = [
+                    uid for sym, uid in fqn_to_syms.get(
+                        module_fqn_for(rel, root=self.root, language=lang), ())
+                    if sym.kind == "file"
+                ]
+                return file_symbols[0] if len(file_symbols) == 1 else None
             candidates = fqn_to_syms.get(ref.src_fqn, ())
             if len(candidates) == 1:
                 return candidates[0][1]
@@ -1384,7 +1414,14 @@ class Indexer:
 
     # -- resolução de arestas (docs/DESIGN.md §1.3) ---------------------------
 
-    def resolve_edges(self) -> None:
+    def resolve_edges(self, *, atomic: bool = False) -> None:
+        """Resolve dangling L0 edges.
+
+        ``atomic=True`` is the semantic-publication path: writes remain in the
+        caller's transaction so L1 can replace an old semantic snapshot in one
+        commit.  The default keeps the chunked/ checkpointed behavior required
+        by very large ordinary index runs.
+        """
         danglings = self.conn.execute(
             "SELECT id, kind, src, dst_name, file_id, line, col "
             "FROM edges WHERE dst IS NULL"
@@ -1730,13 +1767,18 @@ class Indexer:
                                e["file_id"], e["line"], e["col"]))
         # escrita em blocos: em repos enormes estas listas têm milhões de linhas;
         # uma transação única faria o WAL explodir e o commit final travar.
-        self._executemany_chunked(
-            cur, "UPDATE edges SET dst=?, confidence='inferred' WHERE id=?", inferred)
-        self._executemany_chunked(
-            cur, "UPDATE edges SET dst=?, confidence='possible' WHERE id=?", possible)
-        self._executemany_chunked(
-            cur, "INSERT OR IGNORE INTO edges(kind, src, dst, dst_name, "
-                 "file_id, line, col, confidence, resolver) "
-                 "VALUES(?,?,?,?,?,?,?,'possible','l0')", fanout)
-        self.conn.commit()
-        self._flush_wal()
+        statements = (
+            ("UPDATE edges SET dst=?, confidence='inferred' WHERE id=?", inferred),
+            ("UPDATE edges SET dst=?, confidence='possible' WHERE id=?", possible),
+            ("INSERT OR IGNORE INTO edges(kind, src, dst, dst_name, "
+             "file_id, line, col, confidence, resolver) "
+             "VALUES(?,?,?,?,?,?,?,'possible','l0')", fanout),
+        )
+        if atomic:
+            for sql, rows in statements:
+                cur.executemany(sql, rows)
+        else:
+            for sql, rows in statements:
+                self._executemany_chunked(cur, sql, rows)
+            self.conn.commit()
+            self._flush_wal()

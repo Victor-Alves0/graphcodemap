@@ -57,6 +57,7 @@ consume without parsing prose:
   "results": [ /* rows */ ],  // structured, machine-navigable result rows
   "confidence": "certain",    // aggregate over the result's edges (or "mixed"/"n/a")
   "fresh": true,              // the index matched disk at answer time
+  "semantic_status": "complete", // not_started/running/complete/partial
   "completeness": {
     "static_analysis": true,          // answer comes from static analysis
     "unresolved_edges": 0,            // relevant edges not yet resolved
@@ -73,6 +74,9 @@ facts the CLI prints as `⚠` lines, computed at the same point:
 - **`fresh`** is only `true` when every file in the answer still matches disk.
 - **`confidence`** aggregates the edges: a single label when they agree, `"mixed"`
   when they don't, `"n/a"` when there are no confidence-bearing edges.
+- **`semantic_status`** identifies the L1 snapshot. During `running`, queries
+  continue to read the previous published snapshot; a fatal attempt reports
+  `partial` without exposing its candidate edges.
 - **`completeness`** tells the agent when to keep looking — e.g. unresolved edges
   or the possibility of dynamic dispatch.
 

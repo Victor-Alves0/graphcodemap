@@ -131,17 +131,19 @@ The existing product has a useful but smaller foundation:
 - basic incremental delete/relink contracts;
 - callers, callees and symbol impact over the call graph;
 - Java/Python flow-sensitive dataflow and taint computed on demand;
-- optional semantic linking through JDTLS and Jedi.
+- optional semantic linking through JDTLS and Jedi, with an observable lifecycle
+  and atomic publication that preserves the previous snapshot on fatal failure.
 
 It does **not** yet satisfy the entire required graph:
 
 - `flows_to` is not yet a persistent whole-repository graph, and `returns`
   currently covers only structurally provable simple value returns;
 - dataflow reparses files on demand and is not reusable graph state;
-- common packaged Python `src/` identity was corrected during the reset, but
-  still needs broader real-repository validation;
+- common packaged Python `src/` identity passes a focused structural canary but
+  still needs broader ordinary-repository validation;
 - semantic refinement can be slow and is not the default library path;
-- user-facing readiness and coverage reporting are incomplete;
+- semantic readiness is exposed consistently, while unresolved-reason and
+  coverage reporting remain incomplete;
 - security validation is much stronger for Java than Python.
 
 Therefore the honest product label is **alpha structural graph**, not a complete
@@ -240,8 +242,9 @@ watcher events and metadata remain acceleration hints.
 
 The physical repository graph is distinct from the semantic code graph. It
 records every non-ignored directory, regular file and symbolic link, including
-assets and unsupported source formats, with path, type, exact content hash and
-index state. Editing one file replaces only facts owned by that file; deletion
+assets and unsupported source formats, with path, type, exact content hash (or
+the link-target hash without following a symbolic link) and index state. Editing
+one file replaces only facts owned by that file; deletion
 removes its physical node and invalidates the semantic facts it owned.
 
 Each indexing/refinement step records a graph revision tied to the current Git

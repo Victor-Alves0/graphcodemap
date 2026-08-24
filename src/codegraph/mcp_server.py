@@ -33,7 +33,8 @@ Como usar bem (e barato):
 
 Formato da resposta: cada tool devolve um envelope estável — `text` (o resumo
 compacto, para você ler), `results` (as linhas estruturadas), e os sinais
-`confidence` (certain/inferred/possible/mixed), `fresh`, `truncated` e
+`confidence` (certain/inferred/possible/mixed), `fresh`, `semantic_status`
+(`not_started`/`running`/`complete`/`partial`), `truncated` e
 `completeness` (static_analysis, unresolved_edges, dynamic_dispatch_possible).
 
 Fluxo do agente (tools de alto nível): `change_impact(paths_ou_diff)` e
@@ -90,9 +91,11 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
     def guard(fn) -> agent.Response:
         with _engine_lock:
             try:
-                return fn()
+                response = fn()
             except (AmbiguousSymbol, SymbolNotFound) as e:
-                return agent.error(str(e))
+                response = agent.error(str(e))
+            response.semantic_status = engine.l1_status()["status"]
+            return response
 
     @mcp.tool()
     def overview(scope: str | None = None, token_budget: int = 1200) -> agent.Response:

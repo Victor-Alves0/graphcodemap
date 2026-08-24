@@ -8,17 +8,25 @@ definitions, reads, writes and simple return-value relations.
 The pass is deliberately syntax-backed.  It emits ``certain/l0`` only when the
 declaration and use are present in the parsed tree; it does not guess runtime
 aliasing or heap identity.
+
+Java locals in disjoint lexical scopes are distinct bindings.  Their stable L0
+identity uses same-name source order because the graph does not yet persist
+block/scope nodes: line changes, body edits and unrelated declarations are
+stable, while inserting or reordering an earlier homonym can change ``#N``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from .extract.base import Ref, Sym
 from .util import byte_column, content_hash
 
 _CALLABLE_KINDS = {"function", "method", "property"}
-_VARIABLE_KINDS = {"parameter", "local", "field", "variable", "constant"}
+_VARIABLE_KINDS = {
+    "parameter", "local", "field", "property", "variable", "constant",
+}
 _PY_CALLABLE_NODES = {"function_definition"}
 _JAVA_CALLABLE_NODES = {
     "method_declaration", "constructor_declaration",
@@ -31,6 +39,24 @@ _JAVA_NESTED_BOUNDARIES = {
     *_JAVA_CALLABLE_NODES, "class_declaration", "interface_declaration",
     "enum_declaration", "record_declaration", "lambda_expression",
 }
+
+
+@dataclass
+class _JavaBinding:
+    """One Java lexical binding and the exact region where its name is visible.
+
+    Java permits a field to be shadowed and permits the same local name in
+    disjoint scopes.  A flat ``name -> symbol`` map therefore loses facts.  The
+    byte offsets here are only used to associate uses during this extraction;
+    they are deliberately not part of persistent identity.
+    """
+
+    name_node: object
+    scope_node: object
+    visible_from: int
+    visible_to: int
+    kind: str
+    sym: Sym | None = None
 
 
 def _text(source: bytes, node) -> str:
@@ -125,10 +151,11 @@ class _Augmenter:
         ))
 
     def _add_variable(self, owner: Sym, name_node, kind: str,
-                      signature: str | None = None,
-                      definition_owner: Sym | None = None) -> Sym:
+                       signature: str | None = None,
+                       definition_owner: Sym | None = None,
+                       fqn: str | None = None) -> Sym:
         name = _text(self.source, name_node)
-        fqn = f"{owner.fqn}.{name}"
+        fqn = fqn or f"{owner.fqn}.{name}"
         key = (fqn, kind)
         if key in self._keys:
             return next(sym for sym in self.syms
@@ -217,24 +244,89 @@ class _Augmenter:
                 out.extend(_target_identifiers(param, "java"))
         return out
 
-    def _java_locals(self, callable_node) -> list:
+    def _java_bindings(self, callable_node) -> list[_JavaBinding]:
         body = callable_node.child_by_field_name("body")
         if body is None:
             return []
-        out: list = []
+        out = [
+            _JavaBinding(
+                name_node=name_node,
+                scope_node=body,
+                visible_from=body.start_byte,
+                visible_to=body.end_byte,
+                kind="parameter",
+            )
+            for name_node in self._java_parameters(callable_node)
+        ]
         for node in _walk(body, boundaries=_JAVA_NESTED_BOUNDARIES, root=body):
             if node.type == "local_variable_declaration":
                 for child in node.named_children:
-                    if child.type == "variable_declarator":
-                        out.extend(_target_identifiers(child, "java"))
-            elif node.type in {"enhanced_for_statement", "resource"}:
+                    if child.type != "variable_declarator":
+                        continue
+                    names = _target_identifiers(child, "java")
+                    if not names:
+                        continue
+                    name_node = names[0]
+                    scope = node.parent
+                    while (scope is not None and scope != callable_node
+                           and scope.type not in {
+                               "block", "constructor_body", "for_statement",
+                               "switch_block", "switch_block_statement_group",
+                           }):
+                        scope = scope.parent
+                    scope = scope or body
+                    out.append(_JavaBinding(
+                        name_node=name_node,
+                        scope_node=scope,
+                        # A local is in scope in its own initializer and through
+                        # the remainder of its declaring block/for statement.
+                        visible_from=name_node.end_byte,
+                        visible_to=scope.end_byte,
+                        kind="local",
+                    ))
+            elif node.type == "enhanced_for_statement":
                 name = node.child_by_field_name("name")
-                if name is not None:
-                    out.append(name)
+                loop_body = node.child_by_field_name("body")
+                if name is not None and loop_body is not None:
+                    out.append(_JavaBinding(
+                        name_node=name,
+                        scope_node=loop_body,
+                        # The iteration variable is not visible in the iterable.
+                        visible_from=loop_body.start_byte,
+                        visible_to=loop_body.end_byte,
+                        kind="local",
+                    ))
+            elif node.type == "resource":
+                name = node.child_by_field_name("name")
+                statement = node.parent
+                while (statement is not None and statement != callable_node
+                       and statement.type != "try_with_resources_statement"):
+                    statement = statement.parent
+                try_body = (statement.child_by_field_name("body")
+                            if statement is not None else None)
+                if name is not None and statement is not None and try_body is not None:
+                    out.append(_JavaBinding(
+                        name_node=name,
+                        scope_node=statement,
+                        # Resources are visible to later resource initializers
+                        # and the try body, but not to catch/finally clauses.
+                        visible_from=name.end_byte,
+                        visible_to=try_body.end_byte,
+                        kind="local",
+                    ))
             elif node.type == "catch_formal_parameter":
                 name = node.child_by_field_name("name")
-                if name is not None:
-                    out.append(name)
+                catch_clause = node.parent
+                catch_body = (catch_clause.child_by_field_name("body")
+                              if catch_clause is not None else None)
+                if name is not None and catch_body is not None:
+                    out.append(_JavaBinding(
+                        name_node=name,
+                        scope_node=catch_body,
+                        visible_from=catch_body.start_byte,
+                        visible_to=catch_body.end_byte,
+                        kind="local",
+                    ))
         return out
 
     def _python_instance_fields(self, callable_node, owner: Sym) -> dict[str, Sym]:
@@ -274,6 +366,12 @@ class _Augmenter:
                 left = (parent.child_by_field_name("left") or
                         parent.child_by_field_name("name"))
                 if left is not None and _contains(left, node):
+                    if left.type == "attribute":
+                        attribute = left.child_by_field_name("attribute")
+                        if node != attribute:
+                            return {"reads"}
+                    elif left.type == "subscript":
+                        return {"reads"}
                     return ({"reads", "writes"}
                             if parent.type == "augmented_assignment" else {"writes"})
                 return {"reads"}
@@ -292,36 +390,97 @@ class _Augmenter:
             parent = parent.parent
         return {"reads"}
 
-    def _field_visible(self, owner: Sym, name: str) -> Sym | None:
-        parent = owner.parent_fqn
-        if not parent:
-            return None
-        return next((sym for sym in self.syms
-                     if sym.parent_fqn == parent and sym.name == name
-                     and sym.kind in _VARIABLE_KINDS), None)
+    def _nonlocal_visible(self, owner: Sym, name: str) -> Sym | None:
+        """Nearest closure binding or class member visible from ``owner``."""
+        parent_fqn = owner.parent_fqn
+        seen: set[str] = set()
+        while parent_fqn and parent_fqn not in seen:
+            seen.add(parent_fqn)
+            candidate = next((
+                sym for sym in self.syms
+                if sym.parent_fqn == parent_fqn and sym.name == name
+                and sym.kind in _VARIABLE_KINDS
+            ), None)
+            if candidate is not None:
+                return candidate
+            parent = next((sym for sym in self.syms
+                           if sym.fqn == parent_fqn), None)
+            parent_fqn = parent.parent_fqn if parent is not None else None
+        return None
 
     def _selected_variable(self, owner: Sym, variables: dict[str, Sym], node) -> Sym | None:
         name = _text(self.source, node)
         if name in variables:
             return variables[name]
-        field = self._field_visible(owner, name)
-        if field is None:
+        selected = self._nonlocal_visible(owner, name)
+        if selected is None:
             return None
         parent = node.parent
-        if self.language == "python" and parent is not None and parent.type == "attribute":
+        selected_parent = next((sym for sym in self.syms
+                                if sym.fqn == selected.parent_fqn), None)
+        if (self.language == "python" and selected_parent is not None
+                and selected_parent.kind in {"class", "interface"}):
+            if parent is None or parent.type != "attribute":
+                return None
             attribute = parent.child_by_field_name("attribute")
             obj = parent.child_by_field_name("object")
-            if attribute == node and (obj is None or _text(self.source, obj) not in {"self", "cls"}):
+            if (attribute != node or obj is None
+                    or _text(self.source, obj) not in {"self", "cls"}):
                 return None
         if self.language == "java" and parent is not None and parent.type == "field_access":
             field_node = parent.child_by_field_name("field")
             obj = parent.child_by_field_name("object")
             if field_node == node and (obj is None or _text(self.source, obj) != "this"):
                 return None
-        return field
+        return selected
+
+    def _selected_java_variable(self, owner: Sym,
+                                bindings: list[_JavaBinding], node) -> Sym | None:
+        name = _text(self.source, node)
+        parent = node.parent
+        if parent is not None and parent.type == "field_access":
+            field_node = parent.child_by_field_name("field")
+            if field_node == node:
+                obj = parent.child_by_field_name("object")
+                obj_text = _text(self.source, obj) if obj is not None else ""
+                if obj_text == "this":
+                    return self._nonlocal_visible(owner, name)
+                return None
+
+        # Method/constructor/type names are identifiers too, but are not value
+        # uses even when a local with the same spelling exists.
+        if parent is not None:
+            if (parent.type == "method_invocation"
+                    and parent.child_by_field_name("name") == node):
+                return None
+            if (parent.type in {"method_reference", "object_creation_expression"}
+                    and parent.child_by_field_name("name") == node):
+                return None
+
+        point = node.start_byte
+        candidates = [
+            binding for binding in bindings
+            if binding.sym is not None
+            and _text(self.source, binding.name_node) == name
+            and binding.visible_from <= point < binding.visible_to
+            and _contains(binding.scope_node, node)
+        ]
+        if candidates:
+            # Invalid/error-tolerant source may expose overlapping bindings.  In
+            # that case the narrowest lexical scope is the honest Java choice.
+            selected = min(
+                candidates,
+                key=lambda binding: (
+                    binding.scope_node.end_byte - binding.scope_node.start_byte,
+                    -binding.visible_from,
+                ),
+            )
+            return selected.sym
+        return self._nonlocal_visible(owner, name)
 
     def _usage_facts(self, callable_node, owner: Sym,
-                     variables: dict[str, Sym]) -> None:
+                     variables: dict[str, Sym],
+                     java_bindings: list[_JavaBinding] | None = None) -> None:
         boundaries = (_PY_NESTED_BOUNDARIES if self.language == "python"
                       else _JAVA_NESTED_BOUNDARIES)
         for node in _walk(callable_node, boundaries=boundaries, root=callable_node):
@@ -329,7 +488,9 @@ class _Augmenter:
                 continue
             if (node.start_byte, node.end_byte) in self._declaration_spans:
                 continue
-            variable = self._selected_variable(owner, variables, node)
+            variable = (self._selected_java_variable(owner, java_bindings, node)
+                        if java_bindings is not None
+                        else self._selected_variable(owner, variables, node))
             if variable is None:
                 continue
             for kind in self._mode(node):
@@ -347,23 +508,43 @@ class _Augmenter:
         owner = self._sym_for_node(node, _CALLABLE_KINDS)
         if owner is None:
             return
-        parameters = (self._python_parameters(node) if self.language == "python"
-                      else self._java_parameters(node))
-        locals_ = (self._python_locals(node) if self.language == "python"
-                   else self._java_locals(node))
         variables: dict[str, Sym] = {}
         if self.language == "python":
             self._python_instance_fields(node, owner)
-        for name_node in parameters:
-            sym = self._add_variable(owner, name_node, "parameter")
-            variables.setdefault(sym.name, sym)
-        for name_node in locals_:
-            name = _text(self.source, name_node)
-            if name in variables:
-                continue
-            sym = self._add_variable(owner, name_node, "local")
-            variables[name] = sym
-        self._usage_facts(node, owner, variables)
+            for name_node in self._python_parameters(node):
+                sym = self._add_variable(owner, name_node, "parameter")
+                variables.setdefault(sym.name, sym)
+            for name_node in self._python_locals(node):
+                name = _text(self.source, name_node)
+                if name in variables:
+                    continue
+                sym = self._add_variable(owner, name_node, "local")
+                variables[name] = sym
+            self._usage_facts(node, owner, variables)
+            return
+
+        java_bindings = self._java_bindings(node)
+        totals: dict[str, int] = {}
+        occurrences: dict[str, int] = {}
+        for binding in java_bindings:
+            name = _text(self.source, binding.name_node)
+            totals[name] = totals.get(name, 0) + 1
+        for binding in java_bindings:
+            name = _text(self.source, binding.name_node)
+            occurrence = occurrences.get(name, 0) + 1
+            occurrences[name] = occurrence
+            # Preserve the established FQN for the common unique case.  For
+            # homonyms, a source-order occurrence suffix makes every edge
+            # resolvable while remaining stable across line/body edits and
+            # insertion of declarations with other names.  Without persistent
+            # lexical-scope nodes, inserting/reordering an earlier homonym is
+            # inherently identity-changing in this L0 model.
+            fqn = f"{owner.fqn}.{name}"
+            if totals[name] > 1 and occurrence > 1:
+                fqn += f"#{occurrence}"
+            binding.sym = self._add_variable(
+                owner, binding.name_node, binding.kind, fqn=fqn)
+        self._usage_facts(node, owner, variables, java_bindings)
 
     def run(self) -> None:
         if self.language == "python":

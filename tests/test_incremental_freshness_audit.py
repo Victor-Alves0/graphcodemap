@@ -144,7 +144,7 @@ def run():
 
     graph.close()
     assert [row["fqn"] for row in data["changed_symbols"]] == [
-        "service.Service", "service.Service.work",
+        "service.Service", "service.Service.work", "service.Service.work.self",
     ]
     assert any(row["fqn"] == "use.run" for row in data["impacted"])
 

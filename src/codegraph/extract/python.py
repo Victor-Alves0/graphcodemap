@@ -21,8 +21,10 @@ _BUILTINS = {
 
 
 class PythonExtractor(BaseExtractor):
-    def __init__(self, source: bytes, module_fqn: str) -> None:
+    def __init__(self, source: bytes, module_fqn: str, *,
+                 is_package: bool = False) -> None:
         super().__init__(source, module_fqn)
+        self.is_package = is_package
         # Module singleton/factory bindings provide real receiver evidence:
         # ``service = TokenService(); service.validate()``.  This lets L0 keep
         # useful cross-module dispatch without returning to name-only matches.
@@ -253,15 +255,20 @@ class PythonExtractor(BaseExtractor):
         out: set[str] = set()
         for parameter in parameters.named_children:
             name = parameter.child_by_field_name("name")
-            if name is None and parameter.type in {
+            binding = name
+            if binding is None and parameter.type == "typed_parameter":
+                type_node = parameter.child_by_field_name("type")
+                binding = next(
+                    (child for child in parameter.named_children
+                     if child is not type_node), None)
+            if binding is None and parameter.type in {
                     "identifier", "list_splat_pattern",
                     "dictionary_splat_pattern",
             }:
-                name = (parameter if parameter.type == "identifier" else
-                        next((child for child in parameter.named_children
-                              if child.type == "identifier"), None))
-            if name is not None:
-                out.add(self.text(name))
+                binding = parameter
+            if binding is not None:
+                out.update(self.text(target)
+                           for target in self._target_identifiers(binding))
         return out
 
     def _local_bindings(self, body) -> set[str]:
@@ -348,7 +355,10 @@ class PythonExtractor(BaseExtractor):
         (`d[k] = …`, `self.x = …`) não são declarações de símbolo → ignorados."""
         if left.type == "identifier":
             return [left]
-        if left.type in ("pattern_list", "tuple_pattern", "list_pattern"):
+        if left.type in (
+                "pattern_list", "tuple_pattern", "list_pattern",
+                "list_splat_pattern", "dictionary_splat_pattern",
+        ):
             out: list = []
             for c in left.named_children:
                 out.extend(cls._target_identifiers(c))   # aninhado: (a, (b, c))
@@ -420,7 +430,12 @@ class PythonExtractor(BaseExtractor):
             raw = self.text(module_node)
             dots = len(raw) - len(raw.lstrip("."))
             rest = raw.lstrip(".")
-            parts = self.module_fqn.split(".")
+            parts = [part for part in self.module_fqn.split(".") if part]
+            # For ``pkg/__init__.py``, module_fqn is the package itself.  Add a
+            # synthetic leaf so ``from .service`` stays inside ``pkg`` just as
+            # it does for a normal module ``pkg.current``.
+            if self.is_package:
+                parts.append("__init__")
             base = parts[: max(len(parts) - dots, 0)]
             return ".".join([*base, rest] if rest else base)
         return self.text(module_node)
@@ -446,6 +461,17 @@ class PythonExtractor(BaseExtractor):
             for child in decorated.named_children:
                 if child.type != "decorator":
                     continue
+                expression = next(iter(child.named_children), None)
+                target = (expression.child_by_field_name("function")
+                          if expression is not None
+                          and expression.type == "call" else expression)
+                if target is not None and target.type in {
+                        "identifier", "attribute",
+                }:
+                    # Applying a decorator is a structural dependency, but not
+                    # a direct runtime call from the decorated body.
+                    self.add_ref(
+                        target, "references", self._qualify(self.text(target)))
                 for call in self._calls_in(child):
                     self._callable_argument_refs(call)
         finally:

@@ -224,8 +224,9 @@ Dart…). Implementation presence is not a claim of product parity.
 parameters, locals, fields/properties and persistent `contains`/`defines`/
 `reads`/`writes`/simple `returns` now share one structural model. A separate
 physical repository graph records every non-ignored folder/file, exact hashes,
-index state and Git-aware graph-stage revisions. Persistent interprocedural
-`flows_to`, semantic readiness and broad real-world onboarding remain open.
+index state and Git-aware graph-stage revisions. L1 lifecycle publication is
+atomic and observable; persistent interprocedural `flows_to`, semantic-link
+coverage on ordinary repositories and broad real-world onboarding remain open.
 Historical benchmark results are retained
 as bounded subsystem evidence, not as a declaration that the product is ready.
 See the [Product Contract](docs/PRODUCT_CONTRACT.md) and

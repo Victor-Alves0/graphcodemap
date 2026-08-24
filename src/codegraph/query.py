@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 from . import explain
 from .community import ensure_communities
-from .db import record_current_stage
+from .db import read_l1_lifecycle, record_current_stage
 from .indexer import (Indexer, get_index_excludes, get_index_scopes,
                       scan_source_stats, _repo_rel)
 from .languages import get_parser
@@ -2718,9 +2718,14 @@ class QueryEngine:
 
     # -- stats ----------------------------------------------------------------
 
+    def l1_status(self) -> dict:
+        """Lifecycle of the semantic snapshot currently prepared or served."""
+        return read_l1_lifecycle(self.conn)
+
     def stats(self) -> dict:
         g = lambda q: self.conn.execute(q).fetchone()[0]  # noqa: E731
         return {
+            "l1": self.l1_status(),
             "files": g("SELECT COUNT(*) FROM files"),
             "repository_nodes": g("SELECT COUNT(*) FROM repository_nodes"),
             "repository_files": g(
@@ -2799,6 +2804,7 @@ class QueryEngine:
             "l1_resolvers": resolvers,
             "l1_missing": l1_missing,
             "l1_last_run": l1_last_run,
+            "l1": self.l1_status(),
             "last_full_scan": int(last_scan) if last_scan else None,
             "last_full_scan_age_s": age,
             "by_language": {
