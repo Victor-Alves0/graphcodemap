@@ -440,6 +440,41 @@ def _fake_jdtls_home(tmp_path, class_major=65):
     return home
 
 
+def test_jdtls_keeps_eclipse_metadata_out_of_project_root(tmp_path,
+                                                           monkeypatch):
+    from codegraph.l1 import jdtls
+
+    home = _fake_jdtls_home(tmp_path)
+    java = tmp_path / "jdk" / "bin" / "java.exe"
+    java.parent.mkdir(parents=True)
+    java.touch()
+    data = tmp_path / "isolated-workspace" / "data"
+
+    class FakeWorkspace:
+        def __init__(self, *_args):
+            self.data = data
+
+        def acquire(self):
+            return self
+
+    monkeypatch.setenv("CODEGRAPH_JDTLS", str(home))
+    monkeypatch.setattr(jdtls, "JdtlsWorkspace", FakeWorkspace)
+    monkeypatch.setattr(
+        jdtls.JdtlsResolver, "_java_bin", classmethod(lambda _cls: str(java)))
+    monkeypatch.setattr(
+        jdtls.JdtlsResolver, "_runtime_java_major",
+        staticmethod(lambda _java: 21))
+
+    resolver = object.__new__(jdtls.JdtlsResolver)
+    resolver.project_root = tmp_path
+    argv = resolver._popen_argv()
+
+    flag = "-Djava.import.generatesMetadataFilesAtProjectRoot=false"
+    assert argv.count(flag) == 1
+    assert argv.index(flag) < argv.index("-jar")
+    assert argv[argv.index("-data") + 1] == str(data)
+
+
 def test_jdtls_dedicated_java_precedes_project_java_home(tmp_path, monkeypatch):
     from codegraph.l1.jdtls import JdtlsResolver
 

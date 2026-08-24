@@ -4,7 +4,9 @@ import json
 
 import pytest
 
-from codegraph.l1.jdtls_workspace import JdtlsWorkspace, WorkspaceBusy
+from codegraph.l1.jdtls_workspace import (
+    WORKSPACE_SCHEMA, JdtlsWorkspace, WorkspaceBusy,
+)
 
 
 def _runtime(tmp_path):
@@ -22,6 +24,10 @@ def _runtime(tmp_path):
 
 def _lease(project, runtime):
     return JdtlsWorkspace(project, *runtime, java_major=21)
+
+
+def test_workspace_schema_invalidates_pre_metadata_isolation_caches():
+    assert WORKSPACE_SCHEMA == 5
 
 
 def test_workspace_is_reused_after_clean_shutdown(tmp_path, monkeypatch):

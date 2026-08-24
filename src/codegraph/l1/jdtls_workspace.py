@@ -16,10 +16,11 @@ import time
 from pathlib import Path
 
 
-# v4: settings de importação Maven/Gradle não executam autobuild do Eclipse e
-# workspaces que exibiram conflito m2e-apt não são reutilizados. Caches v2/v3
-# podem conter classpath/diagnostics produzidos pelo modelo antigo.
-WORKSPACE_SCHEMA = 4
+# v5: o launcher mantém .project/.classpath/.settings fora do checkout com
+# java.import.generatesMetadataFilesAtProjectRoot=false. Workspaces v4 podem
+# referenciar metadados externos criados pelo modelo anterior e não são seguros
+# para reutilização, mesmo que tenham encerrado de forma limpa.
+WORKSPACE_SCHEMA = 5
 _BUILD_FILES = {
     ".classpath", ".project", "build.gradle", "build.gradle.kts",
     "gradle.properties", "gradle-wrapper.properties", "gradlew", "gradlew.bat",

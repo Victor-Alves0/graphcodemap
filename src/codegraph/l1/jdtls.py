@@ -275,6 +275,13 @@ class JdtlsResolver(LspResolver):
                 "-Declipse.application=org.eclipse.jdt.ls.core.id1",
                 "-Dosgi.bundles.defaultStartLevel=4",
                 "-Declipse.product=org.eclipse.jdt.ls.core.product",
+                # O default histórico do JDTLS permite materializar .project,
+                # .classpath e .settings no checkout analisado. Além de sujar
+                # repositórios, esses arquivos sobrevivem ao nosso workspace
+                # isolado e podem reintroduzir classpaths incompatíveis (por
+                # exemplo, saídas m2e-apt aninhadas). Mantenha todo o metadata
+                # operacional sob o diretório exclusivo passado em -data.
+                "-Djava.import.generatesMetadataFilesAtProjectRoot=false",
                 "-Dlog.level=OFF", "-Xmx1G",
                 "--add-modules=ALL-SYSTEM",
                 "--add-opens", "java.base/java.util=ALL-UNNAMED",
