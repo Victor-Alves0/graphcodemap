@@ -16,7 +16,9 @@ import time
 from pathlib import Path
 
 
-WORKSPACE_SCHEMA = 2
+# v3: settings de importação Maven/Gradle não executam autobuild do Eclipse.
+# Caches v2 podem conter classpath/diagnostics produzidos pelo modelo antigo.
+WORKSPACE_SCHEMA = 3
 _BUILD_FILES = {
     ".classpath", ".project", "build.gradle", "build.gradle.kts",
     "gradle.properties", "gradle-wrapper.properties", "gradlew", "gradlew.bat",

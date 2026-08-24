@@ -429,6 +429,7 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
                 else:
                     run.update({key: health[key] for key in (
                         "sites", "resolved_sites", "warmup_timed_out",
+                        "semantic_request_errors",
                         "io_timed_out", "ready_timeout_s", "io_timeout_s",
                         "workspace_reused", "workspace_recovered",
                         "workspace_invalidated")

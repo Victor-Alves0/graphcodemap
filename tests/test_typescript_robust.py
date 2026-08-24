@@ -74,6 +74,23 @@ def test_generator_function():
     assert ("function", "app.gen") in _syms("function* gen() {}")
 
 
+def test_large_jasmine_suite_materializes_callbacks_without_reentrant_walk():
+    cases = "\n".join(
+        f'it("case {i}", function () {{ helper({i}); }});'
+        for i in range(160)
+    )
+    syms, refs = _extract(
+        f'describe("large suite", function () {{\n{cases}\n}});',
+        lang="javascript",
+    )
+
+    callbacks = [s for s in syms if s.name.startswith("it#1:")]
+    helper_calls = [r for r in refs if r.kind == "calls" and r.dst_name == "helper"]
+    assert len(callbacks) == 160
+    assert len({s.fqn for s in callbacks}) == 160
+    assert len(helper_calls) == 160
+
+
 def test_arrow_const():
     assert ("function", "app.add") in _syms("const add = (a, b) => a + b;")
 

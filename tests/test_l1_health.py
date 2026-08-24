@@ -36,10 +36,144 @@ def test_json_rpc_error_marks_resolver_partial(tmp_path):
         "error": {"code": -32603, "message": "project import failed"},
     }
 
-    assert resolver._request("textDocument/definition", {}) is None
+    params = {
+        "textDocument": {"uri": "file:///src/Broken.java"},
+        "position": {"line": 11, "character": 7},
+    }
+    assert resolver._request("textDocument/definition", params) is None
     health = resolver.health_report()
     assert health["status"] == "partial"
     assert any("project import failed" in error for error in health["errors"])
+    assert any("Broken.java:12:7" in error for error in health["errors"])
+
+
+def test_definition_internal_error_isolated_to_site(tmp_path):
+    resolver = _resolver(tmp_path)
+    resolver.cmd_name = "jdtls"
+    resolver._active_method = "textDocument/definition"
+    resolver._active_params = {
+        "textDocument": {"uri": "file:///src/Anonymous.java"},
+        "position": {"line": 60, "character": 45},
+    }
+    resolver._observe_message({
+        "error": {
+            "code": -32603,
+            "message": "Internal error.",
+            "data": "java.lang.ArrayStoreException: element type mismatch",
+        },
+    })
+
+    health = resolver.health_report()
+    assert health["status"] == "complete"
+    assert health["errors"] == []
+    assert health["semantic_request_errors"] == 1
+    assert any("Anonymous.java:61:45" in item for item in health["warnings"])
+
+
+def test_non_jdtls_definition_internal_error_remains_partial(tmp_path):
+    resolver = _resolver(tmp_path)
+    resolver.cmd_name = "another-lsp"
+    resolver._active_method = "textDocument/definition"
+    resolver._active_params = {
+        "textDocument": {"uri": "file:///src/Broken.ts"},
+        "position": {"line": 2, "character": 4},
+    }
+    resolver._observe_message({
+        "error": {"code": -32603, "message": "Internal error."},
+    })
+
+    health = resolver.health_report()
+    assert health["status"] == "partial"
+    assert health["semantic_request_errors"] == 0
+
+
+def test_definition_missing_file_log_is_site_warning(tmp_path):
+    resolver = _resolver(tmp_path)
+    resolver.cmd_name = "jdtls"
+    (tmp_path / "Example.java").write_text("class Example {}")
+    resolver._active_method = "textDocument/definition"
+    resolver._observe_message({
+        "method": "window/logMessage",
+        "params": {"type": 1, "message": "Example.java does not exist"},
+    })
+
+    health = resolver.health_report()
+    assert health["status"] == "complete"
+    assert health["errors"] == []
+    assert health["warnings"] == ["Example.java does not exist"]
+
+
+def test_late_missing_file_log_does_not_inherit_finished_definition(tmp_path):
+    resolver = _resolver(tmp_path)
+    resolver.cmd_name = "jdtls"
+    resolver._seq = 0
+    resolver.io_timeout = 1.0
+    resolver.proc = type("Proc", (), {"poll": lambda self: None})()
+    resolver._write = lambda *_a: None
+    resolver._read = lambda _timeout: {
+        "jsonrpc": "2.0", "id": 1, "result": [],
+    }
+    params = {
+        "textDocument": {"uri": "file:///src/Done.java"},
+        "position": {"line": 1, "character": 2},
+    }
+
+    assert resolver._request("textDocument/definition", params) == []
+    resolver._observe_message({
+        "method": "window/logMessage",
+        "params": {"type": 1, "message": "Late.java does not exist"},
+    })
+
+    health = resolver.health_report()
+    assert health["status"] == "partial"
+    assert health["errors"] == ["Late.java does not exist"]
+
+
+def test_existing_unique_java_file_makes_late_missing_log_a_warning(tmp_path):
+    resolver = _resolver(tmp_path)
+    resolver.cmd_name = "jdtls"
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "Present.java").write_text("class Present {}")
+
+    resolver._observe_message({
+        "method": "window/logMessage",
+        "params": {"type": 1, "message": "Present.java does not exist"},
+    })
+
+    health = resolver.health_report()
+    assert health["status"] == "complete"
+    assert health["warnings"] == ["Present.java does not exist"]
+
+
+def test_jdtls_optional_nested_annotation_output_is_warning(tmp_path):
+    resolver = _resolver(tmp_path)
+    resolver.cmd_name = "jdtls"
+    resolver._observe_message({
+        "method": "window/logMessage",
+        "params": {"type": 1, "message": (
+            "Failed to add classpath entry for generated source folder "
+            "annotations: Cannot nest 'server/target/generated-sources/annotations' "
+            "inside 'server/target/generated-sources'"
+        )},
+    })
+
+    health = resolver.health_report()
+    assert health["status"] == "complete"
+    assert health["errors"] == []
+    assert len(health["warnings"]) == 1
+
+
+def test_jdtls_unresolved_generated_type_stays_partial(tmp_path):
+    resolver = _resolver(tmp_path)
+    resolver.cmd_name = "jdtls"
+    resolver._observe_message({
+        "method": "textDocument/publishDiagnostics",
+        "params": {"uri": "file:///GeneratedConsumer.java", "diagnostics": [{
+            "severity": 1, "message": "GeneratedThing cannot be resolved",
+        }]},
+    })
+
+    assert resolver.health_report()["status"] == "partial"
 
 
 def test_jdtls_error_status_and_diagnostics_are_not_discarded(tmp_path):
@@ -260,6 +394,36 @@ def test_jdtls_io_deadline_covers_its_gradle_import_window():
     from codegraph.l1.jdtls import JdtlsResolver
 
     assert JdtlsResolver.io_timeout >= JdtlsResolver.ready_timeout
+
+
+def test_jdtls_disables_autobuild_for_declared_build_project(tmp_path,
+                                                              monkeypatch):
+    from codegraph.l1.jdtls import JdtlsResolver
+
+    (tmp_path / "pom.xml").write_text("<project/>", encoding="utf-8")
+    captured = {}
+
+    def fake_init(self, root, project_root=None):
+        captured.update(self.init_options)
+
+    monkeypatch.setattr(lsp_base.LspResolver, "__init__", fake_init)
+    JdtlsResolver(tmp_path, tmp_path)
+
+    java = captured["settings"]["java"]
+    assert java["autobuild"]["enabled"] is False
+    assert java["configuration"]["maven"]["defaultMojoExecutionAction"] == "ignore"
+
+
+def test_jdtls_keeps_autobuild_for_invisible_project(tmp_path, monkeypatch):
+    from codegraph.l1.jdtls import JdtlsResolver
+
+    captured = {}
+    monkeypatch.setattr(
+        lsp_base.LspResolver, "__init__",
+        lambda self, root, project_root=None: captured.update(self.init_options))
+    JdtlsResolver(tmp_path, tmp_path)
+
+    assert captured["settings"]["java"]["autobuild"]["enabled"] is True
 
 
 def _fake_jdtls_home(tmp_path, class_major=65):

@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -163,6 +164,7 @@ class LspResolver:
         self._diagnostics_by_uri: dict[str, list[str]] = {}
         self._semantic_sites = 0
         self._semantic_hits = 0
+        self._semantic_request_errors = 0
         self._warmup_timed_out = False
         self._io_timed_out = False
         self._active_method: str | None = None
@@ -272,6 +274,7 @@ class LspResolver:
         self._seq += 1
         rid = self._seq
         self._active_method = method
+        self._active_params = params
         self._write({"jsonrpc": "2.0", "id": rid, "method": method,
                      "params": params})
         # Limite TOTAL: notificações de progresso não podem manter viva para
@@ -289,22 +292,35 @@ class LspResolver:
                 if method != "shutdown":
                     self._io_timed_out = True
                 self._kill()
-                return None
+                return self._finish_request(None)
             msg = self._read(remaining)
             if msg is None:
-                return None
+                return self._finish_request(None)
             self._observe_message(msg)
             if msg.get("id") == rid and "method" not in msg:
                 if msg.get("error"):
-                    return None
-                return msg.get("result")
+                    return self._finish_request(None)
+                return self._finish_request(msg.get("result"))
             if "id" in msg and "method" in msg:
                 self._write({"jsonrpc": "2.0", "id": msg["id"],
                              "result": self._server_request_result(msg)})
         if method != "shutdown":
             self._io_timed_out = True
         self._kill()
-        return None
+        return self._finish_request(None)
+
+    def _finish_request(self, result):
+        """Limpa o contexto usado para classificar mensagens site-locais.
+
+        ``shutdown`` permanece ativo de propósito: notificações inequívocas de
+        teardown ainda precisam do contexto para não virar falso erro. Para as
+        demais requisições, uma notificação tardia não pode herdar o método e o
+        arquivo da consulta anterior.
+        """
+        if getattr(self, "_active_method", None) != "shutdown":
+            self._active_method = None
+            self._active_params = None
+        return result
 
     @staticmethod
     def _health_text(value) -> str:
@@ -331,6 +347,28 @@ class LspResolver:
         if text not in target and len(target) < 20:
             target.append(text)
 
+    def _logged_java_file_exists(self, text: str) -> bool:
+        """Confirma um basename Java único antes de tolerar log stale do JDTLS."""
+        match = re.search(r"([^/\\\s\[\]]+\.java).*?does not exist", text,
+                          re.IGNORECASE)
+        if match is None:
+            return False
+        name = match.group(1)
+        cache = getattr(self, "_java_basename_counts", None)
+        if cache is None:
+            cache = self._java_basename_counts = {}
+        if name not in cache:
+            count = 0
+            for path in self.root.rglob(name):
+                if path.is_file() and not any(
+                        part in {".git", "build", "out", "target"}
+                        for part in path.parts):
+                    count += 1
+                    if count > 1:
+                        break
+            cache[name] = count
+        return cache[name] == 1
+
     def _observe_message(self, msg: dict) -> None:
         """Preserva sinais de saude que antes eram descartados pelo cliente.
 
@@ -344,7 +382,38 @@ class LspResolver:
         if hasattr(self, "_last_message_at"):
             self._last_message_at = time.monotonic()
         if msg.get("error"):
-            self._record_health("error", msg["error"])
+            error = msg["error"]
+            method = str(getattr(self, "_active_method", "LSP") or "LSP")
+            detail = self._health_text(error)
+            params = getattr(self, "_active_params", None) or {}
+            if method == "textDocument/definition":
+                uri = ((params.get("textDocument") or {}).get("uri") or "?")
+                pos = params.get("position") or {}
+                detail = (f"{method} {uri}:{int(pos.get('line', 0)) + 1}:"
+                          f"{int(pos.get('character', 0))}: {detail}")
+            data = error.get("data") if isinstance(error, dict) else None
+            if data:
+                data_text = self._health_text(data)
+                if data_text and data_text not in detail:
+                    detail = f"{detail}; {data_text}"
+            # Um erro interno de UMA consulta de definição não prova que o
+            # modelo inteiro está inválido. O site recebe zero targets e fica
+            # no fallback L0; milhares de outras provas continuam publicáveis.
+            # Erros de initialize/import/build e demais códigos permanecem
+            # fail-closed. JDTLS pode lançar -32603 em construções válidas com
+            # classes anônimas aninhadas (ArrayStoreException interna).
+            site_local = (self.cmd_name == "jdtls"
+                          and method == "textDocument/definition"
+                          and isinstance(error, dict)
+                          and error.get("code") == -32603
+                          and str(error.get("message", "")).strip().lower()
+                          == "internal error.")
+            if site_local:
+                self._semantic_request_errors = (
+                    int(getattr(self, "_semantic_request_errors", 0)) + 1)
+                self._record_health("warning", detail)
+            else:
+                self._record_health("error", detail)
             return
 
         method = msg.get("method")
@@ -370,7 +439,40 @@ class LspResolver:
         if method in {"window/showMessage", "window/logMessage"}:
             severity = params.get("type")
             if severity == 1:
-                self._record_health("error", params)
+                text = self._health_text(params)
+                lowered = text.lower()
+                normalized = lowered.replace("\\", "/")
+                # m2e-apt tenta adicionar a saída opcional de annotations sob
+                # um source root pai. Essa colisão não remove fontes reais do
+                # classpath e GraphCodeMap deliberadamente não indexa target/.
+                # Erros de tipos/imports gerados continuam vindo por diagnostics
+                # e permanecem fail-closed.
+                apt_nested = (self.cmd_name == "jdtls"
+                              and "failed to add classpath entry for generated source folder annotations"
+                              in lowered
+                              and "cannot nest" in lowered
+                              and "target/generated-sources/annotations"
+                              in normalized)
+                # Notificação assíncrona e site-local observada no JDTLS ao
+                # consultar arquivos que existem. Fora da consulta, só aceite
+                # como stale quando o basename é único e existe no repo.
+                stale_site = (self.cmd_name == "jdtls"
+                              and method == "window/logMessage"
+                              and ".java" in lowered
+                              and "does not exist" in lowered
+                              and self._logged_java_file_exists(text))
+                if apt_nested:
+                    nested = re.search(r"cannot nest '([^']+annotations)'",
+                                       normalized)
+                    folder = nested.group(1) if nested else (
+                        "target/generated-sources/annotations")
+                    self._record_health(
+                        "warning",
+                        "JDTLS/m2e-apt não adicionou a saída opcional aninhada "
+                        f"{folder}; fontes e diagnostics reais permanecem ativos")
+                else:
+                    self._record_health(
+                        "warning" if stale_site else "error", params)
             elif severity == 2:
                 self._record_health("warning", params)
             return
@@ -459,6 +561,7 @@ class LspResolver:
         sites = int(getattr(self, "_semantic_sites", 0))
         hits = int(getattr(self, "_semantic_hits", 0))
         io_timed_out = bool(getattr(self, "_io_timed_out", False))
+        request_errors = int(getattr(self, "_semantic_request_errors", 0))
         if timed_out:
             # O warmup consulta UMA aresta representativa. Ela pode ser externa,
             # dinâmica ou simplesmente irresolúvel; exigir que esse probe tenha
@@ -491,6 +594,7 @@ class LspResolver:
             "warnings": list(dict.fromkeys(warnings)),
             "sites": sites,
             "resolved_sites": hits,
+            "semantic_request_errors": request_errors,
             "warmup_timed_out": timed_out,
             "io_timed_out": io_timed_out,
             "ready_timeout_s": self.ready_timeout,
@@ -541,6 +645,10 @@ class LspResolver:
             if not isinstance(result, dict) or self._dead:
                 return False
             self._notify("initialized", {})
+            settings = (self.init_options or {}).get("settings")
+            if settings:
+                self._notify("workspace/didChangeConfiguration",
+                             {"settings": settings})
             return True
         except Exception:
             return False

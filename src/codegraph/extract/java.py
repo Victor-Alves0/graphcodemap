@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ..java_framework import (SPRING_COMPONENTS, annotation_fqns,
                               spring_entry_kind)
+from ..util import byte_column
 from .base import BaseExtractor, Ref
 
 _ACCESS = ("public", "private", "protected")
@@ -120,7 +121,7 @@ class JavaExtractor(BaseExtractor):
             src_fqn=owner,
             dst_name=f"{owner}.{name}",
             line=name_node.start_point[0] + 1,
-            col=name_node.start_point[1],
+            col=byte_column(self.source, name_node.start_byte),
         ))
 
     def _visibility(self, node, default: str = "package") -> str:

@@ -98,6 +98,46 @@ def test_group_by_root_single_group_without_markers(tmp_path):
     assert len(groups[tmp_path.resolve()]) == 2
 
 
+def test_maven_reactor_groups_nested_modules_at_aggregator(tmp_path):
+    database = tmp_path / "extensions" / "database"
+    core = tmp_path / "modules" / "core"
+    database.mkdir(parents=True)
+    core.mkdir(parents=True)
+    (tmp_path / "pom.xml").write_text(
+        "<project><modules><module>./modules/core/</module>"
+        "<module>extensions</module></modules></project>", encoding="utf-8")
+    (tmp_path / "extensions" / "pom.xml").write_text(
+        "<project><modules><module>database</module></modules></project>",
+        encoding="utf-8")
+    (database / "pom.xml").write_text("<project/>", encoding="utf-8")
+    (core / "pom.xml").write_text("<project/>", encoding="utf-8")
+
+    groups = roots.group_by_root(
+        ["modules/core/src/Core.java", "extensions/database/src/Db.java"],
+        tmp_path, ("pom.xml",))
+
+    assert list(groups) == [tmp_path.resolve()]
+    assert len(groups[tmp_path.resolve()]) == 2
+    assert roots.marker_affected_roots(
+        "extensions/database/pom.xml", tmp_path, ("pom.xml",)
+    ) == {tmp_path.resolve()}
+
+
+def test_independent_nested_maven_projects_remain_separate(tmp_path):
+    a = tmp_path / "services" / "a"
+    b = tmp_path / "services" / "b"
+    a.mkdir(parents=True); b.mkdir(parents=True)
+    (tmp_path / "pom.xml").write_text("<project/>", encoding="utf-8")
+    (a / "pom.xml").write_text("<project/>", encoding="utf-8")
+    (b / "pom.xml").write_text("<project/>", encoding="utf-8")
+
+    groups = roots.group_by_root(
+        ["services/a/src/A.java", "services/b/src/B.java"],
+        tmp_path, ("pom.xml",))
+
+    assert set(groups) == {a.resolve(), b.resolve()}
+
+
 def test_project_marker_matching_supports_exact_and_configured_glob():
     assert roots.matches_project_marker("svc/pom.xml", ("pom.xml",))
     assert roots.matches_project_marker("App/App.csproj", ("*.csproj",))

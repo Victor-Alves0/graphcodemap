@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from ..util import content_hash
+from ..util import byte_column, content_hash
 
 
 @dataclass
@@ -78,9 +78,9 @@ class BaseExtractor:
             signature=signature,
             doc=doc,
             start_line=node.start_point[0] + 1,
-            start_col=node.start_point[1],
+            start_col=byte_column(self.source, node.start_byte),
             end_line=node.end_point[0] + 1,
-            end_col=node.end_point[1],
+            end_col=byte_column(self.source, node.end_byte),
             body_hash=content_hash(self.source[node.start_byte : node.end_byte]),
             visibility=visibility,
         )
@@ -92,7 +92,8 @@ class BaseExtractor:
             return
         self.refs.append(
             Ref(kind=kind, src_fqn=self.enclosing_fqn(), dst_name=dst_name,
-                line=node.start_point[0] + 1, col=node.start_point[1])
+                line=node.start_point[0] + 1,
+                col=byte_column(self.source, node.start_byte))
         )
 
     def _qualify(self, name: str) -> str:

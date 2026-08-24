@@ -105,16 +105,23 @@ def test_initialize_does_not_claim_success_without_response(tmp_path):
 def test_initialize_advertises_workspace_configuration(tmp_path):
     r = _bare_resolver(tmp_path)
     captured = {}
+    notifications = []
 
     def request(_method, params):
         captured.update(params)
         return {}
 
     r._request = request
-    r._notify = lambda *_a: None
+    r._notify = lambda *args: notifications.append(args)
     assert r._initialize() is True
     workspace = captured["capabilities"]["workspace"]
     assert workspace == {"configuration": True, "workspaceFolders": True}
+    assert notifications == [
+        ("initialized", {}),
+        ("workspace/didChangeConfiguration", {
+            "settings": {"java": {"autobuild": {"enabled": True}}},
+        }),
+    ]
 
 
 def test_request_has_total_deadline_even_with_progress_messages(tmp_path,

@@ -1114,7 +1114,7 @@ class QueryEngine:
         else:
             fn = df.find_function_node(
                 tree.root_node, sym_row["start_line"], lang,
-                sym_row.get("start_col"))
+                sym_row.get("start_col"), source=data)
         facts = df.extract_facts(data, fn, lang) if fn is not None else None
         fc[ck] = facts
         if len(fc) > self._facts_cache_cap:

@@ -12,7 +12,7 @@ Fora do grafo (deliberado): binários e formatos sem estrutura de símbolos —
 
 from __future__ import annotations
 
-from functools import lru_cache
+from threading import local
 
 EXT_TO_LANG: dict[str, str] = {
     # --- extractors dedicados ---
@@ -96,8 +96,23 @@ def language_for(path: str) -> str | None:
     return EXT_TO_LANG.get(path[dot:].lower())
 
 
-@lru_cache(maxsize=None)
+_parser_state = local()
+
+
 def get_parser(lang: str):
+    """Retorna um parser reutilizável, mas exclusivo da thread atual.
+
+    ``tree_sitter.Parser`` mantém estado nativo durante ``parse``. Compartilhar
+    a mesma instância entre os workers do indexador pode causar access violation
+    no processo (não uma exceção Python). O cache thread-local preserva o custo
+    baixo das chamadas repetidas sem permitir uso concorrente do mesmo parser.
+    """
     from tree_sitter_language_pack import get_parser as _get
 
-    return _get(lang)
+    parsers = getattr(_parser_state, "parsers", None)
+    if parsers is None:
+        parsers = _parser_state.parsers = {}
+    parser = parsers.get(lang)
+    if parser is None:
+        parser = parsers[lang] = _get(lang)
+    return parser

@@ -11,6 +11,7 @@ from __future__ import annotations
 import posixpath
 import re
 
+from ..util import byte_column
 from .base import BaseExtractor
 
 _FUNCTION_VALUES = {"arrow_function", "function_expression", "function", "generator_function"}
@@ -25,14 +26,19 @@ _HOLE = "\x00"
 class TsJsExtractor(BaseExtractor):
     def __init__(self, *a, **kw) -> None:
         super().__init__(*a, **kw)
-        # nós já visitados dentro do escopo do próprio símbolo (callbacks
-        # anônimos); a descida genérica os pula para não visitar duas vezes
-        self._done: set[int] = set()
+        # Callback anônimo descoberto num call_expression. O registro é feito
+        # antes da descida normal e usa offsets estáveis, não ``Node.id``. Mais
+        # importante: não percorremos a árvore enquanto iteramos
+        # ``arguments.named_children``; bindings nativas do tree-sitter podem
+        # invalidar o cursor nessa reentrada em árvores JS grandes.
+        self._callbacks: dict[tuple[int, int], str] = {}
 
     def visit(self, node) -> None:
-        if node.id in self._done:
-            return
         t = node.type
+        callback_name = self._callbacks.get((node.start_byte, node.end_byte))
+        if callback_name is not None and t in _FUNCTION_VALUES:
+            self._callback_function(node, callback_name)
+            return
         if t == "export_statement":
             decl = node.child_by_field_name("declaration")
             if decl is not None:
@@ -73,7 +79,7 @@ class TsJsExtractor(BaseExtractor):
             return
         if t == "call_expression":
             self._call(node)
-            self._callback_args(node)
+            self._register_callback_args(node)
             for c in node.children:
                 self.visit(c)
             return
@@ -325,7 +331,7 @@ class TsJsExtractor(BaseExtractor):
             for c in node.children:
                 self.visit(c)
 
-    def _callback_args(self, node) -> None:
+    def _register_callback_args(self, node) -> None:
         """Função passada como ARGUMENTO vira símbolo próprio.
 
         `app.get("/learn", isLoggedIn, (req, res) => {…})` é *o* idioma de rota
@@ -354,15 +360,17 @@ class TsJsExtractor(BaseExtractor):
                 name_node = arg.child_by_field_name("name")
                 name = (self.text(name_node) if name_node is not None else
                         self._anonymous_callback_name(callee, idx, args, arg))
-                body = arg.child_by_field_name("body")
-                self.add_sym(arg, "function", name,
-                             signature=self.sig_of(arg, body))
-                self._done.add(arg.id)
-                self.scope.append((name, "function"))
-                for c in arg.children:
-                    self.visit(c)
-                self.scope.pop()
+                self._callbacks[(arg.start_byte, arg.end_byte)] = name
             idx += 1
+
+    def _callback_function(self, node, name: str) -> None:
+        """Materializa e percorre callback já fora do cursor de argumentos."""
+        body = node.child_by_field_name("body")
+        self.add_sym(node, "function", name, signature=self.sig_of(node, body))
+        self.scope.append((name, "function"))
+        for child in node.children:
+            self.visit(child)
+        self.scope.pop()
 
     def _anonymous_callback_name(self, callee: str, index: int, args,
                                  callback) -> str:
@@ -384,9 +392,10 @@ class TsJsExtractor(BaseExtractor):
             if "${" not in raw:
                 label = re.sub(r"[^A-Za-z0-9]+", "_", raw).strip("_").lower()
                 label = label[:48]
-        point = callback.start_point
+        row = callback.start_point[0]
+        col = byte_column(self.source, callback.start_byte)
         readable = f":{label}" if label else ""
-        return f"{base}{readable}@{point.row + 1}:{point.column}"
+        return f"{base}{readable}@{row + 1}:{col}"
 
     def _doc_comment(self, node) -> str | None:
         prev = node.prev_sibling

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from .util import byte_column
+
 
 SPRING_COMPONENTS = frozenset({
     "org.springframework.stereotype.Component",
@@ -173,7 +175,7 @@ def spring_web_parameter_sources(source: bytes, method) -> tuple[tuple, ...]:
         site = annotation_node or name_node
         out.append((
             _text(source, name_node), source_annotation,
-            site.start_point[0] + 1, site.start_point[1],
+            site.start_point[0] + 1, byte_column(source, site.start_byte),
             (site.start_byte, site.end_byte),
         ))
     return tuple(out)

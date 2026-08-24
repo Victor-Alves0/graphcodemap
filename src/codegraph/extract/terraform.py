@@ -23,7 +23,7 @@ um diretório: os ``.tf`` compartilham o namespace).
 
 from __future__ import annotations
 
-from ..util import content_hash
+from ..util import byte_column, content_hash
 from .base import BaseExtractor, Sym
 
 # tipo de bloco → (kind, prefixo de endereço, nº de rótulos). Prefixo None =
@@ -123,8 +123,10 @@ class TerraformExtractor(BaseExtractor):
         self.syms.append(Sym(
             kind=kind, name=address.rsplit(".", 1)[-1], fqn=fqn, parent_fqn=None,
             signature=signature, doc=doc,
-            start_line=node.start_point[0] + 1, start_col=node.start_point[1],
-            end_line=node.end_point[0] + 1, end_col=node.end_point[1],
+            start_line=node.start_point[0] + 1,
+            start_col=byte_column(self.source, node.start_byte),
+            end_line=node.end_point[0] + 1,
+            end_col=byte_column(self.source, node.end_byte),
             body_hash=content_hash(self.source[node.start_byte:node.end_byte]),
             visibility=None))
 

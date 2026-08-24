@@ -8,10 +8,14 @@ essa equivalência (mesmos símbolos/arestas) e que erros por arquivo são isola
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
 
 from codegraph import indexer as ix_mod
 from codegraph.indexer import Indexer
+from codegraph.languages import get_parser
 
 
 def _mkrepo(root, n=40):
@@ -84,3 +88,21 @@ def test_small_repo_uses_serial_path(tmp_path, monkeypatch):
     ix.index_repo(force=True, workers=4)     # 5 arquivos < PARALLEL_MIN_FILES
     ix.close()
     assert called["parallel"] is False
+
+
+def test_tree_sitter_parser_cache_is_thread_local():
+    """Cada worker reutiliza seu parser sem compartilhar estado nativo."""
+    workers = 4
+    barrier = Barrier(workers)
+
+    def parser_ids():
+        first = get_parser("javascript")
+        barrier.wait()
+        second = get_parser("javascript")
+        return id(first), id(second)
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        ids = list(executor.map(lambda _: parser_ids(), range(workers)))
+
+    assert all(first == second for first, second in ids)
+    assert len({first for first, _ in ids}) == workers

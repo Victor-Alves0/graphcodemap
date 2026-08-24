@@ -25,6 +25,8 @@ import re
 from bisect import bisect_left
 from dataclasses import dataclass, field, replace
 
+from .util import byte_column
+
 # Config de extração de fatos por linguagem. As irregularidades das gramáticas
 # ficam AQUI (declarativas); o motor de taint continua compartilhado.
 #   func    : node types de função
@@ -1959,7 +1961,8 @@ def _carries_tainted_payload(path, tainted) -> bool:
 
 
 def find_function_node(root, start_line: int, lang: str,
-                       start_col: int | None = None):
+                       start_col: int | None = None,
+                       source: bytes | None = None):
     """Find one callable by its persisted tree-sitter start position.
 
     Generated/compact source can declare multiple functions on one physical
@@ -1972,7 +1975,8 @@ def find_function_node(root, start_line: int, lang: str,
     while stack:
         n = stack.pop()
         if n.type in types and n.start_point[0] + 1 == start_line:
-            if start_col is not None and n.start_point[1] == start_col:
+            if (start_col is not None and source is not None
+                    and byte_column(source, n.start_byte) == start_col):
                 return n
             matches.append(n)
         stack.extend(reversed(n.named_children))
@@ -2106,7 +2110,7 @@ def _nested_calls(source: bytes, node, call_types, idset,
             guards=tuple(guards),
             arg_literals=tuple(literals),
             line=site.start_point[0] + 1,
-            col=site.start_point[1],
+            col=byte_column(source, site.start_byte),
             span=(node.start_byte, node.end_byte),
         ))
         child_guards = guards + (callee,)
@@ -2269,7 +2273,7 @@ def _facts_py(source, fn) -> FnFacts:
         cs = CallSite(callee, _callee_site(call).start_point[0] + 1, [],
                       (call.start_byte, call.end_byte),
                       f"{recv}.{callee}" if recv and recv != callee else None,
-                      col=_callee_site(call).start_point[1])
+                       col=byte_column(source, _callee_site(call).start_byte))
         pos = 0
         for arg in args.named_children:
             if arg.type == "keyword_argument":
@@ -2389,7 +2393,7 @@ def _facts_js(source, fn) -> FnFacts:
         cs = CallSite(callee, _callee_site(call).start_point[0] + 1, [],
                       (call.start_byte, call.end_byte),
                       f"{recv}.{callee}" if recv and recv != callee else None,
-                      col=_callee_site(call).start_point[1])
+                       col=byte_column(source, _callee_site(call).start_byte))
         pos = 0
         for arg in args.named_children:
             if arg.type == "comment":
@@ -3213,7 +3217,7 @@ def _facts_generic(source, fn, lang) -> FnFacts:
                           _rhs_receiver_type(source, call, calls_t,
                                              declared_types)
                           if lang == "java" else None),
-                      col=_callee_site(call).start_point[1])
+                       col=byte_column(source, _callee_site(call).start_byte))
         if args is not None:
             pos = 0
             for arg in args.named_children:
@@ -3404,7 +3408,8 @@ def _clj_facts_visit(source, node, facts: FnFacts) -> None:
     if base not in _CLJ_SPECIAL:                      # aplicação de função → CallSite
         cs = CallSite(
             base, node.start_point[0] + 1, [],
-            (node.start_byte, node.end_byte), col=node.start_point[1])
+            (node.start_byte, node.end_byte),
+            col=byte_column(source, node.start_byte))
         for pos, arg in enumerate(node.named_children[1:]):
             ids: set = set()
             _clj_local_paths(source, arg, ids)

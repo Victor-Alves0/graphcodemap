@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import fnmatch
 from pathlib import Path
+from xml.etree import ElementTree
 
 
 def _has_marker(d: Path, markers) -> bool:
@@ -61,6 +62,59 @@ def _root_from_directory(directory: Path, repo_root: Path, markers) -> Path:
         d = d.parent
 
 
+def _pom_modules(pom: Path) -> set[Path]:
+    """Diretórios de módulos declarados por um POM, tolerando namespace XML."""
+    try:
+        root = ElementTree.parse(pom).getroot()
+    except (OSError, ElementTree.ParseError):
+        return set()
+    modules = set()
+    for container in root.iter():
+        if container.tag.rsplit("}", 1)[-1] != "modules":
+            continue
+        for child in container:
+            if child.tag.rsplit("}", 1)[-1] == "module" and child.text:
+                value = child.text.strip().replace("\\", "/").rstrip("/")
+                if value and "${" not in value:
+                    modules.add((pom.parent / value).resolve())
+    return modules
+
+
+def _maven_reactor_root(module_root: Path, repo_root: Path) -> Path:
+    """Sobe somente por aggregators que declaram o módulo atual.
+
+    O POM mais próximo é correto para projetos Maven independentes num
+    monorepo, mas errado para um reactor: abrir cada filho isoladamente perde
+    dependências entre módulos. A cadeia ``<modules>`` prova quando podemos
+    subir sem misturar projetos irmãos não relacionados.
+    """
+    current = module_root.resolve()
+    repo_root = repo_root.resolve()
+    while current != repo_root:
+        parent = current.parent
+        promoted = None
+        while True:
+            pom = parent / "pom.xml"
+            if pom.is_file():
+                if current in _pom_modules(pom):
+                    promoted = parent
+                    break
+            if parent == repo_root or parent.parent == parent:
+                break
+            parent = parent.parent
+        if promoted is None:
+            break
+        current = promoted
+    return current
+
+
+def _semantic_root(root: Path, repo_root: Path, markers) -> Path:
+    """Aplica agrupamentos comprovados pelo build ao marker mais próximo."""
+    if "pom.xml" in markers and (root / "pom.xml").is_file():
+        return _maven_reactor_root(root, repo_root)
+    return root
+
+
 def marker_affected_roots(rel: str, repo_root: Path, markers) -> set[Path]:
     """Raízes cujo universo pode mudar ao criar/modificar/remover ``rel``.
 
@@ -79,9 +133,11 @@ def marker_affected_roots(rel: str, repo_root: Path, markers) -> set[Path]:
         return set()
     marker_dir = marker.parent
     parent_start = marker_dir if marker_dir == repo_root else marker_dir.parent
-    affected = {_root_from_directory(parent_start, repo_root, markers)}
+    affected = {_semantic_root(
+        _root_from_directory(parent_start, repo_root, markers),
+        repo_root, markers)}
     if _has_marker(marker_dir, markers):
-        affected.add(marker_dir)
+        affected.add(_semantic_root(marker_dir, repo_root, markers))
     return affected
 
 
@@ -100,7 +156,8 @@ def detect_project_root(rel: str, repo_root: Path, markers) -> Path:
         # Caminho malformado ou symlink que escapa do repo: nunca usar um
         # marcador externo como root de um servidor que analisará o workspace.
         return repo_root
-    return _root_from_directory(candidate.parent, repo_root, markers)
+    root = _root_from_directory(candidate.parent, repo_root, markers)
+    return _semantic_root(root, repo_root, markers)
 
 
 def group_by_root(rels, repo_root: Path, markers) -> dict[Path, list[str]]:

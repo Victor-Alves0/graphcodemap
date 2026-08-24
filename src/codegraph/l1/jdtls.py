@@ -14,6 +14,7 @@ Download: https://download.eclipse.org/jdtls/snapshots/jdt-language-server-lates
 
 from __future__ import annotations
 
+import copy
 import os
 import re
 import shutil
@@ -45,8 +46,20 @@ class JdtlsResolver(LspResolver):
     io_timeout = 120.0
     shutdown_timeout = 6.0
     timeout_is_partial = True
-    # habilita o autobuild do "invisible project" p/ arquivos sem build tool.
-    init_options = {"settings": {"java": {"autobuild": {"enabled": True}}}}
+    # O classpath Maven/Gradle é importado pelo JDTLS. Executar também o
+    # autobuild do Eclipse pode disparar mojos/annotation processors do repo e
+    # não é necessário para textDocument/definition. Projetos Java sem build
+    # tool continuam usando autobuild no "invisible project".
+    init_options = {"settings": {"java": {
+        "autobuild": {"enabled": True},
+        "configuration": {
+            "updateBuildConfiguration": "automatic",
+            "maven": {
+                "notCoveredPluginExecutionSeverity": "warning",
+                "defaultMojoExecutionAction": "ignore",
+            },
+        },
+    }}}
 
     # -- localização da instalação -------------------------------------------
 
@@ -200,6 +213,13 @@ class JdtlsResolver(LspResolver):
     # -- launch ---------------------------------------------------------------
 
     def __init__(self, root: Path, project_root: Path | None = None) -> None:
+        semantic_root = (Path(project_root).resolve() if project_root
+                         else Path(root).resolve())
+        self.init_options = copy.deepcopy(type(self).init_options)
+        has_build = any((semantic_root / marker).is_file() for marker in (
+            "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle"))
+        self.init_options["settings"]["java"]["autobuild"]["enabled"] = (
+            not has_build)
         self.ready_timeout = self._timeout_from_env(
             "CODEGRAPH_JDTLS_READY_TIMEOUT", type(self).ready_timeout)
         # Ao elevar apenas readiness, acompanhe-o automaticamente: uma única
