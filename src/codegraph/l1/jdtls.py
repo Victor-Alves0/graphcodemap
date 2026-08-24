@@ -303,13 +303,17 @@ class JdtlsResolver(LspResolver):
                 model_errors = bool(getattr(self, "_health_errors", ()))
                 model_errors = model_errors or any(
                     getattr(self, "_diagnostics_by_uri", {}).values())
-                clean = (
+                orderly_shutdown = (
                     started_clean
-                    and bool(getattr(self, "_shutdown_completed", False))
-                    and not model_errors)
+                    and bool(getattr(self, "_shutdown_completed", False)))
+                tainted = bool(getattr(self, "_workspace_tainted", False))
                 workspace.release(
-                    clean=clean,
-                    reusable=not bool(getattr(self, "_workspace_tainted", False)))
+                    # ``running`` fica reservado a crash/transporte quebrado.
+                    # Um servidor que encerrou corretamente mas observou
+                    # diagnostics ou modelo contaminado deve ser ``stale``:
+                    # continua não reutilizável, sem fingir crash recovery.
+                    clean=orderly_shutdown,
+                    reusable=not (model_errors or tainted))
 
     def _before_shutdown(self) -> None:
         """Dá aos jobs de diagnostics uma janela para terminar após didClose.

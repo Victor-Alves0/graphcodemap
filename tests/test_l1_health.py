@@ -475,6 +475,62 @@ def test_jdtls_keeps_eclipse_metadata_out_of_project_root(tmp_path,
     assert argv[argv.index("-data") + 1] == str(data)
 
 
+def test_jdtls_orderly_tainted_workspace_is_stale_not_crashed(tmp_path,
+                                                               monkeypatch):
+    from codegraph.l1 import jdtls
+
+    released = []
+
+    class Workspace:
+        def release(self, **kwargs):
+            released.append(kwargs)
+
+    resolver = object.__new__(jdtls.JdtlsResolver)
+    resolver._workspace = Workspace()
+    resolver._ok = True
+    resolver._dead = False
+    resolver._workspace_tainted = True
+    resolver._health_errors = []
+    resolver._diagnostics_by_uri = {}
+    resolver.proc = type("Proc", (), {"poll": lambda self: None})()
+
+    def orderly_close(self):
+        self._shutdown_completed = True
+
+    monkeypatch.setattr(lsp_base.LspResolver, "close", orderly_close)
+    resolver.close()
+
+    assert released == [{"clean": True, "reusable": False}]
+
+
+def test_jdtls_broken_transport_preserves_running_workspace(tmp_path,
+                                                             monkeypatch):
+    from codegraph.l1 import jdtls
+
+    released = []
+
+    class Workspace:
+        def release(self, **kwargs):
+            released.append(kwargs)
+
+    resolver = object.__new__(jdtls.JdtlsResolver)
+    resolver._workspace = Workspace()
+    resolver._ok = True
+    resolver._dead = False
+    resolver._workspace_tainted = False
+    resolver._health_errors = ["transport failed"]
+    resolver._diagnostics_by_uri = {}
+    resolver.proc = type("Proc", (), {"poll": lambda self: None})()
+
+    def broken_close(self):
+        self._shutdown_completed = False
+
+    monkeypatch.setattr(lsp_base.LspResolver, "close", broken_close)
+    resolver.close()
+
+    assert released == [{"clean": False, "reusable": False}]
+
+
 def test_jdtls_dedicated_java_precedes_project_java_home(tmp_path, monkeypatch):
     from codegraph.l1.jdtls import JdtlsResolver
 
