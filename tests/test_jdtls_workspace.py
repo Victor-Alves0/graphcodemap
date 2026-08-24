@@ -115,6 +115,26 @@ def test_running_state_is_crash_recovered(tmp_path, monkeypatch):
         recovered.release(clean=True)
 
 
+def test_clean_but_nonreusable_workspace_is_invalidated(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEGRAPH_JDTLS_WORKSPACES", str(tmp_path / "cache"))
+    project = tmp_path / "project"
+    project.mkdir()
+    runtime = _runtime(tmp_path)
+
+    first = _lease(project, runtime).acquire()
+    marker = first.data / "unsafe-model"
+    marker.write_text("m2e apt conflict", encoding="utf-8")
+    first.release(clean=True, reusable=False)
+
+    second = _lease(project, runtime).acquire()
+    try:
+        assert second.invalidated is True
+        assert second.reused is False
+        assert not marker.exists()
+    finally:
+        second.release(clean=True)
+
+
 def test_workspace_lock_rejects_concurrent_server(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEGRAPH_JDTLS_WORKSPACES", str(tmp_path / "cache"))
     monkeypatch.setenv("CODEGRAPH_JDTLS_WORKSPACE_LOCK_TIMEOUT", "0")

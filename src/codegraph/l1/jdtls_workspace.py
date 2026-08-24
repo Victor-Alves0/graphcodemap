@@ -16,9 +16,10 @@ import time
 from pathlib import Path
 
 
-# v3: settings de importação Maven/Gradle não executam autobuild do Eclipse.
-# Caches v2 podem conter classpath/diagnostics produzidos pelo modelo antigo.
-WORKSPACE_SCHEMA = 3
+# v4: settings de importação Maven/Gradle não executam autobuild do Eclipse e
+# workspaces que exibiram conflito m2e-apt não são reutilizados. Caches v2/v3
+# podem conter classpath/diagnostics produzidos pelo modelo antigo.
+WORKSPACE_SCHEMA = 4
 _BUILD_FILES = {
     ".classpath", ".project", "build.gradle", "build.gradle.kts",
     "gradle.properties", "gradle-wrapper.properties", "gradlew", "gradlew.bat",
@@ -243,7 +244,8 @@ class JdtlsWorkspace:
             if metadata.get("status") == "running" and valid_identity:
                 self.recovered = True
             elif (metadata and (not valid_identity
-                                or metadata.get("build_fingerprint") != fingerprint)):
+                                or metadata.get("build_fingerprint") != fingerprint
+                                or metadata.get("status") == "stale")):
                 self.invalidated = True
             elif data_exists and valid_identity and metadata.get("status") == "clean":
                 self.reused = True
@@ -258,14 +260,15 @@ class JdtlsWorkspace:
             self._acquired = False
             raise
 
-    def release(self, *, clean: bool) -> None:
+    def release(self, *, clean: bool, reusable: bool = True) -> None:
         if not self._acquired:
             return
         try:
             if clean:
                 current = _build_fingerprint(self.project_root)
                 if current == self.build_fingerprint:
-                    self._write_metadata("clean", current)
+                    self._write_metadata(
+                        "clean" if reusable else "stale", current)
                 else:
                     # O modelo mudou enquanto o servidor estava aberto. Não
                     # rotule o índice importado antes da mudança como quente.

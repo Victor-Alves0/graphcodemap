@@ -293,9 +293,16 @@ class JdtlsResolver(LspResolver):
         finally:
             workspace = getattr(self, "_workspace", None)
             if workspace is not None:
-                workspace.release(clean=(
+                model_errors = bool(getattr(self, "_health_errors", ()))
+                model_errors = model_errors or any(
+                    getattr(self, "_diagnostics_by_uri", {}).values())
+                clean = (
                     started_clean
-                    and bool(getattr(self, "_shutdown_completed", False))))
+                    and bool(getattr(self, "_shutdown_completed", False))
+                    and not model_errors)
+                workspace.release(
+                    clean=clean,
+                    reusable=not bool(getattr(self, "_workspace_tainted", False)))
 
     def _before_shutdown(self) -> None:
         """Dá aos jobs de diagnostics uma janela para terminar após didClose.

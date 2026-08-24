@@ -462,6 +462,7 @@ class LspResolver:
                               and "does not exist" in lowered
                               and self._logged_java_file_exists(text))
                 if apt_nested:
+                    self._workspace_tainted = True
                     nested = re.search(r"cannot nest '([^']+annotations)'",
                                        normalized)
                     folder = nested.group(1) if nested else (
