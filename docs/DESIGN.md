@@ -15,10 +15,11 @@
 
 ### 1.1 Identidade de símbolo
 
-`symbol_id = hash(path, fqn, kind, ordinal)` — estilo moniker do SCIP.
+`symbol_id = hash(path, fqn, kind, discriminator)` — estilo moniker do SCIP.
 
 - `fqn` = nome totalmente qualificado dentro do arquivo/módulo (ex.: `auth.TokenService.validate`).
-- `ordinal` distingue overloads/redefinições com mesma fqn+kind no mesmo arquivo.
+- Assinatura distingue callables sobrecarregados sem depender da ordem entre
+  irmãos; ordinal fica como fallback de homônimos não-callable/duplicatas exatas.
 - Estável sob edições no corpo e mudanças de linha (spans não entram na identidade).
 - Mover símbolo de arquivo **quebra a identidade** (vira delete+add). Aceito na v1; documentado.
 
@@ -40,7 +41,7 @@ CREATE TABLE files (
 );
 
 CREATE TABLE symbols (
-  id        TEXT PRIMARY KEY,                 -- hash(path, fqn, kind, ordinal)
+  id        TEXT PRIMARY KEY,                 -- hash(path, fqn, kind, discriminator)
   file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   parent_id TEXT REFERENCES symbols(id) ON DELETE CASCADE,  -- containment (classe→método)
   kind      TEXT NOT NULL,                    -- function|method|class|interface|struct|enum|variable|constant|module|type_alias

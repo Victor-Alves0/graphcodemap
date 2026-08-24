@@ -113,6 +113,71 @@ def test_identity_survives_reorder_of_siblings(tmp_path):
     g.close()
 
 
+def test_java_overload_identity_survives_inserting_earlier_overload(tmp_path):
+    source = """\
+        class Service {
+            void work(String value) {}
+            void work(int value) {}
+        }
+    """
+    g = _graph(tmp_path, {"Service.java": source})
+    before = {r["signature"]: r["id"] for r in g.indexer.conn.execute(
+        "SELECT signature, id FROM symbols "
+        "WHERE fqn='Service.work' ORDER BY signature")}
+
+    (tmp_path / "Service.java").write_text(textwrap.dedent("""\
+        class Service {
+            void work(double value) {}
+            void work(String value) {}
+            void work(int value) {}
+        }
+    """), encoding="utf-8")
+    g.index()
+    after = {r["signature"]: r["id"] for r in g.indexer.conn.execute(
+        "SELECT signature, id FROM symbols "
+        "WHERE fqn='Service.work' ORDER BY signature")}
+
+    assert after.keys() > before.keys()
+    assert all(after[signature] == uid for signature, uid in before.items())
+    g.close()
+
+
+def test_packaged_python_src_layout_uses_import_identity(tmp_path):
+    g = _graph(tmp_path, {
+        "pyproject.toml": "[build-system]\nrequires = []\n",
+        "src/pkg/__init__.py": "",
+        "src/pkg/service.py": "def execute():\n    return 1\n",
+        "src/pkg/use.py": (
+            "from pkg.service import execute\n\n"
+            "def run():\n    return execute()\n"
+        ),
+    })
+
+    fqns = {row["fqn"] for row in g.indexer.conn.execute(
+        "SELECT fqn FROM symbols WHERE kind IN ('file', 'function')")}
+    edge = g.indexer.conn.execute(
+        "SELECT e.dst, d.fqn FROM edges e LEFT JOIN symbols d ON d.id=e.dst "
+        "WHERE e.kind='calls' AND e.dst_name='pkg.service.execute'"
+    ).fetchone()
+
+    assert "pkg.service.execute" in fqns
+    assert "src.pkg.service.execute" not in fqns
+    assert edge is not None and edge["dst"] is not None
+    assert edge["fqn"] == "pkg.service.execute"
+    g.close()
+
+
+def test_unpacked_src_directory_keeps_physical_module_prefix(tmp_path):
+    g = _graph(tmp_path, {
+        "src/helpers.py": "def execute():\n    return 1\n",
+    })
+    row = g.indexer.conn.execute(
+        "SELECT fqn FROM symbols WHERE kind='function'"
+    ).fetchone()
+    assert row["fqn"] == "src.helpers.execute"
+    g.close()
+
+
 # ============================================================================
 # 3. Remover um símbolo transforma arestas em dangling (sem perda silenciosa)
 # ============================================================================

@@ -91,6 +91,64 @@ def test_change_impact_includes_callers_of_renamed_symbol(tmp_path):
     assert any(row["fqn"] == "use.caller" for row in data["impacted"])
 
 
+def test_change_impact_java_file_includes_callers_of_nested_method(tmp_path):
+    (tmp_path / "Service.java").write_text(
+        """package app;
+public class Service {
+    public static void work() {}
+}
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "Use.java").write_text(
+        """package app;
+public class Use {
+    public void run() { Service.work(); }
+}
+""",
+        encoding="utf-8",
+    )
+    graph = CodeGraph(tmp_path)
+    graph.index()
+
+    data, _env = graph.change_impact("Service.java")
+
+    graph.close()
+    assert [row["fqn"] for row in data["changed_symbols"]] == [
+        "app.Service", "app.Service.work",
+    ]
+    assert any(row["fqn"] == "app.Use.run" for row in data["impacted"])
+
+
+def test_change_impact_python_file_includes_callers_of_nested_method(tmp_path):
+    (tmp_path / "service.py").write_text(
+        """class Service:
+    def work(self):
+        return 1
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "use.py").write_text(
+        """from service import Service
+
+def run():
+    service = Service()
+    return service.work()
+""",
+        encoding="utf-8",
+    )
+    graph = CodeGraph(tmp_path)
+    graph.index()
+
+    data, _env = graph.change_impact("service.py")
+
+    graph.close()
+    assert [row["fqn"] for row in data["changed_symbols"]] == [
+        "service.Service", "service.Service.work",
+    ]
+    assert any(row["fqn"] == "use.run" for row in data["impacted"])
+
+
 def test_nonempty_callers_query_discovers_new_caller_file(tmp_path):
     graph = _python_call_graph(tmp_path)
     # Já existe use.caller, então a consulta não cai no read-repair global de

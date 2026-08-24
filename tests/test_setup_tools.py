@@ -76,6 +76,25 @@ def test_setup_detects_only_language_families_present_in_repo(tmp_path):
     assert setup_tools.detect_targets(tmp_path) == ["javascript", "java"]
 
 
+def test_setup_prunes_ignored_directory_before_visiting_files(
+        tmp_path, monkeypatch):
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    ignored = tmp_path / "node_modules"
+    ignored.mkdir()
+    (ignored / "noise.java").write_text("class Noise {}\n", encoding="utf-8")
+    visited = []
+    original = setup_tools.language_for
+
+    def observe(rel):
+        visited.append(rel)
+        return original(rel)
+
+    monkeypatch.setattr(setup_tools, "language_for", observe)
+
+    assert setup_tools.detect_targets(tmp_path) == ["python"]
+    assert visited == ["app.py"]
+
+
 def test_doctor_points_missing_java_to_setup_command():
     output = render.doctor({
         "root_name": "repo", "indexer_version": "36",

@@ -7,7 +7,9 @@ MCP-capable agent — Claude Code, Cursor, Codex, and others — can call it.
 ## Run the server
 
 ```bash
-pip install "graphcodemap[mcp]"
+git clone https://github.com/Victor-Alves0/graphcodemap.git
+cd graphcodemap
+python -m pip install -e ".[mcp]"
 graphcodemap-mcp --root /path/to/repo
 ```
 
@@ -15,7 +17,6 @@ Or start from the core install and prepare MCP plus the repository's semantic
 toolchains explicitly:
 
 ```bash
-pip install graphcodemap
 codegraph mcp --install          # asks before installing
 # CI/non-interactive:
 codegraph mcp --install --yes
@@ -26,8 +27,9 @@ Setup pins MCP to the tested 1.x FastMCP-compatible release. Plain
 the optional dependency is missing or incompatible.
 
 The server speaks stdio, indexes/refreshes on boot, and runs a background watcher
-so the index stays hot. Pass `--no-watch` to disable the watcher (read-repair
-still guarantees freshness on every query).
+so the index stays hot. Pass `--no-watch` to disable the watcher. The current
+read-repair fast path uses size+mtime before content verification; strict
+freshness is still an open Product Contract gate.
 
 ### Register it
 

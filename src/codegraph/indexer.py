@@ -98,7 +98,7 @@ STYLE_DEF_KINDS = ("css_class", "html_id")
 
 # Versão da lógica de extração/resolução: mudou → força re-index completo,
 # mesmo com content-hashes iguais (o índice é derivado de código+extractor).
-INDEXER_VERSION = "38"
+INDEXER_VERSION = "39"
 
 DEFAULT_IGNORES = [
     ".git/", ".codegraph/", "__pycache__/", ".venv/", "venv/", "node_modules/",
@@ -299,10 +299,21 @@ def scan_source_stats(root: Path,
     return out
 
 
-def module_fqn_for(rel: str) -> str:
+def module_fqn_for(rel: str, *, root: Path | None = None,
+                   language: str | None = None) -> str:
     dot = rel.rfind(".")
     stem = rel[:dot] if dot != -1 else rel
     parts = stem.split("/")
+    # Em um projeto Python empacotado com layout ``src/``, o diretório é um
+    # source root, não parte do import. ``src/pkg/service.py`` é
+    # ``pkg.service``, nunca ``src.pkg.service``. Restrinja a heurística a
+    # projetos com metadata de empacotamento para não reinterpretar qualquer
+    # pasta arbitrária chamada src.
+    if (language == "python" and root is not None and len(parts) > 1
+            and parts[0] == "src"
+            and any((root / marker).is_file()
+                    for marker in ("pyproject.toml", "setup.cfg", "setup.py"))):
+        parts = parts[1:]
     if parts and parts[-1] == "__init__":
         parts = parts[:-1]
     return ".".join(parts)
@@ -328,7 +339,7 @@ def _is_path_like(guess: str, lang: str | None) -> bool:
             or (lang is not None and lang in MARKUP))
 
 
-def _file_symbol(rel: str, data: bytes, h: str) -> Sym:
+def _file_symbol(rel: str, data: bytes, h: str, module_fqn: str) -> Sym:
     """O ARQUIVO como símbolo — o alvo que faltava para `imports` locais.
 
     Sem isto, `<script src="./main.tsx">`, `<link href>` e `@import` ficavam
@@ -343,19 +354,21 @@ def _file_symbol(rel: str, data: bytes, h: str) -> Sym:
     # `__init__.py` NA RAIZ do repo tem module fqn vazio (a convenção é o pacote
     # ser o diretório, e aqui não há diretório) — sem este fallback o grafo
     # ganhava um símbolo de nome e fqn vazios, inalcançável e sujo no FTS.
-    fqn = module_fqn_for(rel) or rel.rsplit("/", 1)[-1].split(".", 1)[0]
+    fqn = module_fqn or rel.rsplit("/", 1)[-1].split(".", 1)[0]
     return Sym(kind="file", name=fqn.rsplit(".", 1)[-1], fqn=fqn,
                parent_fqn=None, signature=rel, doc=None,
                start_line=1, start_col=0, end_line=data.count(b"\n") + 1,
                end_col=0, body_hash=h, visibility=None)
 
 
-def _extract_file(lang: str, data: bytes, rel: str, tree, h: str):
+def _extract_file(lang: str, data: bytes, rel: str, tree, h: str,
+                  root: Path):
     """extract.extract + o símbolo do arquivo. Ponto único: os dois caminhos de
     prepare (serial e paralelo) passam por aqui, senão o grafo dependeria de
     quantos workers rodaram."""
-    syms, refs = extract.extract(lang, data, module_fqn_for(rel), tree)
-    syms.append(_file_symbol(rel, data, h))   # append: fqn de símbolo declarado
+    module_fqn = module_fqn_for(rel, root=root, language=lang)
+    syms, refs = extract.extract(lang, data, module_fqn, tree)
+    syms.append(_file_symbol(rel, data, h, module_fqn))
     return syms, refs                         # continua ganhando no fqn_to_uid
 
 
@@ -433,8 +446,13 @@ class Indexer:
             _set_meta_list(self.conn, "index_excludes",
                            [str(p) for p in exclude if str(p).strip()])
         excludes = get_index_excludes(self.conn)
-        spec = load_ignore_spec(self.root, excludes)
-        files = list(iter_source_files(self.root, spec, scope_arg))
+        # A varredura scandir poda diretórios ignorados antes de descer. O
+        # walker histórico baseado em ``rglob`` atravessava por completo
+        # ``.venv``, ``benchrepos`` e ``node_modules`` para só então descartar
+        # cada arquivo; num projeto real isso fazia um L0 pequeno aparentar
+        # travamento. Esta é também a mesma fonte usada pelo read-repair.
+        files = sorted(scan_source_stats(
+            self.root, scopes=scope_arg, excludes=excludes))
         if workers is None:
             workers = min(INDEX_WORKERS_MAX, os.cpu_count() or 1)
         stats = {"scanned": len(files), "indexed": 0, "removed": 0, "errors": 0}
@@ -478,7 +496,9 @@ class Indexer:
             return f"arquivo grande demais ({len(data)} > {MAX_FILE_SIZE} bytes)"
         try:
             tree = get_parser(lang).parse(data)
-            extract.extract(lang, data, module_fqn_for(rel), tree)
+            extract.extract(
+                lang, data,
+                module_fqn_for(rel, root=self.root, language=lang), tree)
         except Exception as e:
             return f"{type(e).__name__}: {e}"
         return None
@@ -706,7 +726,7 @@ class Indexer:
             c_tree = get_parser("c").parse(data)
             if not c_tree.root_node.has_error:
                 lang, tree = "c", c_tree
-        syms, refs = _extract_file(lang, data, rel, tree, h)
+        syms, refs = _extract_file(lang, data, rel, tree, h, self.root)
         status = "partial" if tree.root_node.has_error else "ok"
         return ("changed", row, st, lang, h, syms, refs, status)
 
@@ -772,9 +792,11 @@ class Indexer:
                     track.remove(fqn)
 
         ordinals: dict[tuple[str, str], int] = {}
+        signature_ordinals: dict[tuple[str, str, str], int] = {}
         # FQN não é identidade: overloads e declarações homônimas válidas têm o
-        # mesmo FQN e são distinguidos pelo ordinal do UID. Manter todos evita
-        # colapsar parent_id e ownership de refs no primeiro overload.
+        # mesmo FQN. Métodos/funções usam a assinatura, estável quando um irmão
+        # é inserido ou reordenado; duplicatas sintaticamente idênticas recebem
+        # um sufixo ordinal defensivo. Os demais kinds conservam o ordinal.
         fqn_to_syms: dict[str, list[tuple[Sym, str]]] = {}
         uid_by_sym: dict[int, str] = {}
         all_uids: set[str] = set()
@@ -783,7 +805,14 @@ class Indexer:
         for s in syms:
             ordinal = ordinals.get((s.fqn, s.kind), 0)
             ordinals[(s.fqn, s.kind)] = ordinal + 1
-            uid = symbol_uid(rel, s.fqn, s.kind, ordinal)
+            if s.kind in {"function", "method"} and s.signature:
+                sig_key = (s.fqn, s.kind, s.signature)
+                sig_ordinal = signature_ordinals.get(sig_key, 0)
+                signature_ordinals[sig_key] = sig_ordinal + 1
+                discriminator = f"signature:{s.signature}\x00{sig_ordinal}"
+            else:
+                discriminator = f"ordinal:{ordinal}"
+            uid = symbol_uid(rel, s.fqn, s.kind, discriminator)
             fqn_to_syms.setdefault(s.fqn, []).append((s, uid))
             uid_by_sym[id(s)] = uid
             all_uids.add(uid)

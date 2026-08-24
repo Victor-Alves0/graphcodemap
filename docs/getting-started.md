@@ -8,10 +8,12 @@ about your codebase in about five minutes.
 GraphCodeMap needs **Python 3.10+**. The parser is C (via tree-sitter), so the
 hot path is not Python.
 
-Install the small local-first core:
+GraphCodeMap is not published on PyPI yet. Install it from a checkout:
 
 ```bash
-pip install graphcodemap
+git clone https://github.com/Victor-Alves0/graphcodemap.git
+cd graphcodemap
+python -m pip install -e "."
 ```
 
 Then let GraphCodeMap detect the repository languages, reuse tools already
@@ -25,13 +27,13 @@ Nothing is downloaded without `--install` and confirmation. For CI, use
 `--install --yes`. Direct downloads have fixed URLs and SHA-256; package-manager
 installs use fixed versions. Paths are stored in the user's local GraphCodeMap
 configuration, never in the analyzed repository. The shortcut
-`pip install "graphcodemap[l1]"` remains available for Python/Jedi only.
+`python -m pip install -e ".[l1]"` is available for Python/Jedi only.
 
 Optional extras, installed only when you need them:
 
 ```bash
-pip install "graphcodemap[mcp]"   # MCP server for AI agents
-pip install "graphcodemap[dev]"   # test tooling (pytest)
+python -m pip install -e ".[mcp]"   # MCP server for AI agents
+python -m pip install -e ".[dev]"   # test tooling (pytest)
 ```
 
 The distribution is `graphcodemap`; the importable Python package is `codegraph`

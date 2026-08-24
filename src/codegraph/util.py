@@ -1,7 +1,9 @@
 """Hashing e identidade de símbolos.
 
-Identidade (docs/DESIGN.md §1.1): symbol_id = hash(path, fqn, kind, ordinal).
-Estável sob edições de corpo/linhas; mover de arquivo quebra a identidade (v1).
+Identidade (docs/DESIGN.md §1.1): symbol_id = hash(path, fqn, kind,
+discriminador). Callables usam a assinatura como discriminador; os demais
+símbolos usam ordinal. Assim inserir um overload não troca a identidade dos
+overloads existentes. Mover de arquivo continua quebrando a identidade (v1).
 """
 
 from __future__ import annotations
@@ -24,8 +26,8 @@ def byte_column(source: bytes, offset: int) -> int:
     return offset - line_start
 
 
-def symbol_uid(path: str, fqn: str, kind: str, ordinal: int) -> str:
-    key = f"{path}\x00{fqn}\x00{kind}\x00{ordinal}".encode("utf-8")
+def symbol_uid(path: str, fqn: str, kind: str, discriminator: str | int) -> str:
+    key = f"{path}\x00{fqn}\x00{kind}\x00{discriminator}".encode("utf-8")
     return hashlib.blake2b(key, digest_size=10).hexdigest()
 
 

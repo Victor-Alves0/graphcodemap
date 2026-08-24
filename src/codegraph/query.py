@@ -2429,7 +2429,13 @@ class QueryEngine:
     # -- tools de alto nível (orientadas a agentes) ---------------------------
 
     def _symbols_in_paths(self, paths: list[str], *, include_id: bool = False) -> list[dict]:
-        """Símbolos de TOPO declarados nos arquivos dados (o que 'mudou')."""
+        """Símbolos declarados nos arquivos dados (o que pode ter mudado).
+
+        O impacto por arquivo precisa semear também membros e declarações
+        aninhadas: chamadas apontam para o método/função, não necessariamente
+        para a classe de topo que o contém. O símbolo sintético ``file`` fica
+        fora porque não representa uma declaração do programa.
+        """
         out: list[dict] = []
         for rel in paths:
             frow = self.conn.execute(
@@ -2438,7 +2444,8 @@ class QueryEngine:
                 continue
             for s in self.conn.execute(
                 "SELECT id, fqn, kind, start_line FROM symbols WHERE file_id=? "
-                    "AND parent_id IS NULL AND kind<>'file' ORDER BY start_line",
+                    "AND kind<>'file' "
+                    "ORDER BY start_line, start_col, fqn, kind, id",
                     (frow["id"],)):
                 item = {"fqn": s["fqn"], "kind": s["kind"], "path": rel,
                         "start_line": s["start_line"]}

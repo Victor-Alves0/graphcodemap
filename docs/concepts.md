@@ -31,11 +31,13 @@ used as the target of import/asset edges).
 Symbol identity is deliberately stable:
 
 ```
-symbol_id = hash(path, fqn, kind, ordinal)
+symbol_id = hash(path, fqn, kind, discriminator)
 ```
 
 - `fqn` is the fully-qualified name within the module (`auth.TokenService.validate`).
-- `ordinal` distinguishes overloads/redefinitions with the same fqn+kind in one file.
+- callable signatures distinguish overloads without tying identity to sibling
+  order; an ordinal remains the fallback for non-callable homonyms and exact
+  duplicate signatures.
 - **The body and line numbers are *not* part of the identity.** Editing a
   function's body or moving it down the file keeps the same `symbol_id` — so
   cached L3 descriptions and cross-file edges survive a routine edit.

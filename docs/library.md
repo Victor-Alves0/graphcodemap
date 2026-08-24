@@ -51,10 +51,10 @@ cg.explain_symbol(selector)
 cg.suggest_files_to_read(task, limit=8)
 cg.overview(scope=None, token_budget=2000)
 cg.communities(limit=20, min_size=3)
-cg.dataflow(selector, depth=2)
+cg.data_flow(selector, depth=2)
 cg.taint(scope=None, entry=None, depth=4)
 cg.reaches(selector, sink="http", via=None, depth=8)
-cg.visualize(mode=None, symbol=None, depth=3, ...)   # returns (data, html)
+cg.visualize(mode=None, symbol=None, depth=3, ...)   # returns (data, envelope)
 cg.describe(target, refresh=False, llm=None)
 cg.stats()
 cg.doctor(failed_limit=20)
@@ -133,9 +133,10 @@ def review(repo: str, diff_paths: list[str], api_key: str) -> list[str]:
         data, env = cg.change_impact(",".join(diff_paths))
         for row in data["impacted"]:
             findings.append(f'{row["fqn"]} may be affected [{row["confidence"]}]')
-        # any untrusted-input path reaching a SQL sink without a sanitizer?
-        for entry in diff_paths:
-            _sym, res, _env = cg.reaches(entry, sink="sql")
+        # any affected callable reaching a SQL sink without a sanitizer?
+        # reaches() accepts a symbol selector, not a filesystem path.
+        for changed in data["impacted"]:
+            _sym, res, _env = cg.reaches(changed["fqn"], sink="sql")
             for path in res["paths"]:
                 if not path["via_present"]:      # no sanitizer on the chain
                     findings.append(

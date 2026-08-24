@@ -49,7 +49,9 @@ The essential tables:
 - **`files`** — `path` (relative to root), `language`, `content_hash`, `size`,
   `mtime`, `parse_status` (`ok`/`partial`/`failed`), `indexed_at`. The
   `content_hash` is the anchor of the whole freshness guarantee.
-- **`symbols`** — `id` = `hash(path, fqn, kind, ordinal)`, `file_id`, `parent_id`
+- **`symbols`** — `id` = `hash(path, fqn, kind, discriminator)`, where callable
+  signatures are stable discriminators and other kinds use an ordinal;
+  `file_id`, `parent_id`
   (containment), `kind`, `name`, `fqn`, `signature`, `doc`, span, `body_hash`
   (invalidates L3), `visibility`, `rank` (PageRank). Plus a `symbols_fts` FTS5
   index over name/fqn/doc.

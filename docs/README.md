@@ -1,5 +1,9 @@
 # GraphCodeMap Documentation
 
+Start with the **[Product Contract](PRODUCT_CONTRACT.md)**. It is the canonical
+definition of the Java/Python phase-one product and overrides older roadmap or
+benchmark language when they conflict.
+
 Everything you need to index a codebase, query its structure, and wire it into an
 AI agent — organized from first run to internals.
 

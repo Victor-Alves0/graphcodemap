@@ -68,7 +68,8 @@ when relevant. It never presents partial recall as complete.
 ## What about symbol identity when I move code?
 
 Editing a function's body or moving it within a file **preserves** its identity
-(the id is `hash(path, fqn, kind, ordinal)`, independent of the body). Moving it to
+(the id is `hash(path, fqn, kind, discriminator)`, with callable signatures
+independent of the body and sibling order). Moving it to
 a *different file* breaks identity — it becomes delete + add — because the path is
 part of the id. This is an accepted, documented v1 trade-off.
 

@@ -2,10 +2,10 @@
 
 # GraphCodeMap
 
-**A code-to-graph engine that AI agents can actually trust.**
+**A live Java/Python code map for developers and AI agents.**
 
-Symbols, call graph, references, impact, dataflow and taint over any codebase —
-*local-first, staleness-aware, model-agnostic.*
+Symbols, call graph, references, impact, dataflow and taint with explicit
+coverage and uncertainty — *local-first, staleness-aware, model-agnostic.*
 
 [![CI](https://github.com/Victor-Alves0/graphcodemap/actions/workflows/tests.yml/badge.svg)](https://github.com/Victor-Alves0/graphcodemap/actions/workflows/tests.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%E2%80%93%203.12-blue)](https://www.python.org/)
@@ -14,6 +14,7 @@ Symbols, call graph, references, impact, dataflow and taint over any codebase �
 
 [Quick start](#quick-start) ·
 [Why it exists](#the-problem) ·
+[Product contract](docs/PRODUCT_CONTRACT.md) ·
 [Documentation](docs/README.md) ·
 [When to use it](#when-to-use-it-and-when-not-to) ·
 [Benchmarks](evals/RESULTS.md) ·
@@ -44,11 +45,11 @@ invariant:
 
 Two consequences make it trustworthy where other indexes are not:
 
-- **Freshness is checked at answer time.** Each row carries the content-hash of
-  the file it came from. Relevant paths are read-repaired before answering,
-  while watcher and full-sweep backstops discover new/deleted files. Detected
-  drift is re-indexed or returned with an explicit freshness warning; broader
-  multiprocess stress remains a published maturity gate.
+- **Freshness is checked at answer time.** Each row carries the content hash of
+  the file it came from. Relevant paths use read-repair, while watcher and
+  full-sweep backstops discover new/deleted files. The current fast path still
+  trusts unchanged size+mtime; strict content verification is an explicit
+  product-reset gate, not a completed guarantee.
 - **Every fact declares its confidence.** Call edges are labeled `certain`,
   `inferred`, or `possible`. Static-analysis limits are stated, never hidden.
   Transitive queries propagate the *minimum* confidence along the path.
@@ -58,10 +59,17 @@ point. An agent that can trust a `certain` answer stops re-verifying by reading
 files, which is where the graph turns into both a correctness win and a token
 win.
 
+> **Product reset:** Java and Python are the phase-one focus. Other extractors
+> remain experimental compatibility surfaces until they pass the same product
+> gates. The canonical scope, graph vocabulary, acceptance criteria and current
+> gaps are in the [Product Contract](docs/PRODUCT_CONTRACT.md).
+
 ## Quick start
 
 ```bash
-pip install graphcodemap
+git clone https://github.com/Victor-Alves0/graphcodemap.git
+cd graphcodemap
+python -m pip install -e ".[mcp,l1]"
 
 codegraph setup --install         # detect languages; show + confirm a pinned plan
 codegraph index . --l1            # build the index and promote semantic edges
@@ -77,15 +85,15 @@ codegraph visualize --mode impact --symbol validate_token   # investigate as HTM
 Point any MCP-capable agent at your repo:
 
 ```bash
-pip install graphcodemap
 codegraph mcp --install           # prepares MCP + repo languages, then starts
 ```
 
-`pip install graphcodemap` remains the lightweight L0-only install. It is useful,
-but semantic call edges cannot become `certain` until their resolver is ready.
+The distribution is not published on PyPI yet, so the documented path is an
+editable install from this checkout. The core remains useful without L1, but
+semantic call edges cannot become `certain` until their resolver is ready.
 `codegraph setup` first reuses installed/repo-local tools, then offers an
 explicit versioned installation; it never downloads merely because a repo was
-opened. `pip install "graphcodemap[l1]"` remains the direct Python/Jedi shortcut.
+opened. `python -m pip install -e ".[l1]"` is the direct Python/Jedi shortcut.
 See [Languages & Resolvers](docs/languages.md#activating-a-resolver).
 
 ```jsonc
@@ -179,12 +187,14 @@ why in that order: **[docs/ROADMAP.md](docs/ROADMAP.md)**.
 
 ## Languages
 
-**23 dedicated extractors** (refined fqn / imports / calls / inheritance):
+**Phase-one product languages: Java and Python.** The repository also contains
+23 dedicated extractors (refined fqn / imports / calls / inheritance):
 Python, TypeScript/TSX, JavaScript, Rust, Go, Java, Kotlin, C#, C, C++/CUDA/Metal,
 PHP, Ruby, Lua/Luau, Swift, Scala, Clojure/ClojureScript, **Terraform/HCL**, and
-the web tier HTML + CSS/SCSS. A **generic tier** gives structural L0 to dozens
-more grammars (Zig, Elixir, Vue, Svelte, SQL, Bash, Dart…). Dataflow & taint
-cover all 19 dedicated code-language identifiers; 18 are flow-sensitive.
+the web tier HTML + CSS/SCSS. These additional languages are experimental until
+they pass the same end-to-end gates as Java/Python. A **generic tier** gives
+structural L0 to dozens more grammars (Zig, Elixir, Vue, Svelte, SQL, Bash,
+Dart…). Implementation presence is not a claim of product parity.
 → **[Languages & Resolvers](docs/languages.md)**
 
 ## Documentation
@@ -192,6 +202,7 @@ cover all 19 dedicated code-language identifiers; 18 are flow-sensitive.
 | Guide | What's inside |
 |---|---|
 | **[Getting Started](docs/getting-started.md)** | Install, index, your first queries |
+| **[Product Contract](docs/PRODUCT_CONTRACT.md)** | Canonical scope, required graph and acceptance gates |
 | **[Core Concepts](docs/concepts.md)** | The graph model, confidence tiers, the freshness guarantee, layers L0–L3 |
 | **[CLI Reference](docs/cli.md)** | Every command, flag, and output format |
 | **[Agents & MCP](docs/mcp.md)** | The 20 MCP tools and the response envelope |
@@ -206,15 +217,14 @@ cover all 19 dedicated code-language identifiers; 18 are flow-sensitive.
 
 ## Status
 
-**Alpha (v0.1.0).** The main query surfaces are implemented. The Round 29 Java
-operational gate is **1,845 passed, 28 skipped**, with no expected failures;
-PetClinic completes cold and warm JDTLS runs with stable output. The separately
-versioned Round 27 semantic evidence remains **1,778 passed, 27 skipped**. CI spans Linux and Windows on
-Python 3.10–3.12. Language depth and
-external validation are still uneven; see the honest
-[maturity matrix](docs/MATURITY.md) and the [v0.2 gates](docs/ROADMAP.md). It has
-not yet been battle-tested by broad real-world usage — expect rough edges, and
-please [open an issue](https://github.com/Victor-Alves0/graphcodemap/issues).
+**Alpha (v0.1.0), undergoing a product reset.** Symbol extraction, a partial
+call graph, incremental indexing and on-demand dataflow exist. The required
+phase-one graph is not complete yet: parameters/locals and persistent
+`reads`/`writes`/`flows_to` remain open, semantic readiness is uneven, and broad
+real-world onboarding has not passed. Historical benchmark results are retained
+as bounded subsystem evidence, not as a declaration that the product is ready.
+See the [Product Contract](docs/PRODUCT_CONTRACT.md) and
+[maturity matrix](docs/MATURITY.md).
 
 ## Contributing
 

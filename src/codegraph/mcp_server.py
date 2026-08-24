@@ -331,7 +331,11 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
         def run():
             d = engine.doctor()
             from .query import Envelope
-            return agent.build(render.doctor(d), Envelope(), results=[d])
+            # ``d["confidence"]`` is the doctor's confidence distribution
+            # (a dict), not an edge-level confidence label.  Do not ask the
+            # generic result aggregator to interpret this status payload.
+            return agent.build(
+                render.doctor(d), Envelope(), results=[d], confidence="n/a")
         return guard(run)
 
     return mcp

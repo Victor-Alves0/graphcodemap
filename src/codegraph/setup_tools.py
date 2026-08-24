@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable
 
-from .indexer import iter_source_files
+from .indexer import scan_source_stats
 from .languages import language_for
 from .tool_config import (apply_saved_environment, config_path, save,
                           tools_dir as default_tools_dir)
@@ -177,7 +177,7 @@ def normalize_targets(values: Iterable[str]) -> list[str]:
 def detect_targets(root: str | Path) -> list[str]:
     root = Path(root).resolve()
     languages = {
-        language_for(rel) for rel in iter_source_files(root)
+        language_for(rel) for rel in scan_source_stats(root)
     }
     out = []
     for target, family in TARGET_LANGUAGES.items():

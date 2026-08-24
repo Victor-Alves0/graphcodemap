@@ -12,7 +12,7 @@ import textwrap
 
 import pytest
 
-from codegraph import CodeGraph, agent, render
+from codegraph import CodeGraph, agent
 from codegraph.query import Envelope, _is_test_path, _paths_from_target
 
 
@@ -304,3 +304,18 @@ def test_mcp_error_path_is_structured(tmp_path):
     _content, structured = _call(srv, "symbol_info", {"symbol": "does_not_exist"})
     assert structured["text"].startswith("erro:")
     assert structured["confidence"] == "n/a"
+
+
+def test_mcp_doctor_returns_structured_status_without_aggregating_distribution(
+        tmp_path):
+    from codegraph.mcp_server import build_server
+
+    (tmp_path / "a.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    srv = build_server(tmp_path, watch=False)
+
+    _content, structured = _call(srv, "doctor", {})
+
+    assert structured["confidence"] == "n/a"
+    assert len(structured["results"]) == 1
+    assert isinstance(structured["results"][0]["confidence"], dict)
+    assert "saúde do índice" in structured["text"]

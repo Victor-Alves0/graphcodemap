@@ -1,8 +1,8 @@
 # Product maturity
 
-GraphCodeMap supports many languages, but **support does not mean parity**. This
-page defines what each level promises and is the source of truth for deciding
-whether a language or subsystem is ready.
+The [Product Contract](PRODUCT_CONTRACT.md) is the canonical source of truth.
+GraphCodeMap contains many extractors, but phase one focuses only on Java and
+Python. Implementation presence does not mean product support or parity.
 
 ## Language levels
 
@@ -25,9 +25,10 @@ corpus. The product labels above are promotion gates, not a mandatory
 chronological experiment order. The precise `E0`–`E4` and `V0`–`V4` mapping is
 defined in the [language maturity playbook](LANGUAGE_MATURITY_PLAYBOOK.md#evidence-axes-and-promotion-levels).
 
-## Current snapshot
+## Current reset snapshot
 
-Generated from `codegraph capabilities` after the August 2026 consolidation:
+Generated from code inspection, focused contracts and black-box dogfooding on
+2026-08-24:
 
 - 46 recognized languages;
 - 23 dedicated extractors;
@@ -36,14 +37,12 @@ Generated from `codegraph capabilities` after the August 2026 consolidation:
 - 19 L1 adapters: 11 with a live smoke test and 5 with real-repository evidence;
 - 5 languages with external security evidence.
 
-The strongest current language profiles are Python, JavaScript, PHP and Java.
-Java's Round 27 profile is operationally eligible: its corrected Juliet JDTLS
-overlay completed with 732/732 files, 4,408 `certain` promotions and zero
-warnings/errors. Ruby has
-real-application security evidence but its L1 adapter is only
-wired. Go has real-repository L1 evidence but still needs a labeled security
-corpus. The remaining languages must not be described as equivalent to those
-profiles.
+Those counts describe code breadth, not a completed product. Java and Python
+both have dedicated extraction, optional semantic linking and on-demand
+dataflow. Neither yet has the required persistent graph of parameters, locals,
+reads, writes and value flows. Java has stronger bounded security evidence;
+Python has simpler semantic setup through Jedi. Neither is promoted as a
+complete phase-one language until G0–G5 of the Product Contract pass.
 
 Run `codegraph capabilities` and locate the language row for the current human-
 readable view.
@@ -52,11 +51,11 @@ readable view.
 
 | Subsystem | Current state | Exit criterion |
 |---|---|---|
-| Graph and freshness | Strong incremental core; policy-change cleanup now covered | Multiprocess stress and no known stale-read path |
-| L0 extraction | Broad and well unit-tested | Real call-edge oracles for every Tier-A language |
-| L1 resolution | Broadly wired; Java now has locked warm workspace and clean PetClinic evidence | Live integration plus a multi-repository portfolio for every Tier A language |
-| Dataflow and taint | Round 27 Java: OWASP 902/0/0/796, Juliet CWE-23 444/0/0/444; all three pinned Java vulnerabilities are found and all three fixes clear | Add independent CVEs/frameworks rather than treating two perfect corpora as universal proof |
-| CLI, library and MCP | Main surfaces implemented | Versioned response schemas and parity contract tests |
+| Graph and freshness | Files/declarations/basic calls and incremental relinking work; same-size/same-mtime edits can evade the current fast path | Required nodes/edges, explicit skips, strict freshness and stable identities |
+| L0 extraction | Useful Java/Python declarations/imports/calls; parameters, locals and reads/writes absent | Shared Java/Python golden structural graph |
+| L1 resolution | Jedi/JDTLS materially improve impact; lifecycle/readiness is not yet atomic to readers | Explicit ready/running/partial state and real-repo canaries |
+| Dataflow and taint | Flow-sensitive engine exists on demand; Java has bounded benchmark evidence | Persist def-use/flow graph, then validate Java and Python separately |
+| CLI, library and MCP | Main surfaces exist; MCP doctor crash fixed during reset, other readiness/coverage gaps remain | Installed acceptance journey and equivalent result sets |
 | Visualization | Functional; script-breakout regression covered | Large-graph performance budget and browser smoke suite |
 | L3 descriptions | Experimental and optional | Provider-neutral quality/cost evaluation; not a v0.2 blocker |
 | Delivery | Ruff, progressive mypy, branch coverage >=75%, a six-platform test matrix and built-wheel smoke checks gate releases | Run the complete gate on the release branch and version the public response schemas |
@@ -93,8 +92,15 @@ Round 30 closes the penultimate Java gate with conservative Spring semantics.
 Explicit controller/bean/callback declarations are navigable without becoming
 fabricated call edges, MVC-bound parameters seed taint, and typed
 injection/repository dispatch fails closed when the target is undeclared. The
-local gate is **1,852 passed, 28 skipped**. The only final Java promotion gate
-is now the pinned four-repository Maven/Gradle/multi-module/Spring portfolio.
+historical Round 30 gate was **1,852 passed, 28 skipped**. The only remaining
+Java promotion gate at that checkpoint was the pinned four-repository
+Maven/Gradle/multi-module/Spring portfolio.
+
+The attempted Round 31 portfolio remains diagnostic evidence, not a promoted
+product gate. It found genuine parser, Maven-root, JDTLS isolation and target
+mapping defects, but the final same-commit replay and auditable sample artifact
+were not completed. The product reset also found core graph gaps that portfolio
+call-edge sampling did not cover. Do not describe Round 31 as closing Java.
 
 ## Rule for adding scope
 
