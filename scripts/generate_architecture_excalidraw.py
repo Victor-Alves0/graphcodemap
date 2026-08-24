@@ -207,7 +207,7 @@ def build() -> dict:
           "uma leitura comum do grafo\nread-repair + Envelope\nconfiança + freshness\ncompleteness + limites", fill=BLUE)
 
     d.box("navigation", 1680, 220, 400, 100, "Busca e navegação",
-          "find · info · refs · tree · history", fill=GREEN, body_size=14)
+          "find · refs · tree · history\nsemantic-coverage", fill=GREEN, body_size=14)
     d.box("impact", 1680, 345, 400, 100, "Impacto e investigação",
           "impact · change-impact · related-tests", fill=GREEN, body_size=14)
     d.box("reachability", 1680, 470, 400, 100, "Reachability e segurança",
@@ -286,7 +286,7 @@ def build() -> dict:
     d.box("toolchains", 2650, 270, 300, 135, "Toolchains externos",
           "JDK 21 + JDTLS\nJedi/Python\nsem instalação escondida", fill=GRAY)
     d.box("l1", 3030, 245, 455, 195, "L1 semântico · l1/*",
-          "POR QUÊ: nomes não bastam\nJDTLS (Java) · Jedi (Python)\nresolve definição/receiver/overload\npromove aresta para certain", fill=PURPLE,
+          "JDTLS (Java) · Jedi (Python)\ndefinição/receiver/interface/overload/ref\nmatriz real: Python 5/5 · Java 7/7\ncoverage explica cada fallback", fill=PURPLE,
           stroke=OPTIONAL)
     d.connect("setup-tools", "setup", "toolchains")
     d.connect("tools-l1", "toolchains", "l1")
@@ -390,7 +390,7 @@ def build() -> dict:
     gates = [
         ("g0", 2260, 1835, "G0 · Observabilidade", "PARCIAL\nestados/coverage completos", YELLOW),
         ("g1", 2680, 1835, "G1 · Grafo estrutural", "CORE + GOLDENS\nfaltam repos comuns", YELLOW),
-        ("g2", 3100, 1835, "G2 · Linking semântico", "LIFECYCLE FEITO\nfalta validar calls", YELLOW),
+        ("g2", 3100, 1835, "G2 · Linking semântico", "MATRIZ + COVERAGE + CANÁRIOS\nfalta batching/cache", YELLOW),
         ("g3", 2260, 1995, "G3 · Dataflow persistente", "def-use + fluxo\nentre funções", RED),
         ("g4", 2680, 1995, "G4 · Vulnerabilidades", "Java/Python sobre\no mesmo flow graph", RED),
         ("g5", 3100, 1995, "G5 · Aceitação", "wheel + CLI + MCP\nrepos comuns pinados", RED),
@@ -408,7 +408,7 @@ def build() -> dict:
     d.connect("g4-g5", "g4", "g5")
 
     d.box("truth", 2260, 2170, 1220, 145, "Estado honesto em 2026-08-24",
-          "Alpha structural graph: árvore física, revisões, goldens Java/Python e lifecycle L1 atômico persistem. Ainda NÃO é CPG completo: flows_to e cobertura semântica em repos comuns permanecem gates.",
+          "Alpha structural graph: goldens estruturais, lifecycle atômico e matriz semântica real 5/5 Python + 7/7 Java. Ainda NÃO é CPG completo: flows_to persistente e aceitação multi-repo permanecem gates.",
           fill=YELLOW, body_size=16)
 
     return {

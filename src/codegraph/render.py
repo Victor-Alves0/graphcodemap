@@ -109,6 +109,44 @@ def graph_history(rows, env) -> str:
     return warnings(env) + "\n".join(lines)
 
 
+def semantic_coverage(data, env) -> str:
+    lines = [
+        "cobertura semântica de callsites:",
+        f"  certain: {data['certain_sites']}/{data['total_sites']} "
+        f"({data['certain_pct']}%)  resolvidos por L1: "
+        f"{data['semantic_sites']} ({data['semantic_coverage_pct']}%)",
+        f"  fallback L0: {data['fallback_sites']}  "
+        f"sem alvo local resolvido: {data['unresolved_sites']}",
+    ]
+    lines.append(
+        "  candidatos locais: "
+        f"{data.get('semantic_sites', 0)}/"
+        f"{data.get('local_candidate_sites', 0)} resolvidos "
+        f"({data.get('local_candidate_coverage_pct', 0.0):.1f}%); "
+        f"{data.get('no_local_graph_candidate_sites', 0)} sem candidato "
+        "local persistido")
+    by_language = data.get("by_language", {})
+    if len(by_language) > 1:
+        lines.append("  por linguagem:")
+        for language, stats in by_language.items():
+            lines.append(
+                f"    {language}: {stats['semantic_sites']}/"
+                f"{stats['total_sites']} total; "
+                f"{stats['semantic_sites']}/"
+                f"{stats['local_candidate_sites']} candidatos locais "
+                f"({stats['local_candidate_coverage_pct']:.1f}%)")
+    if data["outcomes"]:
+        lines.append("  resultados: " + "  ".join(
+            f"{key}={value}" for key, value in data["outcomes"].items()))
+    if data["samples"]:
+        lines.append("  amostra do que falta:")
+        for item in data["samples"]:
+            lines.append(
+                f"    {item['path']}:{item['line']}:{item['col']} "
+                f"{item['callee']} — {item['outcome']}")
+    return warnings(env) + "\n".join(lines)
+
+
 def refs(sym, rows, env) -> str:
     lines = [f"referências a {sym['fqn']} — {len(rows)}:"]
     for r in rows:

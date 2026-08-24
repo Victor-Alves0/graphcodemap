@@ -364,6 +364,16 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
                 results=rows, confidence="certain")
         return guard(run)
 
+    @mcp.tool()
+    def semantic_coverage(sample_limit: int = 20) -> agent.Response:
+        """Cobertura L1 por callsite e motivos honestos do que não virou certain."""
+        def run():
+            data, env = engine.semantic_coverage(sample_limit=sample_limit)
+            return agent.build(
+                render.semantic_coverage(data, env), env,
+                results=[data], confidence="n/a")
+        return guard(run)
+
     return mcp
 
 

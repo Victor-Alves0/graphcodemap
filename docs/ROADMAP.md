@@ -48,8 +48,14 @@ experimental until this phase-one contract is complete. See the canonical
 
 - [x] Publish L1 edges, lifecycle and stage receipt atomically; readers keep the
   previous snapshot while refinement is running or fails fatally.
-- [ ] Cover direct/imported/typed/inherited/interface calls in both languages.
-- [ ] Report unresolved reasons and semantic coverage by applicable language.
+- [x] Cover direct/imported/typed/inherited/interface calls in focused real-
+  resolver matrices for both languages, plus Java overload selection and
+  explicit method references.
+- [x] Report semantic coverage by persisted callsite, with explicit L1, L0
+  fallback, resolver-unavailable, no-local-target and per-language/local-
+  candidate outcomes.
+- [x] Replay unmodified Flask and Spring PetClinic canaries; refine 406/515
+  (78.8%) and 340/351 (96.9%) persisted local candidates respectively.
 - [ ] Improve request batching/cache before another large portfolio replay.
 
 ### G3 — Persistent dataflow graph
@@ -81,9 +87,9 @@ interprocedural value flow belongs to G3. Historical OWASP, Juliet and real-app
 results remain valuable subsystem evidence, but they cannot promote the whole
 product or either focus language by themselves.
 
-The next micro-goal is deliberately singular: validate direct/imported/typed/
-inherited/interface semantic links on ordinary Java/Python repositories and
-quantify unresolved reasons before implementing persistent `flows_to` in G3.
+The next micro-goal is deliberately singular: replay the proven matrix against
+ordinary Java/Python repositories, quantify framework/dynamic gaps and improve
+resolver batching/cache before implementing persistent `flows_to` in G3.
 
 ## Execution policy
 

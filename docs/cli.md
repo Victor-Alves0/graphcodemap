@@ -132,6 +132,21 @@ Shows Git-aware graph revisions and the independently versioned analysis stages
 that produced them. Dirty worktrees are distinguished by repository snapshot
 hash; history records graph metadata/fingerprints, not copies of source bytes.
 
+### `semantic-coverage`
+
+```
+codegraph semantic-coverage [--samples N]
+```
+
+Reports every applicable persisted callsite as an exact L1 target, semantic
+multi-target, L0 fallback, unavailable resolver or no local semantic target.
+The last category deliberately does not guess whether the runtime cause is an
+external dependency, reflection or dynamic dispatch. `--samples` bounds the
+non-`certain` examples printed; the structured library/MCP result retains the
+aggregate counts. Output is split by language and also reports the fraction of
+persisted local graph candidates refined by L1, so build-script and external-
+library calls do not masquerade as missed local resolution.
+
 ### `overview`
 
 ```

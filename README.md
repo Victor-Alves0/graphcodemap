@@ -76,6 +76,7 @@ codegraph doctor                  # verify resolver health and % certain
 codegraph overview                # ranked map of the repo (PageRank)
 codegraph tree                    # physical folders/files, hashes and index state
 codegraph history                 # Git-aware graph and analysis-stage revisions
+codegraph semantic-coverage       # certain/fallback/unresolved callsites and why
 codegraph find validate_token     # locate symbols
 codegraph impact auth.TokenService.validate   # what breaks if I change this?
 codegraph callers auth.TokenService.validate  # who calls it (with confidence)
@@ -129,6 +130,7 @@ New here? Start with **[Getting Started](docs/getting-started.md)**.
 | *What are the subsystems here?* | `communities` |
 | *Where is every file, and is its graph current?* | `tree` |
 | *Which repository/analysis revision produced this graph?* | `history` |
+| *Which calls are semantically proven, and why not the rest?* | `semantic-coverage` |
 | *What should I read for this task?* | `suggest`, `explain` |
 | *Show me the neighborhood* | `visualize` — seeded, interactive HTML |
 
@@ -152,7 +154,7 @@ Full reference: **[CLI](docs/cli.md)** · **[MCP tools](docs/mcp.md)** · **[Lib
 - **Semantic L1 via LSP.** Promotes edges to `certain` through one generic LSP
   client; every dedicated language has a resolver wired.
   → [Languages & Resolvers](docs/languages.md)
-- **Agent-oriented MCP layer.** 22 tools returning a structured freshness/
+- **Agent-oriented MCP layer.** 23 tools returning a structured freshness/
   completeness envelope, plus high-level tools (`change_impact`,
   `find_related_tests`, `explain_symbol`…). → [MCP](docs/mcp.md)
 - **Investigative visualization.** Seeded subgraphs (neighborhood/callers/
@@ -208,9 +210,10 @@ Dart…). Implementation presence is not a claim of product parity.
 | **[Product Contract](docs/PRODUCT_CONTRACT.md)** | Canonical scope, required graph and acceptance gates |
 | **[Core Concepts](docs/concepts.md)** | The graph model, confidence tiers, the freshness guarantee, layers L0–L3 |
 | **[CLI Reference](docs/cli.md)** | Every command, flag, and output format |
-| **[Agents & MCP](docs/mcp.md)** | The 22 MCP tools and the response envelope |
+| **[Agents & MCP](docs/mcp.md)** | The 23 MCP tools and the response envelope |
 | **[Library / Host API](docs/library.md)** | Embedding GraphCodeMap in a service |
 | **[Languages & Resolvers](docs/languages.md)** | Language tiers and L1/LSP resolution |
+| **[Semantic Linking Matrix](docs/SEMANTIC_LINKING_MATRIX.md)** | Real Jedi/JDTLS call contracts and coverage outcomes |
 | **[Product Maturity](docs/MATURITY.md)** | Evidence levels, current gaps and honest parity boundaries |
 | **[Language Maturity Playbook](docs/LANGUAGE_MATURITY_PLAYBOOK.md)** | Reusable Java lessons and gates for adapting each next language |
 | **[Round 28 Real-world Feedback](docs/REAL_WORLD_FEEDBACK_ROUND28.md)** | Aethros/PetClinic findings and their Round 29 operational closure |
@@ -226,7 +229,10 @@ parameters, locals, fields/properties and persistent `contains`/`defines`/
 physical repository graph records every non-ignored folder/file, exact hashes,
 index state and Git-aware graph-stage revisions. L1 lifecycle publication is
 atomic and observable; persistent interprocedural `flows_to`, semantic-link
-coverage on ordinary repositories and broad real-world onboarding remain open.
+coverage across multiple ordinary repositories and broad real-world onboarding
+remain open. Focused real-resolver matrices currently pass 5/5 Python categories
+and 7/7 Java categories (including overload and method-reference resolution).
+Flask/PetClinic canaries refine 78.8%/96.9% of persisted local call candidates.
 Historical benchmark results are retained
 as bounded subsystem evidence, not as a declaration that the product is ready.
 See the [Product Contract](docs/PRODUCT_CONTRACT.md) and

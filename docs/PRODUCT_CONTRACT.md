@@ -132,18 +132,25 @@ The existing product has a useful but smaller foundation:
 - callers, callees and symbol impact over the call graph;
 - Java/Python flow-sensitive dataflow and taint computed on demand;
 - optional semantic linking through JDTLS and Jedi, with an observable lifecycle
-  and atomic publication that preserves the previous snapshot on fatal failure.
+  and atomic publication that preserves the previous snapshot on fatal failure;
+- focused real-resolver linking matrices passing direct, imported, typed,
+  inherited and interface calls in Python/Java, plus Java overload selection
+  and method references;
+- persisted per-callsite semantic coverage outcomes exposed through library,
+  CLI and MCP.
+- ordinary Flask/PetClinic canaries with separate total-callsite and persisted-
+  local-candidate denominators.
 
 It does **not** yet satisfy the entire required graph:
 
 - `flows_to` is not yet a persistent whole-repository graph, and `returns`
   currently covers only structurally provable simple value returns;
 - dataflow reparses files on demand and is not reusable graph state;
-- common packaged Python `src/` identity passes a focused structural canary but
-  still needs broader ordinary-repository validation;
+- common packaged Python `src/` identity and semantic linking have one ordinary
+  Flask canary, but product acceptance still requires a second Python repo;
 - semantic refinement can be slow and is not the default library path;
-- semantic readiness is exposed consistently, while unresolved-reason and
-  coverage reporting remain incomplete;
+- semantic readiness and generic callsite outcomes are exposed consistently,
+  while broader framework/dynamic reason precision remains incomplete;
 - security validation is much stronger for Java than Python.
 
 Therefore the honest product label is **alpha structural graph**, not a complete

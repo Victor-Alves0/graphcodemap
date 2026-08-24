@@ -91,6 +91,9 @@ class CodeGraph:
     def graph_history(self, limit: int = 20, git_commit: str | None = None):
         return self.query.graph_history(limit=limit, git_commit=git_commit)
 
+    def semantic_coverage(self, sample_limit: int = 20):
+        return self.query.semantic_coverage(sample_limit=sample_limit)
+
     def visualize(self, mode: str | None = None, *, level: str | None = None,
                   scope: str | None = None, top: int = 250,
                   symbol: str | None = None, depth: int = 3,

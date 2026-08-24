@@ -211,6 +211,50 @@ def test_jdtls_method_reference_cannot_promote_class(tmp_path):
         graph.close()
 
 
+def test_jdtls_empty_definition_promotes_unique_java_method_reference(tmp_path):
+    """JDTLS vazio usa somente a referência explícita com alvo L0 único."""
+    (tmp_path / "Widget.java").write_text(
+        "class Widget { static String label() { return \"ok\"; } }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "App.java").write_text(
+        "class App { java.util.function.Supplier<String> maker = "
+        "Widget::label; }\n",
+        encoding="utf-8",
+    )
+    graph = CodeGraph(tmp_path)
+    try:
+        graph.index()
+        root = graph.indexer.root
+        resolver = _bare_resolver(root)
+        resolver.languages = ("java",)
+        resolver.language_id = "java"
+        resolver.cmd_name = "jdtls"
+        resolver._ok = resolver._ready = True
+        resolver._opened = set()
+        resolver._semantic_sites = resolver._semantic_hits = 0
+        resolver._notify = lambda *_a, **_k: None
+        resolver.proc = type("Proc", (), {"poll": lambda self: None})()
+        resolver._definition = lambda *_a: []
+        file_id = graph.indexer.conn.execute(
+            "SELECT id FROM files WHERE path='App.java'").fetchone()["id"]
+
+        promoted = resolver.refine_file(
+            graph.indexer.conn, root, "App.java", file_id)
+
+        edge = graph.indexer.conn.execute(
+            "SELECT e.confidence, e.resolver, s.fqn FROM edges e "
+            "JOIN symbols s ON s.id=e.dst WHERE e.kind='calls'"
+        ).fetchone()
+        assert promoted == 1
+        assert dict(edge) == {
+            "confidence": "certain", "resolver": "l1",
+            "fqn": "Widget.label",
+        }
+    finally:
+        graph.close()
+
+
 def test_workspace_configuration_has_one_result_per_requested_item(tmp_path):
     r = _bare_resolver(tmp_path)
     got = r._server_request_result({

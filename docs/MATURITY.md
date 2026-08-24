@@ -54,7 +54,7 @@ readable view.
 |---|---|---|
 | Graph and freshness | Physical folders/files, exact hashes, per-file incremental relinking and Git-aware stage revisions work | Broader ordinary-repository proof and public schema versioning |
 | L0 extraction | Shared Java/Python parameters, locals, fields/properties, containment, definitions, reads/writes and simple returns persist; focused golden canaries cover Python packaging and Java lexical shadowing | Broader ordinary-repository canaries and persistent `flows_to` in G3 |
-| L1 resolution | Lifecycle is explicit and publication is atomic; readers keep the prior snapshot during running/fatal failure | Direct/imported/typed/inherited/interface acceptance plus real-repo coverage summaries |
+| L1 resolution | Lifecycle is atomic; focused real-resolver matrices pass 5/5 Python and 7/7 Java categories; Flask/PetClinic refine 78.8%/96.9% of persisted local candidates | A second ordinary repo per language, finer dynamic reasons and batching/cache performance |
 | Dataflow and taint | Flow-sensitive engine exists on demand; Java has bounded benchmark evidence | Persist def-use/flow graph, then validate Java and Python separately |
 | CLI, library and MCP | Main surfaces exist; MCP doctor crash fixed during reset, other readiness/coverage gaps remain | Installed acceptance journey and equivalent result sets |
 | Visualization | Functional; script-breakout regression covered | Large-graph performance budget and browser smoke suite |

@@ -84,7 +84,7 @@ The design intent: an agent reads `confidence: "certain"` and `fresh: true` and
 can **stop** — no re-reading files to double-check. That is where the graph turns
 into both a correctness win and a token win.
 
-## The 22 tools
+## The 23 tools
 
 ### Core navigation
 
@@ -97,6 +97,7 @@ into both a correctness win and a token win.
 | `ego_graph` | The immediate typed neighborhood of a symbol. |
 | `repository_tree` | Physical folders/files, exact hashes, language and index state. |
 | `graph_history` | Git-aware repository snapshots and per-stage graph versions. |
+| `semantic_coverage` | Per-callsite L1 coverage, L0 fallback and unresolved reasons. |
 
 ### Call graph & impact
 

@@ -26,7 +26,7 @@ AI agent — organized from first run to internals.
 
 - **[CLI Reference](cli.md)** — every subcommand, its flags, and the exact output
   format it prints.
-- **[Agents & MCP](mcp.md)** — the 22 MCP tools, how to register the server, and
+- **[Agents & MCP](mcp.md)** — the 23 MCP tools, how to register the server, and
   the freshness/completeness envelope every answer carries.
 - **[Library / Host API](library.md)** — embedding GraphCodeMap in a service:
   change detection, per-call LLM credentials, exclusion policy, multi-tenant
@@ -36,6 +36,8 @@ AI agent — organized from first run to internals.
 
 - **[Languages & Resolvers](languages.md)** — the three language tiers and how L1
   (LSP) resolution promotes edges to `certain`.
+- **[Semantic Linking Matrix](SEMANTIC_LINKING_MATRIX.md)** — executable
+  Java/Python call categories, real-resolver results and honest remaining gaps.
 - **[Product Maturity](MATURITY.md)** — what recognized, structural, engine and
   validated support actually promise, with the current evidence gaps.
 - **[Language Maturity Playbook](LANGUAGE_MATURITY_PLAYBOOK.md)** — the reusable

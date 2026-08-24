@@ -768,6 +768,39 @@ class LspResolver:
             prefix,
         ))
 
+    def _java_method_reference_call(self, rel: str, line1: int,
+                                    dst_name: str) -> bool:
+        """Confirma lexicalmente um site ``receiver::method`` extraído."""
+        lines = self._lines.get(rel)
+        if not lines or not (1 <= line1 <= len(lines)):
+            return False
+        segment = ((dst_name or "").replace("::", ".")
+                   .replace("->", ".").split(".")[-1].strip())
+        if not segment:
+            return False
+        return bool(re.search(
+            rf"(?:[\w.$<>\[\]]+|this|super)\s*::\s*{re.escape(segment)}\b",
+            lines[line1 - 1],
+        ))
+
+    def _java_method_reference_targets(self, conn: sqlite3.Connection,
+                                       file_id: int, edge, rel: str) -> list:
+        """Usa o único alvo local L0 quando JDTLS omite method references.
+
+        Zero ou múltiplos símbolos permanecem fallback L0: overloads e nomes
+        ambíguos não ganham certeza por conveniência.
+        """
+        if (self.cmd_name != "jdtls" or not self._java_method_reference_call(
+                rel, edge["line"], edge["dst_name"])):
+            return []
+        rows = conn.execute(
+            "SELECT DISTINCT dst FROM edges WHERE kind='calls' AND file_id=? "
+            "AND line IS ? AND col IS ? AND resolver='l0' AND dst IS NOT NULL",
+            (file_id, edge["line"], edge["col"]),
+        ).fetchall()
+        targets = [row["dst"] for row in rows]
+        return targets if len(targets) == 1 else []
+
     def _warmup(self, rel: str, edges) -> None:
         """Espera o servidor ficar pronto (indexação assíncrona) consultando a
         aresta mais representativa até responder ou estourar ready_timeout.
@@ -952,5 +985,8 @@ class LspResolver:
                 )
                 if sid is not None:
                     targets.append(sid)
+            if not locs and not targets:
+                targets = self._java_method_reference_targets(
+                    conn, file_id, e, rel)
             promoted += promote.apply(conn, file_id, e, targets)
         return promoted

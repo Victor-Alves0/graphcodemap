@@ -19,6 +19,7 @@ from .db import read_l1_lifecycle, record_current_stage
 from .indexer import (Indexer, get_index_excludes, get_index_scopes,
                       scan_source_stats, _repo_rel)
 from .languages import get_parser
+from .l1.coverage import current_semantic_coverage
 from .rank import ensure_ranks
 from .util import content_hash, like_escape
 
@@ -2696,6 +2697,12 @@ class QueryEngine:
             item["stages"] = stages
             revisions.append(item)
         return revisions, env
+
+    def semantic_coverage(self, sample_limit: int = 20):
+        """Callsite-level semantic outcomes and honest unresolved reasons."""
+        env = Envelope()
+        return current_semantic_coverage(
+            self.conn, sample_limit=max(0, min(int(sample_limit), 200))), env
 
     # -- envelope de completeness (docs/DESIGN.md §3.1) -----------------------
 

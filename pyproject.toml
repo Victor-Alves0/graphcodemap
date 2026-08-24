@@ -91,4 +91,5 @@ testpaths = ["tests"]
 cache_dir = ".codegraph/pytest-cache"
 markers = [
   "realrepo: verificação dinâmica contra repositórios reais externos; exige CODEGRAPH_REAL_REPOS",
+  "semantic_live: integração curta com resolver semântico real; opt-in via CODEGRAPH_RUN_SEMANTIC_LIVE",
 ]

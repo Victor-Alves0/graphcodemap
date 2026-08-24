@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-08-24",
+  "scope": "unmodified ordinary-repository semantic-link canaries",
+  "environment": {
+    "platform": "Windows",
+    "python_resolver": "Jedi",
+    "java_resolver": "JDTLS 1.60.0",
+    "java_runtime": "JDK 21"
+  },
+  "repositories": [
+    {
+      "name": "Flask",
+      "commit": "36e4a824f340fdee7ed50937ba8e7f6bc7d17f81",
+      "focus_language": "python",
+      "recognized_files": 131,
+      "focus_files": 83,
+      "parse_errors": 0,
+      "index_seconds": 8.31,
+      "refine_seconds": 53.86,
+      "focus_callsites": 3022,
+      "l1_certain": 406,
+      "local_graph_candidates": 515,
+      "local_candidate_coverage_pct": 78.8,
+      "l0_fallback": 109,
+      "no_local_graph_candidate": 2507
+    },
+    {
+      "name": "Spring PetClinic",
+      "commit": "f182358d02e4a68e52bdbabf55ca7800288511e7",
+      "focus_language": "java",
+      "recognized_files": 85,
+      "focus_files": 49,
+      "parse_errors": 0,
+      "index_seconds": 2.04,
+      "refine_seconds": 60.65,
+      "focus_callsites": 1529,
+      "l1_certain": 340,
+      "local_graph_candidates": 351,
+      "local_candidate_coverage_pct": 96.9,
+      "l0_fallback": 11,
+      "no_local_graph_candidate": 1178
+    }
+  ]
+}

@@ -54,6 +54,7 @@ cg.communities(limit=20, min_size=3)
 cg.repository_tree(path="", depth=4, refresh=True)
 cg.graph_history(limit=20, git_commit=None)
 cg.l1_status()                              # semantic snapshot lifecycle
+cg.semantic_coverage(sample_limit=20)       # callsite outcomes/reasons
 cg.data_flow(selector, depth=2)
 cg.taint(scope=None, entry=None, depth=4)
 cg.reaches(selector, sink="http", via=None, depth=8)

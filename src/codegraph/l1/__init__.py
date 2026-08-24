@@ -20,6 +20,7 @@ from ..db import (read_l1_lifecycle, record_current_stage,
 from ..indexer import Indexer
 from ..log import get as _get_log
 from ..rank import mark_dirty
+from .coverage import semantic_coverage
 
 log = _get_log(__name__)
 
@@ -152,6 +153,7 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
             "files": stats.get("files", 0),
             "promoted": stats.get("promoted", 0),
             "errors": stats.get("errors", 0),
+            "coverage": stats.get("coverage", {}),
         }
         write_l1_lifecycle(conn, final)
         record_current_stage(
@@ -159,6 +161,7 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
                 "files": final["files"], "promoted": final["promoted"],
                 "errors": final["errors"], "attempted": final["attempted"],
                 "unavailable": stats.get("unavailable", []),
+                "coverage": final["coverage"],
             }, commit=False)
         conn.commit()
     except BaseException as error:
@@ -389,7 +392,8 @@ def _refine_candidate(indexer: Indexer,
                     "consulte a saída original de `refine` para detalhes")
         record = {key: stats[key] for key in (
             "status", "partial", "errors", "applicable",
-            "attempted", "unavailable", "files", "promoted", "rolled_back")}
+            "attempted", "unavailable", "files", "promoted", "rolled_back",
+            "coverage")}
         # Diagnosticos do LSP podem conter caminhos absolutos. O doctor e a API
         # publica preservam o estado/acao, enquanto o detalhe fica no stdout da
         # passada que o produziu.
@@ -402,6 +406,9 @@ def _refine_candidate(indexer: Indexer,
             (json.dumps(record, ensure_ascii=False),))
 
     if not resolvers:
+        stats["coverage"] = semantic_coverage(
+            conn, applicable=applicable, attempted=(),
+            unavailable=unavailable)
         persist_last_run()
         return stats
     roots_used = set()
@@ -533,5 +540,8 @@ def _refine_candidate(indexer: Indexer,
     if stats["promoted"]:
         mark_dirty(conn)
         mark_community_dirty(conn)
+    stats["coverage"] = semantic_coverage(
+        conn, applicable=applicable, attempted=stats["attempted"],
+        unavailable=unavailable)
     persist_last_run()
     return stats

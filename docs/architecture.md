@@ -37,7 +37,12 @@ is the only writer.
 - **L1 — semantic.** An async LSP/jedi resolver promotes edges to `certain`.
   Its lifecycle is `not_started`/`running`/`complete`/`partial`; reset,
   promotions, final status and stage receipt publish in one transaction, while
-  readers retain the previous committed snapshot. Optional; see
+  readers retain the previous committed snapshot. A persisted callsite report
+  distinguishes exact/multi-target L1, L0 fallback, unavailable resolver and
+  no local target. Focused real-resolver matrices exercise direct, imported,
+  typed, inherited and interface calls in both focus languages, plus Java
+  overloads and method references. The report separates all syntactic calls
+  from callsites with a persisted local candidate. Optional; see
   [Languages & Resolvers](languages.md).
 - **L2 — graph metrics.** PageRank (centrality) and Louvain (communities),
   recomputed lazily.

@@ -278,6 +278,12 @@ def cmd_history(args) -> int:
     return 0 if rows else 1
 
 
+def cmd_semantic_coverage(args) -> int:
+    data, env = _engine(args).semantic_coverage(sample_limit=args.samples)
+    print(render.semantic_coverage(data, env))
+    return 0
+
+
 def cmd_dataflow(args) -> int:
     data, env = _engine(args).data_flow(args.symbol, depth=args.depth)
     print(render.dataflow(data, env))
@@ -639,6 +645,13 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--git-commit", default=None,
                     help="filtra por commit Git completo")
     sp.set_defaults(fn=cmd_history)
+
+    sp = sub.add_parser(
+        "semantic-coverage",
+        help="cobertura L1 por callsite e motivos de fallback/unresolved")
+    sp.add_argument("--samples", type=int, default=20,
+                    help="máximo de callsites não-certain exibidos")
+    sp.set_defaults(fn=cmd_semantic_coverage)
 
     sp = sub.add_parser("dataflow", help="fluxo de dados: para onde vão os parâmetros")
     sp.add_argument("symbol", help="fqn da função")
