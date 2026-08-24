@@ -4,6 +4,10 @@ Start with the **[Product Contract](PRODUCT_CONTRACT.md)**. It is the canonical
 definition of the Java/Python phase-one product and overrides older roadmap or
 benchmark language when they conflict.
 
+For a visual tour, open the editable
+**[architecture map](graphcodemap-architecture.excalidraw)** in Excalidraw. It
+shows the end-to-end pipeline, why each layer exists and which gates remain open.
+
 Everything you need to index a codebase, query its structure, and wire it into an
 AI agent — organized from first run to internals.
 
