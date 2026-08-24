@@ -122,7 +122,10 @@ required by its rule.
 
 The existing product has a useful but smaller foundation:
 
-- persistent files, declarations and generic edges in SQLite;
+- persistent physical folders/files, exact hashes and indexing states in SQLite;
+- persistent Java/Python declarations, parameters, locals, fields/properties and
+  structural `contains`, `defines`, `reads`, `writes` and simple `returns` edges;
+- Git-aware repository snapshots and independently versioned analysis stages;
 - Java/Python dedicated extraction for major declarations, imports, inheritance
   and many calls;
 - basic incremental delete/relink contracts;
@@ -130,11 +133,10 @@ The existing product has a useful but smaller foundation:
 - Java/Python flow-sensitive dataflow and taint computed on demand;
 - optional semantic linking through JDTLS and Jedi.
 
-It does **not** yet satisfy the required graph:
+It does **not** yet satisfy the entire required graph:
 
-- parameters and local variables are not persistent nodes;
-- `contains`, `defines`, `reads`, `writes`, `returns` and `flows_to` are not a
-  persistent whole-repository graph;
+- `flows_to` is not yet a persistent whole-repository graph, and `returns`
+  currently covers only structurally provable simple value returns;
 - dataflow reparses files on demand and is not reusable graph state;
 - common packaged Python `src/` identity was corrected during the reset, but
   still needs broader real-repository validation;
@@ -231,7 +233,24 @@ differ. Determinism compares that projection and excludes volatile timestamps.
 For an edit made while the watcher is healthy, convergence must occur before a
 subsequent query returns a `fresh` result. Without a watcher, the query must
 perform or request verification before claiming freshness. The implementation
-does not meet this strict rule yet; same-size/same-mtime detection is a G1 gate.
+verifies exact bytes during read-repair, including same-size/same-mtime edits;
+watcher events and metadata remain acceleration hints.
+
+## Repository and graph revision truth
+
+The physical repository graph is distinct from the semantic code graph. It
+records every non-ignored directory, regular file and symbolic link, including
+assets and unsupported source formats, with path, type, exact content hash and
+index state. Editing one file replaces only facts owned by that file; deletion
+removes its physical node and invalidates the semantic facts it owned.
+
+Each indexing/refinement step records a graph revision tied to the current Git
+commit when available. Dirty worktrees are identified by a deterministic
+snapshot hash, so several graph states can coexist conceptually within one Git
+commit. Stages (`filesystem`, `l0`, `l1`, L2 metrics, `l3`, `dataflow`) carry
+their own version, status and artifact hash. Revisions store reproducibility
+metadata and graph fingerprints, not historical copies of source bytes; Git or
+another VCS remains responsible for reconstructing old clean source snapshots.
 
 G0 is complete only when this state model appears in the stored schema and in
 library, CLI and MCP responses. G1 must add versioned shared Java/Python golden

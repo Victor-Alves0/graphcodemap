@@ -338,6 +338,29 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
                 render.doctor(d), Envelope(), results=[d], confidence="n/a")
         return guard(run)
 
+    @mcp.tool()
+    def repository_tree(path: str = "", depth: int = 4,
+                        refresh: bool = True) -> agent.Response:
+        """Árvore física: onde ficam pastas/arquivos, hash e estado de índice."""
+        def run():
+            data, env = engine.repository_tree(
+                path=path, depth=depth, refresh=refresh)
+            return agent.build(
+                render.repository_tree(data, env), env,
+                results=data["nodes"], confidence="certain")
+        return guard(run)
+
+    @mcp.tool()
+    def graph_history(limit: int = 20,
+                      git_commit: str | None = None) -> agent.Response:
+        """Revisões do grafo, snapshot/commit Git e estado de cada camada."""
+        def run():
+            rows, env = engine.graph_history(limit=limit, git_commit=git_commit)
+            return agent.build(
+                render.graph_history(rows, env), env,
+                results=rows, confidence="certain")
+        return guard(run)
+
     return mcp
 
 

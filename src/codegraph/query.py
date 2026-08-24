@@ -15,11 +15,12 @@ from dataclasses import dataclass, field
 
 from . import explain
 from .community import ensure_communities
+from .db import record_current_stage
 from .indexer import (Indexer, get_index_excludes, get_index_scopes,
                       scan_source_stats, _repo_rel)
 from .languages import get_parser
 from .rank import ensure_ranks
-from .util import like_escape
+from .util import content_hash, like_escape
 
 CALL_KINDS = ("calls",)
 # Kinds que não são código declarado: numerosos e pouco informativos numa busca
@@ -29,7 +30,10 @@ LOW_INFO_KINDS = ("css_class", "css_id", "html_id", "file")
 # o FTS não conhece rank; buscar com folga evita que o corte dele decida o
 # resultado antes da ordenação
 FTS_OVERFETCH = 4
-IMPACT_KINDS = ("calls", "imports", "inherits", "references", "framework")
+IMPACT_KINDS = (
+    "calls", "imports", "inherits", "references", "framework",
+    "reads", "writes", "returns", "flows_to",
+)
 _CONF_ORD = {"certain": 2, "inferred": 1, "possible": 0}
 _MISS = object()          # sentinela p/ cache LRU (distingue "None cacheado" de ausente)
 
@@ -261,10 +265,29 @@ class QueryEngine:
                     env.warn(f"freshness: {rel} é novo no disco; indexado agora (L0).")
                     changed = True
                 continue
-            st = path.stat()
-            if st.st_size == row["size"] and st.st_mtime_ns == row["mtime"]:
-                continue  # fast-path: stat igual → assume fresco
-            if self.ix.index_file(rel):
+            try:
+                data = path.read_bytes()
+                st = path.stat()
+            except OSError:
+                self.ix.remove_file(rel)
+                env.warn(f"freshness: {rel} ficou ilegível; removido do índice agora.")
+                changed = True
+                continue
+            # size/mtime são somente hints. A decisão de frescor usa conteúdo,
+            # inclusive no caso adversarial de uma edição que preserva ambos.
+            if content_hash(data) == row["content_hash"]:
+                self.conn.execute(
+                    "UPDATE files SET mtime=?, size=? WHERE path=?",
+                    (st.st_mtime_ns, st.st_size, rel),
+                )
+                self.conn.execute(
+                    "UPDATE repository_nodes SET mtime=?, size=?, content_hash=? "
+                    "WHERE path=?",
+                    (st.st_mtime_ns, st.st_size, row["content_hash"], rel),
+                )
+                self.conn.commit()
+                continue
+            if self.ix.index_file(rel, data=data):
                 env.warn(f"freshness: {rel} mudou desde a indexação; re-indexado agora (L0).")
                 changed = True
         if changed:
@@ -310,7 +333,10 @@ class QueryEngine:
             cur = on_disk.get(r["path"])
             if cur is None:                          # sumiu ou passou a ser excluído
                 stale.add(r["path"])
-            elif cur[0] != r["size"] or cur[1] != r["mtime"]:
+            else:
+                # A varredura decide o universo por stat/os.scandir, mas todo
+                # arquivo desse universo entra na verificação por hash. Isso
+                # detecta conteúdo alterado com size+mtime preservados.
                 stale.add(r["path"])
         # Um arquivo ainda existente pode desaparecer de ``on_disk`` quando a
         # política de exclusão muda. Não o envie ao _repair: olhando apenas o
@@ -1456,6 +1482,9 @@ class QueryEngine:
         if facts is None:
             env.warn(f"dataflow: linguagem '{lang}' ainda sem análise de fluxo "
                      f"(suportadas: {', '.join(df.supported_langs())}).")
+            record_current_stage(
+                self.conn, "dataflow", "on-demand-v1", "unsupported",
+                {"selector": selector, "language": lang})
             return {"function": sym, "supported": False, "params": []}, env
 
         def receiver_effects(sym_row, f):
@@ -1591,6 +1620,10 @@ class QueryEngine:
                 "name": p, "reaches_return": flow.reaches_return, "sinks": sinks})
         env.warn("dataflow: intra-procedural may-taint (flow-insensitive, "
                  "over-aproxima) + call graph.")
+        record_current_stage(
+            self.conn, "dataflow", "on-demand-v1", "executed",
+            {"selector": sym["fqn"], "depth": depth,
+             "parameters": len(result_params), "persistent": False})
         return {"function": sym, "supported": True, "params": result_params}, env
 
     def taint(self, scope: str | None = None, entry: str | None = None,
@@ -2314,6 +2347,12 @@ class QueryEngine:
                      f"aumente deadline_ms/max_steps/max_findings.")
         env.warn("taint: may-taint estático (over-aproxima) — achados são "
                  "candidatos a verificar; ajuste regras em .codegraph/taint.json.")
+        record_current_stage(
+            self.conn, "dataflow", "on-demand-v1",
+            "partial" if budget.limit_hit else "executed",
+            {"mode": "entry" if entry else "scan", "depth": depth,
+             "findings": len(findings), "persistent": False,
+             "limit_hit": budget.limit_hit})
         return {"mode": "entry" if entry else "scan",
                 "findings": findings, "scanned": scanned,
                 "elapsed_ms": budget.elapsed_ms(), "explored": len(explored),
@@ -2594,6 +2633,70 @@ class QueryEngine:
             env.truncated = True
         return {"task": task, "tokens": tokens, "files": files[:limit]}, env
 
+    def repository_tree(self, path: str = "", depth: int = 4,
+                        refresh: bool = True):
+        """Physical repository tree with exact hashes and indexing states."""
+        env = Envelope()
+        if refresh:
+            self.ix.index_repo()
+        rel = path.strip().replace("\\", "/").strip("/")
+        if rel:
+            rel = _repo_rel(self.root, rel)
+        depth = max(0, min(int(depth), 20))
+        root = self.conn.execute(
+            "SELECT id FROM repository_nodes WHERE path=?", (rel,)
+        ).fetchone()
+        if root is None:
+            return {"path": rel, "nodes": [], "revision_id": None,
+                    "snapshot_hash": None}, env
+        nodes = [dict(row) for row in self.conn.execute(
+            "WITH RECURSIVE subtree(id,parent_id,path,kind,content_hash,size,"
+            "mtime,language,index_state,state_reason,depth) AS ("
+            " SELECT id,parent_id,path,kind,content_hash,size,mtime,language,"
+            "index_state,state_reason,0 FROM repository_nodes WHERE id=? "
+            " UNION ALL SELECT n.id,n.parent_id,n.path,n.kind,n.content_hash,"
+            "n.size,n.mtime,n.language,n.index_state,n.state_reason,t.depth+1 "
+            "FROM repository_nodes n JOIN subtree t ON n.parent_id=t.id "
+            "WHERE t.depth<?) SELECT * FROM subtree ORDER BY depth,kind,path",
+            (root["id"], depth),
+        )]
+        revision = self.conn.execute(
+            "SELECT id, source_snapshot_hash FROM graph_revisions "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return {
+            "path": rel,
+            "nodes": nodes,
+            "revision_id": revision["id"] if revision else None,
+            "snapshot_hash": revision["source_snapshot_hash"] if revision else None,
+        }, env
+
+    def graph_history(self, limit: int = 20, git_commit: str | None = None):
+        """Versioned graph-stage history linked to Git and source snapshots."""
+        env = Envelope()
+        limit = max(1, min(int(limit), 200))
+        where = "WHERE git_commit=?" if git_commit else ""
+        args = [git_commit] if git_commit else []
+        revisions = []
+        for row in self.conn.execute(
+                f"SELECT * FROM graph_revisions {where} ORDER BY id DESC LIMIT ?",
+                [*args, limit]):
+            item = dict(row)
+            stages = []
+            for stage in self.conn.execute(
+                    "SELECT stage,stage_version,status,artifact_hash,details_json,"
+                    "completed_at FROM graph_stage_runs WHERE revision_id=? "
+                    "ORDER BY stage", (row["id"],)):
+                parsed = dict(stage)
+                try:
+                    parsed["details"] = json.loads(parsed.pop("details_json"))
+                except (TypeError, ValueError):
+                    parsed["details"] = {}
+                stages.append(parsed)
+            item["stages"] = stages
+            revisions.append(item)
+        return revisions, env
+
     # -- envelope de completeness (docs/DESIGN.md §3.1) -----------------------
 
     def _completeness(self, sym: dict, rows: list, env: Envelope) -> None:
@@ -2619,6 +2722,13 @@ class QueryEngine:
         g = lambda q: self.conn.execute(q).fetchone()[0]  # noqa: E731
         return {
             "files": g("SELECT COUNT(*) FROM files"),
+            "repository_nodes": g("SELECT COUNT(*) FROM repository_nodes"),
+            "repository_files": g(
+                "SELECT COUNT(*) FROM repository_nodes WHERE kind='file'"),
+            "graph_revisions": g("SELECT COUNT(*) FROM graph_revisions"),
+            "current_revision_id": (
+                self.conn.execute(
+                    "SELECT MAX(id) FROM graph_revisions").fetchone()[0]),
             "symbols": g("SELECT COUNT(*) FROM symbols"),
             "edges": g("SELECT COUNT(*) FROM edges"),
             "edges_resolved": g("SELECT COUNT(*) FROM edges WHERE dst IS NOT NULL"),

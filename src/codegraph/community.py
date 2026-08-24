@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from .db import retry_on_locked
+from .db import record_current_stage, retry_on_locked
 from .util import content_hash
 
 _MIN_IMPROVEMENT = 1e-7
@@ -173,6 +173,12 @@ def louvain(adj: dict[int, dict[int, float]]) -> dict[int, int]:
 def recompute(conn: sqlite3.Connection) -> None:
     conn.commit()
     retry_on_locked(lambda: _recompute_once(conn))
+    row = conn.execute(
+        "SELECT COUNT(*) communities, COALESCE(SUM(size),0) symbols "
+        "FROM communities").fetchone()
+    record_current_stage(
+        conn, "l2_communities", "louvain-v1", "complete",
+        {"communities": row["communities"], "symbols": row["symbols"]})
 
 
 def _recompute_once(conn: sqlite3.Connection) -> None:

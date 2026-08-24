@@ -264,6 +264,20 @@ def cmd_communities(args) -> int:
     return 0
 
 
+def cmd_tree(args) -> int:
+    data, env = _engine(args).repository_tree(
+        path=args.path or "", depth=args.depth, refresh=not args.no_refresh)
+    print(render.repository_tree(data, env))
+    return 0 if data["nodes"] else 1
+
+
+def cmd_history(args) -> int:
+    rows, env = _engine(args).graph_history(
+        limit=args.limit, git_commit=args.git_commit)
+    print(render.graph_history(rows, env))
+    return 0 if rows else 1
+
+
 def cmd_dataflow(args) -> int:
     data, env = _engine(args).data_flow(args.symbol, depth=args.depth)
     print(render.dataflow(data, env))
@@ -612,6 +626,19 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--min-size", type=int, default=3,
                     help="ignora domínios menores que N símbolos")
     sp.set_defaults(fn=cmd_communities)
+
+    sp = sub.add_parser("tree", help="árvore física versionada de pastas e arquivos")
+    sp.add_argument("path", nargs="?", default="", help="subárvore (default: raiz)")
+    sp.add_argument("--depth", type=int, default=4, help="profundidade máxima")
+    sp.add_argument("--no-refresh", action="store_true",
+                    help="lê o último snapshot sem reindexar")
+    sp.set_defaults(fn=cmd_tree)
+
+    sp = sub.add_parser("history", help="histórico de revisões e stages do grafo")
+    sp.add_argument("--limit", type=int, default=20)
+    sp.add_argument("--git-commit", default=None,
+                    help="filtra por commit Git completo")
+    sp.set_defaults(fn=cmd_history)
 
     sp = sub.add_parser("dataflow", help="fluxo de dados: para onde vão os parâmetros")
     sp.add_argument("symbol", help="fqn da função")

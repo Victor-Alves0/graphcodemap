@@ -94,7 +94,7 @@ Staleness is the number-one failure mode of code indexes, so freshness is
 defended in **four layers**. The goal: it is impossible to serve a fact without
 knowing whether it is current.
 
-1. **Startup — boot scan.** Content-hashes (with mtime+size as a fast-path) catch
+1. **Startup — boot scan.** Exact content-hashes (mtime+size are only hints) catch
    everything that changed while the tool was off: a `git pull`, a branch switch,
    edits made by another process.
 2. **Session — file watcher.** A native watcher (`codegraph watch`) queues an L0

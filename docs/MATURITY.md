@@ -38,9 +38,10 @@ Generated from code inspection, focused contracts and black-box dogfooding on
 - 5 languages with external security evidence.
 
 Those counts describe code breadth, not a completed product. Java and Python
-both have dedicated extraction, optional semantic linking and on-demand
-dataflow. Neither yet has the required persistent graph of parameters, locals,
-reads, writes and value flows. Java has stronger bounded security evidence;
+both have dedicated extraction, a shared persistent structural graph of
+parameters/locals/fields/properties/reads/writes, optional semantic linking and
+on-demand dataflow. Neither yet has persistent interprocedural value flow. Java
+has stronger bounded security evidence;
 Python has simpler semantic setup through Jedi. Neither is promoted as a
 complete phase-one language until G0–G5 of the Product Contract pass.
 
@@ -51,8 +52,8 @@ readable view.
 
 | Subsystem | Current state | Exit criterion |
 |---|---|---|
-| Graph and freshness | Files/declarations/basic calls and incremental relinking work; same-size/same-mtime edits can evade the current fast path | Required nodes/edges, explicit skips, strict freshness and stable identities |
-| L0 extraction | Useful Java/Python declarations/imports/calls; parameters, locals and reads/writes absent | Shared Java/Python golden structural graph |
+| Graph and freshness | Physical folders/files, exact hashes, per-file incremental relinking and Git-aware stage revisions work | Broader ordinary-repository proof and public schema versioning |
+| L0 extraction | Shared Java/Python parameters, locals, fields/properties, containment, definitions, reads/writes and simple returns persist | Broader golden/canary structural graph and persistent `flows_to` in G3 |
 | L1 resolution | Jedi/JDTLS materially improve impact; lifecycle/readiness is not yet atomic to readers | Explicit ready/running/partial state and real-repo canaries |
 | Dataflow and taint | Flow-sensitive engine exists on demand; Java has bounded benchmark evidence | Persist def-use/flow graph, then validate Java and Python separately |
 | CLI, library and MCP | Main surfaces exist; MCP doctor crash fixed during reset, other readiness/coverage gaps remain | Installed acceptance journey and equivalent result sets |

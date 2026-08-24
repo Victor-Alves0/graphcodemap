@@ -319,3 +319,22 @@ def test_mcp_doctor_returns_structured_status_without_aggregating_distribution(
     assert len(structured["results"]) == 1
     assert isinstance(structured["results"][0]["confidence"], dict)
     assert "saúde do índice" in structured["text"]
+
+
+def test_mcp_exposes_physical_tree_and_versioned_graph_history(tmp_path):
+    from codegraph.mcp_server import build_server
+
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "app.py").write_text(
+        "def run():\n    return 1\n", encoding="utf-8")
+    srv = build_server(tmp_path, watch=False)
+
+    _content, tree = _call(srv, "repository_tree", {
+        "path": "pkg", "depth": 2, "refresh": False,
+    })
+    _content, history = _call(srv, "graph_history", {"limit": 2})
+
+    assert tree["confidence"] == "certain"
+    assert {row["path"] for row in tree["results"]} == {"pkg", "pkg/app.py"}
+    assert history["confidence"] == "certain"
+    assert history["results"][0]["stages"]

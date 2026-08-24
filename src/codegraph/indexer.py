@@ -13,17 +13,19 @@ from __future__ import annotations
 import json
 import os
 import posixpath
+import subprocess
 import time
 from pathlib import Path
 
 import pathspec
 
 from . import community, extract, rank
-from .db import connect, default_db_path, retry_on_locked
+from .db import SCHEMA_VERSION, connect, default_db_path, retry_on_locked
 from .extract.base import Sym
 from .languages import MARKUP, get_parser, language_for
 from .log import get as _get_log
-from .util import content_hash, symbol_uid
+from .structural import enrich_structural
+from .util import content_hash, content_hash_file, symbol_uid
 
 log = _get_log(__name__)
 
@@ -89,7 +91,7 @@ class ChangeSet:
         return {"added": self.added, "removed": self.removed,
                 "signature_changed": self.signature_changed,
                 "counts": dict(self.counts), "truncated": self.truncated}
-CALLABLE_KINDS = ("function", "method", "class")
+CALLABLE_KINDS = ("function", "method", "property", "class")
 # Alvos válidos de uma aresta `references` (uso de estilo). Cross-language por
 # natureza — o TSX/HTML usa a classe que o CSS define, e o CSS estiliza o id que
 # o HTML declara —, então aqui NÃO se filtra por língua; o kind é o que protege
@@ -98,7 +100,7 @@ STYLE_DEF_KINDS = ("css_class", "html_id")
 
 # Versão da lógica de extração/resolução: mudou → força re-index completo,
 # mesmo com content-hashes iguais (o índice é derivado de código+extractor).
-INDEXER_VERSION = "39"
+INDEXER_VERSION = "40"
 
 DEFAULT_IGNORES = [
     ".git/", ".codegraph/", "__pycache__/", ".venv/", "venv/", "node_modules/",
@@ -299,6 +301,137 @@ def scan_source_stats(root: Path,
     return out
 
 
+def repository_node_uid(kind: str, path: str) -> str:
+    """Stable identity for a physical repository node."""
+    return "repo:" + content_hash(f"{kind}\0{path}".encode("utf-8"))
+
+
+def scan_repository_snapshot(
+        root: Path, scopes: list[str] | None = None,
+        excludes: list[str] | None = None) -> dict[str, dict]:
+    """Hash every non-ignored physical file and record its directory tree.
+
+    Unlike ``scan_source_stats``, this includes documentation, configuration,
+    assets and unknown extensions.  It never follows symlinks/junctions.
+    """
+    lines = _ignore_lines(root, excludes)
+    dir_spec = pathspec.GitIgnoreSpec.from_lines(lines)
+    file_spec = _file_ignore_spec(lines)
+    entries: dict[str, dict] = {
+        "": {
+            "id": repository_node_uid("repository", ""),
+            "parent_id": None,
+            "path": "",
+            "kind": "repository",
+            "content_hash": None,
+            "size": None,
+            "mtime": None,
+            "language": None,
+            "index_state": None,
+            "state_reason": None,
+        }
+    }
+
+    def ensure_directory(rel: str, stat=None) -> None:
+        if not rel or rel in entries:
+            return
+        parent = rel.rpartition("/")[0]
+        ensure_directory(parent)
+        entries[rel] = {
+            "id": repository_node_uid("directory", rel),
+            "parent_id": repository_node_uid(
+                "directory" if parent else "repository", parent),
+            "path": rel,
+            "kind": "directory",
+            "content_hash": None,
+            "size": None,
+            "mtime": getattr(stat, "st_mtime_ns", None),
+            "language": None,
+            "index_state": None,
+            "state_reason": None,
+        }
+
+    def record_file(path: Path, rel: str, stat=None) -> None:
+        if file_spec.match_file(rel):
+            return
+        ensure_directory(rel.rpartition("/")[0])
+        st = stat or path.stat()
+        language = language_for(rel)
+        try:
+            digest = content_hash_file(path)
+            if language is None:
+                state, reason = "not_applicable", "unrecognized_extension"
+            elif st.st_size > MAX_FILE_SIZE:
+                state, reason = "skipped", "parser_size_limit"
+            else:
+                state, reason = "pending", None
+        except OSError as exc:
+            digest = None
+            state, reason = "failed", f"read_error:{type(exc).__name__}"
+        entries[rel] = {
+            "id": repository_node_uid("file", rel),
+            "parent_id": repository_node_uid(
+                "directory" if "/" in rel else "repository",
+                rel.rpartition("/")[0]),
+            "path": rel, "kind": "file",
+            "content_hash": digest, "size": st.st_size,
+            "mtime": st.st_mtime_ns, "language": language,
+            "index_state": state, "state_reason": reason,
+        }
+
+    stack: list[tuple[str, str]] = []
+    for base, rel in _scope_roots(root, scopes):
+        if base.is_file():
+            try:
+                record_file(base, rel)
+            except OSError:
+                continue
+        elif base.is_dir():
+            ensure_directory(rel)
+            stack.append((str(base), rel))
+
+    while stack:
+        abs_dir, rel_dir = stack.pop()
+        try:
+            iterator = os.scandir(abs_dir)
+        except OSError:
+            continue
+        with iterator:
+            for entry in iterator:
+                rel = entry.name if not rel_dir else f"{rel_dir}/{entry.name}"
+                try:
+                    if entry.is_symlink():
+                        if not file_spec.match_file(rel):
+                            ensure_directory(rel.rpartition("/")[0])
+                            st = entry.stat(follow_symlinks=False)
+                            entries[rel] = {
+                                "id": repository_node_uid("symlink", rel),
+                                "parent_id": repository_node_uid(
+                                    "directory" if "/" in rel else "repository",
+                                    rel.rpartition("/")[0]),
+                                "path": rel, "kind": "symlink",
+                                "content_hash": None, "size": st.st_size,
+                                "mtime": st.st_mtime_ns, "language": None,
+                                "index_state": "skipped",
+                                "state_reason": "symlink_not_followed",
+                            }
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        if dir_spec.match_file(rel + "/"):
+                            continue
+                        st = entry.stat(follow_symlinks=False)
+                        ensure_directory(rel, st)
+                        stack.append((entry.path, rel))
+                        continue
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    st = entry.stat(follow_symlinks=False)
+                    record_file(Path(entry.path), rel, st)
+                except OSError:
+                    continue
+    return entries
+
+
 def module_fqn_for(rel: str, *, root: Path | None = None,
                    language: str | None = None) -> str:
     dot = rel.rfind(".")
@@ -369,6 +502,7 @@ def _extract_file(lang: str, data: bytes, rel: str, tree, h: str,
     module_fqn = module_fqn_for(rel, root=root, language=lang)
     syms, refs = extract.extract(lang, data, module_fqn, tree)
     syms.append(_file_symbol(rel, data, h, module_fqn))
+    enrich_structural(lang, data, tree, syms, refs)
     return syms, refs                         # continua ganhando no fqn_to_uid
 
 
@@ -381,9 +515,245 @@ class Indexer:
         # resultado da última — ver ChangeSet.
         self._changes: ChangeSet | None = None
         self.last_changes: dict | None = None
+        self.current_revision_id: int | None = None
 
     def close(self) -> None:
         self.conn.close()
+
+    # -- snapshot físico e revisões -----------------------------------------
+
+    def _repository_snapshot_hash(self) -> str:
+        parts = []
+        for row in self.conn.execute(
+                "SELECT path, kind, content_hash FROM repository_nodes "
+                "ORDER BY path"):
+            parts.append(
+                f"{row['kind']}\0{row['path']}\0{row['content_hash'] or ''}")
+        return content_hash("\n".join(parts).encode("utf-8"))
+
+    def sync_repository(self, *, scopes: list[str] | None = None,
+                        excludes: list[str] | None = None) -> dict:
+        """Synchronize the exact physical repository graph and file hashes."""
+        entries = scan_repository_snapshot(
+            self.root, scopes=scopes, excludes=excludes)
+        previous = {
+            row["path"]: (row["kind"], row["content_hash"])
+            for row in self.conn.execute(
+                "SELECT path, kind, content_hash FROM repository_nodes")
+        }
+        seen = set(entries)
+        removable = [
+            path for path in previous
+            if path and path not in seen and in_scope(path, scopes)
+        ]
+        cur = self.conn.cursor()
+        cur.execute("BEGIN")
+        try:
+            # Children first avoids relying on cascade order when a directory
+            # and all descendants disappeared together.
+            for path in sorted(removable, key=lambda value: value.count("/"),
+                               reverse=True):
+                cur.execute("DELETE FROM repository_nodes WHERE path=?", (path,))
+            rows = sorted(entries.values(), key=lambda item: (
+                item["path"].count("/"), item["kind"] != "repository", item["path"]))
+            cur.executemany(
+                "INSERT INTO repository_nodes("
+                "id,parent_id,path,kind,content_hash,size,mtime,language,index_state,state_reason"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(path) DO UPDATE SET "
+                "id=excluded.id,parent_id=excluded.parent_id,kind=excluded.kind,"
+                "content_hash=excluded.content_hash,size=excluded.size,mtime=excluded.mtime,"
+                "language=excluded.language,index_state=excluded.index_state,"
+                "state_reason=excluded.state_reason",
+                [(
+                    item["id"], item["parent_id"], item["path"], item["kind"],
+                    item["content_hash"], item["size"], item["mtime"],
+                    item["language"], item["index_state"], item["state_reason"],
+                ) for item in rows],
+            )
+            cur.execute("COMMIT")
+        except Exception:
+            cur.execute("ROLLBACK")
+            raise
+        changed = sum(
+            previous.get(path) != (item["kind"], item["content_hash"])
+            for path, item in entries.items() if path
+        )
+        return {
+            "nodes": len(entries),
+            "directories": sum(item["kind"] == "directory"
+                               for item in entries.values()),
+            "files": sum(item["kind"] == "file" for item in entries.values()),
+            "changed": changed,
+            "removed": len(removable),
+            "snapshot_hash": self._repository_snapshot_hash(),
+        }
+
+    def _ensure_repository_parents(self, rel: str) -> None:
+        parent = rel.rpartition("/")[0]
+        chain = []
+        while parent:
+            chain.append(parent)
+            parent = parent.rpartition("/")[0]
+        self.conn.execute(
+            "INSERT OR IGNORE INTO repository_nodes(id,parent_id,path,kind) "
+            "VALUES(?,?,?,'repository')",
+            (repository_node_uid("repository", ""), None, ""),
+        )
+        for path in reversed(chain):
+            parent = path.rpartition("/")[0]
+            self.conn.execute(
+                "INSERT OR IGNORE INTO repository_nodes(id,parent_id,path,kind) "
+                "VALUES(?,?,?,'directory')",
+                (repository_node_uid("directory", path),
+                 repository_node_uid("directory" if parent else "repository",
+                                     parent), path),
+            )
+
+    def sync_repository_path(self, rel: str) -> bool:
+        """Update one physical file node; used by watcher/read-repair."""
+        rel = _repo_rel(self.root, rel)
+        old = self.conn.execute(
+            "SELECT kind, content_hash FROM repository_nodes WHERE path=?", (rel,)
+        ).fetchone()
+        path = self.root / rel
+        if not path.is_file():
+            if old is None:
+                return False
+            self.conn.execute("DELETE FROM repository_nodes WHERE path=?", (rel,))
+            self.conn.commit()
+            return True
+        self._ensure_repository_parents(rel)
+        st = path.stat()
+        language = language_for(rel)
+        try:
+            digest = content_hash_file(path)
+            if language is None:
+                state, reason = "not_applicable", "unrecognized_extension"
+            elif st.st_size > MAX_FILE_SIZE:
+                state, reason = "skipped", "parser_size_limit"
+            else:
+                state, reason = "pending", None
+        except OSError as exc:
+            digest = None
+            state, reason = "failed", f"read_error:{type(exc).__name__}"
+        parent = rel.rpartition("/")[0]
+        self.conn.execute(
+            "INSERT INTO repository_nodes("
+            "id,parent_id,path,kind,content_hash,size,mtime,language,index_state,state_reason"
+            ") VALUES(?,?,?,'file',?,?,?,?,?,?) "
+            "ON CONFLICT(path) DO UPDATE SET content_hash=excluded.content_hash,"
+            "size=excluded.size,mtime=excluded.mtime,language=excluded.language,"
+            "index_state=excluded.index_state,state_reason=excluded.state_reason",
+            (repository_node_uid("file", rel),
+             repository_node_uid("directory" if parent else "repository", parent),
+             rel, digest, st.st_size, st.st_mtime_ns, language, state, reason),
+        )
+        self.conn.commit()
+        return old is None or old["kind"] != "file" or old["content_hash"] != digest
+
+    def _refresh_repository_index_states(self) -> None:
+        self.conn.execute(
+            "UPDATE repository_nodes SET index_state=("
+            "SELECT CASE f.parse_status WHEN 'ok' THEN 'indexed' "
+            "WHEN 'partial' THEN 'partial' ELSE 'failed' END "
+            "FROM files f WHERE f.path=repository_nodes.path), state_reason=("
+            "SELECT CASE WHEN f.parse_status='ok' THEN NULL "
+            "ELSE 'parser_' || f.parse_status END FROM files f "
+            "WHERE f.path=repository_nodes.path) "
+            "WHERE kind='file' AND EXISTS(SELECT 1 FROM files f "
+            "WHERE f.path=repository_nodes.path)"
+        )
+        self.conn.commit()
+
+    def _git_state(self) -> tuple[str | None, bool]:
+        def run(*args: str) -> subprocess.CompletedProcess:
+            return subprocess.run(
+                ["git", "-C", str(self.root), *args],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+        try:
+            head = run("rev-parse", "HEAD")
+            if head.returncode != 0:
+                return None, False
+            status = run("status", "--porcelain=v1", "--untracked-files=normal")
+            dirty_lines = [
+                line for line in status.stdout.splitlines()
+                if ".codegraph/" not in line.replace("\\", "/")
+            ]
+            return head.stdout.strip() or None, bool(dirty_lines)
+        except (OSError, subprocess.SubprocessError):
+            return None, False
+
+    def record_stage(self, revision_id: int, stage: str, stage_version: str,
+                     status: str, *, artifact_hash: str | None = None,
+                     details: dict | None = None) -> None:
+        now = int(time.time())
+        self.conn.execute(
+            "INSERT INTO graph_stage_runs(revision_id,stage,stage_version,status,"
+            "artifact_hash,details_json,started_at,completed_at) "
+            "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(revision_id,stage) DO UPDATE SET "
+            "stage_version=excluded.stage_version,status=excluded.status,"
+            "artifact_hash=excluded.artifact_hash,details_json=excluded.details_json,"
+            "completed_at=excluded.completed_at",
+            (revision_id, stage, stage_version, status, artifact_hash,
+             json.dumps(details or {}, ensure_ascii=False, sort_keys=True), now, now),
+        )
+        self.conn.commit()
+
+    def _record_revision(self, trigger: str, repository: dict,
+                         index_stats: dict) -> int:
+        git_commit, git_dirty = self._git_state()
+        parent = self.conn.execute(
+            "SELECT value FROM meta WHERE key='current_graph_revision'"
+        ).fetchone()
+        parent_id = int(parent["value"]) if parent and parent["value"] else None
+        now = int(time.time())
+        partial = bool(index_stats.get("errors")) or self.conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM repository_nodes WHERE language IN "
+            "('java','python') AND index_state IN ('partial','skipped','failed','pending'))"
+        ).fetchone()[0]
+        status = "partial" if partial else "complete"
+        cur = self.conn.execute(
+            "INSERT INTO graph_revisions(parent_revision_id,trigger,git_commit,git_dirty,"
+            "source_snapshot_hash,started_at,completed_at,status,changed_files,removed_files) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (parent_id, trigger, git_commit, int(git_dirty),
+             repository["snapshot_hash"], now, now, status,
+             repository.get("changed", 0), repository.get("removed", 0)),
+        )
+        revision_id = int(cur.lastrowid)
+        self.conn.execute(
+            "INSERT INTO meta(key,value) VALUES('current_graph_revision',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (str(revision_id),),
+        )
+        self.conn.commit()
+        self.record_stage(
+            revision_id, "filesystem", "1", "complete",
+            artifact_hash=repository["snapshot_hash"], details=repository)
+        l0_hash = content_hash(
+            f"{repository['snapshot_hash']}\0{SCHEMA_VERSION}\0{INDEXER_VERSION}"
+            .encode("utf-8"))
+        self.record_stage(
+            revision_id, "l0", INDEXER_VERSION, status,
+            artifact_hash=l0_hash, details={
+                key: index_stats.get(key, 0)
+                for key in ("scanned", "indexed", "removed", "errors")
+            })
+        self.record_stage(revision_id, "l1", "resolver-set", "not_started")
+        self.record_stage(revision_id, "l2_rank", "pagerank-v1", "dirty")
+        self.record_stage(
+            revision_id, "l2_communities", "louvain-v1", "dirty")
+        self.record_stage(
+            revision_id, "l3", "description-cache", "cache_only",
+            details={"cached": self.conn.execute(
+                "SELECT COUNT(*) FROM descriptions").fetchone()[0]})
+        self.record_stage(
+            revision_id, "dataflow", "on-demand-v1", "on_demand",
+            details={"persistent": False})
+        self.current_revision_id = revision_id
+        return revision_id
 
     # -- manutenção ----------------------------------------------------------
 
@@ -446,6 +816,8 @@ class Indexer:
             _set_meta_list(self.conn, "index_excludes",
                            [str(p) for p in exclude if str(p).strip()])
         excludes = get_index_excludes(self.conn)
+        repository_stats = self.sync_repository(
+            scopes=scope_arg, excludes=excludes)
         # A varredura scandir poda diretórios ignorados antes de descer. O
         # walker histórico baseado em ``rglob`` atravessava por completo
         # ``.venv``, ``benchrepos`` e ``node_modules`` para só então descartar
@@ -476,7 +848,11 @@ class Indexer:
             (str(int(time.time())),),
         )
         self.conn.commit()
+        self._refresh_repository_index_states()
         stats["changes"] = self._changes.as_dict()
+        stats["repository"] = repository_stats
+        stats["revision_id"] = self._record_revision(
+            "full_index", repository_stats, stats)
         self.last_changes = stats["changes"]
         self._changes = None
         return stats
@@ -511,15 +887,36 @@ class Indexer:
         index_repo), caso em que contribui para ela."""
         rel = _repo_rel(self.root, rel)
         own = self._changes is None
+        repository_changed = self.sync_repository_path(rel)
         if own:
             self._changes = ChangeSet()
+        changed = False
         try:
-            return retry_on_locked(
+            changed = retry_on_locked(
                 lambda: self._index_file(rel, force=force, data=data))
+            self._refresh_repository_index_states()
+            return changed
         finally:
             if own:
                 self.last_changes = self._changes.as_dict()
                 self._changes = None
+                if repository_changed or changed:
+                    repository = {
+                        "nodes": self.conn.execute(
+                            "SELECT COUNT(*) FROM repository_nodes").fetchone()[0],
+                        "directories": self.conn.execute(
+                            "SELECT COUNT(*) FROM repository_nodes "
+                            "WHERE kind='directory'").fetchone()[0],
+                        "files": self.conn.execute(
+                            "SELECT COUNT(*) FROM repository_nodes "
+                            "WHERE kind='file'").fetchone()[0],
+                        "changed": int(repository_changed), "removed": 0,
+                        "snapshot_hash": self._repository_snapshot_hash(),
+                    }
+                    self._record_revision(
+                        "file_reindex", repository,
+                        {"scanned": 1, "indexed": int(changed),
+                         "removed": 0, "errors": 0})
 
     def _index_file(self, rel: str, force: bool = False, data: bytes | None = None) -> bool:
         """Re-indexa um arquivo em transação PRÓPRIA (caminho incremental:
@@ -634,7 +1031,7 @@ class Indexer:
                 c_tree = get_parser("c").parse(data)
                 if not c_tree.root_node.has_error:
                     lang, tree = "c", c_tree
-            syms, refs = _extract_file(lang, data, rel, tree, h)
+            syms, refs = _extract_file(lang, data, rel, tree, h, self.root)
             status = "partial" if tree.root_node.has_error else "ok"
             return ("changed", rel, st, h, lang, syms, refs, status)
         except Exception as e:
@@ -887,15 +1284,20 @@ class Indexer:
             src_id = _ref_src_uid(r)
             # refs idênticas no mesmo site são redundantes; deduplicar aqui
             # garante ≤1 aresta resolvida por site (casando com o índice único)
-            key = (r.kind, src_id, r.dst_name, r.line, r.col)
+            candidates = fqn_to_syms.get(r.dst_name, ())
+            dst_id = candidates[0][1] if len(candidates) == 1 else None
+            confidence = (r.confidence if dst_id is not None
+                          else "possible")
+            key = (r.kind, src_id, dst_id, r.dst_name, r.line, r.col)
             if key in seen_refs:
                 continue
             seen_refs.add(key)
-            edge_rows.append((r.kind, src_id, r.dst_name, file_id, r.line, r.col))
+            edge_rows.append((r.kind, src_id, dst_id, r.dst_name, file_id,
+                              r.line, r.col, confidence, r.resolver))
         if edge_rows:
             cur.executemany(
                 "INSERT INTO edges(kind, src, dst, dst_name, file_id, line, col, "
-                "confidence, resolver) VALUES(?,?,NULL,?,?,?,?,'possible','l0')",
+                "confidence, resolver) VALUES(?,?,?,?,?,?,?,?,?)",
                 edge_rows)
 
     def _invalidate_inbound_sites(self, cur, target_file_id: int) -> None:
@@ -940,12 +1342,31 @@ class Indexer:
 
     def remove_file(self, rel: str) -> None:
         rel = _repo_rel(self.root, rel)
-        retry_on_locked(lambda: self._remove_file(rel))
+        own = self._changes is None
+        physical_changed = self.sync_repository_path(rel)
+        removed = retry_on_locked(lambda: self._remove_file(rel))
+        if own and (physical_changed or removed):
+            repository = {
+                "nodes": self.conn.execute(
+                    "SELECT COUNT(*) FROM repository_nodes").fetchone()[0],
+                "directories": self.conn.execute(
+                    "SELECT COUNT(*) FROM repository_nodes "
+                    "WHERE kind='directory'").fetchone()[0],
+                "files": self.conn.execute(
+                    "SELECT COUNT(*) FROM repository_nodes "
+                    "WHERE kind='file'").fetchone()[0],
+                "changed": 0, "removed": int(physical_changed),
+                "snapshot_hash": self._repository_snapshot_hash(),
+            }
+            self._record_revision(
+                "file_remove", repository,
+                {"scanned": 0, "indexed": 0,
+                 "removed": int(removed), "errors": 0})
 
-    def _remove_file(self, rel: str) -> None:
+    def _remove_file(self, rel: str) -> bool:
         row = self.conn.execute("SELECT id FROM files WHERE path=?", (rel,)).fetchone()
         if row is None:
-            return
+            return False
         if self._changes is not None:      # arquivo sumiu → símbolos saíram
             for r in self.conn.execute(                 # kind='file' fora:
                     "SELECT fqn FROM symbols WHERE file_id=? "   # só símbolo
@@ -959,6 +1380,7 @@ class Indexer:
         rank.mark_dirty(self.conn)
         community.mark_dirty(self.conn)
         self.conn.commit()
+        return True
 
     # -- resolução de arestas (docs/DESIGN.md §1.3) ---------------------------
 
@@ -1021,7 +1443,7 @@ class Indexer:
                 parent = by_id.get(parent_id)
                 if parent is None:
                     break
-                if parent["kind"] in ("function", "method"):
+                if parent["kind"] in ("function", "method", "property"):
                     result = True
                     break
                 parent_id = parent["parent_id"]

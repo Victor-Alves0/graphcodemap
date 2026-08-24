@@ -207,7 +207,7 @@ def build() -> dict:
           "uma leitura comum do grafo\nread-repair + Envelope\nconfiança + freshness\ncompleteness + limites", fill=BLUE)
 
     d.box("navigation", 1680, 220, 400, 100, "Busca e navegação",
-          "find · info · refs · callers/callees", fill=GREEN, body_size=14)
+          "find · info · refs · tree · history", fill=GREEN, body_size=14)
     d.box("impact", 1680, 345, 400, 100, "Impacto e investigação",
           "impact · change-impact · related-tests", fill=GREEN, body_size=14)
     d.box("reachability", 1680, 470, 400, 100, "Reachability e segurança",
@@ -232,15 +232,15 @@ def build() -> dict:
     d.section("section-index", 60, 770, 2100, 730,
               "2. Como o repositório vira grafo persistente")
     d.box("repository", 105, 885, 285, 140, "Repositório",
-          ".py / .java em foco\ngitignore + escopos\ncódigo = fonte da verdade",
+          "pastas + todos os arquivos\nGit + escopos/ignore\ncódigo = fonte da verdade",
           fill=GRAY)
     d.box("scan", 465, 885, 265, 140, "Scanner · indexer.py",
-          "poda ignorados antes\nde atravessar\nregistra arquivo/estado", fill=BLUE)
+          "árvore física + hash exato\npoda ignorados antes\nde atravessar", fill=BLUE)
     d.box("parser", 805, 885, 250, 140, "Parsers",
           "tree-sitter\nAST tolerante a erro\nsem build obrigatório", fill=BLUE)
     d.box("focus-extractors", 1130, 820, 275, 155,
           "Extractors Java/Python",
-          "extract/java.py\nextract/python.py\ndeclarações + refs L0", fill=BLUE)
+          "declarações + params/locals\nfields/properties\nreads/writes/returns L0", fill=BLUE)
     d.box("experimental-extractors", 1130, 1015, 275, 140,
           "Outros extractors",
           "compatibilidade experimental\nnão significa paridade", fill=GRAY)
@@ -249,7 +249,7 @@ def build() -> dict:
     d.box("indexer", 1480, 925, 285, 230, "Indexer L0 · indexer.py",
           "IDs estáveis\ntransação por arquivo\nresolve/dangling/relink\nconfidence + provenance\núnico escritor estrutural", fill=BLUE)
     d.box("sqlite", 1835, 850, 275, 380, "SQLite · db.py",
-          ".codegraph/graph.db · WAL\n\nfiles\nsymbols + FTS5\nedges\ndescriptions\ncommunities + meta\n\nlocal-first e incremental", fill=YELLOW)
+          ".codegraph/graph.db · WAL\n\nrepository_nodes + files\nsymbols + FTS5 · edges\ngraph_revisions\ngraph_stage_runs\ndescriptions + communities\n\nlocal-first e incremental", fill=YELLOW)
 
     d.connect("repo-scan", "repository", "scan")
     d.connect("scan-parser", "scan", "parser")
@@ -274,9 +274,9 @@ def build() -> dict:
                            ("read-repair", "repair-index")]:
         d.connect(suffix, source, "indexer", source_side="right",
                   target_side="bottom", via=[(1450, 1370)])
-    d.box("freshness-gap", 105, 1330, 890, 115, "Gate aberto: frescor estrito",
-          "O fast path ainda confia em size+mtime; precisa distinguir conteúdo verificado de hint estatístico.",
-          fill=RED, stroke=FUTURE, stroke_style="dashed", body_size=14)
+    d.box("freshness-gap", 105, 1330, 890, 115, "Frescor estrito implementado",
+          "Read-repair compara bytes/hash exato; size+mtime são somente hints. Edit igual em tamanho e mtime também converge.",
+          fill=GREEN, body_size=14)
 
     # 3. Semantic and derived layers.
     d.section("section-layers", 2215, 175, 1335, 775,
@@ -349,7 +349,7 @@ def build() -> dict:
     d.arrow("future-persist-flow", (2560, 1450), (2110, 1220), color=FUTURE,
             style="dashed")
     d.text("future-persist-label", 2250, 1430,
-           "G3: persistir defines/reads/writes/returns/flows_to", size=14,
+           "G3: persistir flows_to interprocedural/CFG", size=14,
            color=FUTURE)
 
     # 5. Incremental correctness lifecycle.
@@ -361,7 +361,7 @@ def build() -> dict:
         ("transaction", 790, "3 · Transação por arquivo", "delete fatos de F\nparse + insert de F"),
         ("dangling", 1160, "4 · Preservar inbound", "alvo removido → dst NULL\ndst_name permanece"),
         ("relink", 1515, "5 · Re-resolver", "novo alvo reconecta\nsem perder evidência"),
-        ("invalidate", 1835, "6 · Invalidar derivados", "L1/L2/L3 e resposta\nrecebem novo estado"),
+        ("invalidate", 1835, "6 · Versionar snapshot", "Git + dirty hash\nstages L0/L1/L2/L3/flow"),
     ]
     widths = {"edit": 255, "owned": 285, "transaction": 300,
               "dangling": 285, "relink": 250, "invalidate": 265}
@@ -389,7 +389,7 @@ def build() -> dict:
 
     gates = [
         ("g0", 2260, 1835, "G0 · Observabilidade", "PARCIAL\nestados/coverage completos", YELLOW),
-        ("g1", 2680, 1835, "G1 · Grafo estrutural", "ATIVO\nparams/locals/reads/writes", RED),
+        ("g1", 2680, 1835, "G1 · Grafo estrutural", "CORE FEITO\nfalta prova em canários", YELLOW),
         ("g2", 3100, 1835, "G2 · Linking semântico", "calls confiáveis\nreadiness atômica", RED),
         ("g3", 2260, 1995, "G3 · Dataflow persistente", "def-use + fluxo\nentre funções", RED),
         ("g4", 2680, 1995, "G4 · Vulnerabilidades", "Java/Python sobre\no mesmo flow graph", RED),
@@ -408,7 +408,7 @@ def build() -> dict:
     d.connect("g4-g5", "g4", "g5")
 
     d.box("truth", 2260, 2170, 1220, 145, "Estado honesto em 2026-08-24",
-          "Alpha structural graph: arquivos, declarações e calls básicas existem. Ainda NÃO é CPG completo; parâmetros/locais e relações de valor persistentes são o próximo micro-goal.",
+          "Alpha structural graph: árvore física, hashes/revisões e Java/Python estrutural persistem. Ainda NÃO é CPG completo: flows_to interprocedural e linking semântico robusto permanecem gates.",
           fill=YELLOW, body_size=16)
 
     return {

@@ -27,9 +27,8 @@ Setup pins MCP to the tested 1.x FastMCP-compatible release. Plain
 the optional dependency is missing or incompatible.
 
 The server speaks stdio, indexes/refreshes on boot, and runs a background watcher
-so the index stays hot. Pass `--no-watch` to disable the watcher. The current
-read-repair fast path uses size+mtime before content verification; strict
-freshness is still an open Product Contract gate.
+so the index stays hot. Pass `--no-watch` to disable the watcher. Read-repair
+checks exact content hashes; size and mtime are only discovery/performance hints.
 
 ### Register it
 
@@ -81,7 +80,7 @@ The design intent: an agent reads `confidence: "certain"` and `fresh: true` and
 can **stop** — no re-reading files to double-check. That is where the graph turns
 into both a correctness win and a token win.
 
-## The 20 tools
+## The 22 tools
 
 ### Core navigation
 
@@ -92,6 +91,8 @@ into both a correctness win and a token win.
 | `symbol_info` | The card for one symbol: signature, doc, containment, counts. |
 | `references` | All uses of a symbol, with confidence. |
 | `ego_graph` | The immediate typed neighborhood of a symbol. |
+| `repository_tree` | Physical folders/files, exact hashes, language and index state. |
+| `graph_history` | Git-aware repository snapshots and per-stage graph versions. |
 
 ### Call graph & impact
 

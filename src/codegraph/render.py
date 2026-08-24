@@ -72,6 +72,43 @@ def info(data, env) -> str:
     return warnings(env) + "\n".join(lines)
 
 
+def repository_tree(data, env) -> str:
+    lines = [
+        f"repositório físico @ revisão {data.get('revision_id') or '-'} "
+        f"[{(data.get('snapshot_hash') or '-')[:12]}]:"
+    ]
+    if not data["nodes"]:
+        lines.append(f"  caminho não encontrado: {data['path'] or '.'}")
+        return warnings(env) + "\n".join(lines)
+    base_depth = data["nodes"][0]["depth"]
+    for node in data["nodes"]:
+        depth = node["depth"] - base_depth
+        label = node["path"].rsplit("/", 1)[-1] if node["path"] else "."
+        suffix = "/" if node["kind"] in {"repository", "directory"} else ""
+        state = f" [{node['index_state']}]" if node.get("index_state") else ""
+        digest = (f" #{node['content_hash'][:10]}"
+                  if node.get("content_hash") else "")
+        lines.append(f"  {'  ' * depth}{label}{suffix}{state}{digest}")
+    return warnings(env) + "\n".join(lines)
+
+
+def graph_history(rows, env) -> str:
+    if not rows:
+        return warnings(env) + "nenhuma revisão do grafo registrada"
+    lines = []
+    for revision in rows:
+        git = (revision.get("git_commit") or "sem-git")[:12]
+        dirty = "+dirty" if revision.get("git_dirty") else ""
+        lines.append(
+            f"r{revision['id']} {revision['status']} {revision['trigger']} "
+            f"git={git}{dirty} snapshot={revision['source_snapshot_hash'][:12]}"
+        )
+        lines.append("  " + ", ".join(
+            f"{stage['stage']}@{stage['stage_version']}={stage['status']}"
+            for stage in revision["stages"]))
+    return warnings(env) + "\n".join(lines)
+
+
 def refs(sym, rows, env) -> str:
     lines = [f"referências a {sym['fqn']} — {len(rows)}:"]
     for r in rows:

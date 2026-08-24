@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 from collections import defaultdict
 
-from .db import retry_on_locked
+from .db import record_current_stage, retry_on_locked
 
 DAMPING = 0.85
 ITERATIONS = 20
@@ -37,6 +37,10 @@ def recompute(conn: sqlite3.Connection) -> None:
     # watcher/refine não conseguem mudar arestas entre o snapshot e dirty=0.
     conn.commit()
     retry_on_locked(lambda: _recompute_once(conn))
+    count = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
+    record_current_stage(
+        conn, "l2_rank", "pagerank-v1", "complete",
+        {"symbols": count, "iterations": ITERATIONS, "damping": DAMPING})
 
 
 def _recompute_once(conn: sqlite3.Connection) -> None:

@@ -15,6 +15,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from ..db import record_current_stage
 from .provider import L3Unavailable, provider_from_env
 
 _SYSTEM = (
@@ -59,6 +60,9 @@ class Describer:
             "generated_at=excluded.generated_at",
             (sym["id"], content, sym["body_hash"], model, int(time.time())))
         self.conn.commit()
+        record_current_stage(
+            self.conn, "l3", "description-cache-v1", "complete",
+            {"last_scope": "symbol", "last_target": sym["fqn"]})
         return {"content": content, "model": model,
                 "generated_at": int(time.time()), "fresh": True,
                 "generated_now": True, "scope": "symbol"}
@@ -102,6 +106,9 @@ class Describer:
             "generated_at=excluded.generated_at",
             (frow["id"], content, frow["content_hash"], model, int(time.time())))
         self.conn.commit()
+        record_current_stage(
+            self.conn, "l3", "description-cache-v1", "complete",
+            {"last_scope": "module", "last_target": frow["path"]})
         return {"content": content, "model": model,
                 "generated_at": int(time.time()), "fresh": True,
                 "generated_now": True, "scope": "module"}
@@ -156,6 +163,9 @@ class Describer:
             "UPDATE communities SET label=?, summary=?, model=?, generated_at=? "
             "WHERE id=?", (label, summary, model, int(time.time()), c["id"]))
         self.conn.commit()
+        record_current_stage(
+            self.conn, "l3", "description-cache-v1", "complete",
+            {"last_scope": "domain", "last_target": str(c["id"])})
         return {"content": summary, "label": label, "model": model,
                 "generated_at": int(time.time()), "fresh": True,
                 "generated_now": True, "scope": "domain"}

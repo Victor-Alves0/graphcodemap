@@ -45,11 +45,10 @@ invariant:
 
 Two consequences make it trustworthy where other indexes are not:
 
-- **Freshness is checked at answer time.** Each row carries the content hash of
-  the file it came from. Relevant paths use read-repair, while watcher and
-  full-sweep backstops discover new/deleted files. The current fast path still
-  trusts unchanged size+mtime; strict content verification is an explicit
-  product-reset gate, not a completed guarantee.
+- **Freshness is checked at answer time.** Each row carries the exact content
+  hash of the file it came from. Relevant paths use read-repair, while watcher
+  and full-sweep backstops discover new/deleted files. Size and mtime are hints;
+  unchanged metadata never substitutes for content verification.
 - **Every fact declares its confidence.** Call edges are labeled `certain`,
   `inferred`, or `possible`. Static-analysis limits are stated, never hidden.
   Transitive queries propagate the *minimum* confidence along the path.
@@ -75,6 +74,8 @@ codegraph setup --install         # detect languages; show + confirm a pinned pl
 codegraph index . --l1            # build the index and promote semantic edges
 codegraph doctor                  # verify resolver health and % certain
 codegraph overview                # ranked map of the repo (PageRank)
+codegraph tree                    # physical folders/files, hashes and index state
+codegraph history                 # Git-aware graph and analysis-stage revisions
 codegraph find validate_token     # locate symbols
 codegraph impact auth.TokenService.validate   # what breaks if I change this?
 codegraph callers auth.TokenService.validate  # who calls it (with confidence)
@@ -126,6 +127,8 @@ New here? Start with **[Getting Started](docs/getting-started.md)**.
 | *Which tests cover this?* | `related-tests` |
 | *Where does untrusted input flow?* | `dataflow`, `taint`, `reaches` |
 | *What are the subsystems here?* | `communities` |
+| *Where is every file, and is its graph current?* | `tree` |
+| *Which repository/analysis revision produced this graph?* | `history` |
 | *What should I read for this task?* | `suggest`, `explain` |
 | *Show me the neighborhood* | `visualize` — seeded, interactive HTML |
 
@@ -149,7 +152,7 @@ Full reference: **[CLI](docs/cli.md)** · **[MCP tools](docs/mcp.md)** · **[Lib
 - **Semantic L1 via LSP.** Promotes edges to `certain` through one generic LSP
   client; every dedicated language has a resolver wired.
   → [Languages & Resolvers](docs/languages.md)
-- **Agent-oriented MCP layer.** 20 tools returning a structured freshness/
+- **Agent-oriented MCP layer.** 22 tools returning a structured freshness/
   completeness envelope, plus high-level tools (`change_impact`,
   `find_related_tests`, `explain_symbol`…). → [MCP](docs/mcp.md)
 - **Investigative visualization.** Seeded subgraphs (neighborhood/callers/
@@ -205,7 +208,7 @@ Dart…). Implementation presence is not a claim of product parity.
 | **[Product Contract](docs/PRODUCT_CONTRACT.md)** | Canonical scope, required graph and acceptance gates |
 | **[Core Concepts](docs/concepts.md)** | The graph model, confidence tiers, the freshness guarantee, layers L0–L3 |
 | **[CLI Reference](docs/cli.md)** | Every command, flag, and output format |
-| **[Agents & MCP](docs/mcp.md)** | The 20 MCP tools and the response envelope |
+| **[Agents & MCP](docs/mcp.md)** | The 22 MCP tools and the response envelope |
 | **[Library / Host API](docs/library.md)** | Embedding GraphCodeMap in a service |
 | **[Languages & Resolvers](docs/languages.md)** | Language tiers and L1/LSP resolution |
 | **[Product Maturity](docs/MATURITY.md)** | Evidence levels, current gaps and honest parity boundaries |
@@ -217,11 +220,13 @@ Dart…). Implementation presence is not a claim of product parity.
 
 ## Status
 
-**Alpha (v0.1.0), undergoing a product reset.** Symbol extraction, a partial
-call graph, incremental indexing and on-demand dataflow exist. The required
-phase-one graph is not complete yet: parameters/locals and persistent
-`reads`/`writes`/`flows_to` remain open, semantic readiness is uneven, and broad
-real-world onboarding has not passed. Historical benchmark results are retained
+**Alpha (v0.1.0), undergoing a product reset.** Java/Python declarations,
+parameters, locals, fields/properties and persistent `contains`/`defines`/
+`reads`/`writes`/simple `returns` now share one structural model. A separate
+physical repository graph records every non-ignored folder/file, exact hashes,
+index state and Git-aware graph-stage revisions. Persistent interprocedural
+`flows_to`, semantic readiness and broad real-world onboarding remain open.
+Historical benchmark results are retained
 as bounded subsystem evidence, not as a declaration that the product is ready.
 See the [Product Contract](docs/PRODUCT_CONTRACT.md) and
 [maturity matrix](docs/MATURITY.md).

@@ -25,7 +25,8 @@ experimental until this phase-one contract is complete. See the canonical
 - [x] Make the Java/Python Product Contract canonical.
 - [x] Separate experimental language breadth from phase-one support.
 - [x] Fix the MCP `doctor` crash found by the installed-path audit.
-- [ ] Report indexed, partial, failed, unsupported, ignored and oversized files.
+- [x] Report physical/index states (`indexed`, `partial`, `failed`, `skipped`,
+  `not_applicable`); ignored paths stay outside the snapshot by policy.
 - [ ] Expose semantic `not_started/running/complete/partial` to every interface.
 
 ### G1 — Complete and stable structural graph
@@ -34,8 +35,11 @@ experimental until this phase-one contract is complete. See the canonical
 - [x] Include nested methods/functions in file and diff impact.
 - [x] Keep overload identities stable when siblings are inserted.
 - [x] Resolve ordinary packaged Python `src/` identities.
-- [ ] Persist `contains`, parameters, locals, `defines`, `reads` and `writes`.
-- [ ] Guarantee strict freshness or label stat-only verification distinctly.
+- [x] Persist `contains`, parameters, locals, fields/properties, `defines`,
+  `reads`, `writes` and structurally provable simple `returns`.
+- [x] Verify exact content hashes during read-repair, including unchanged
+  size/mtime.
+- [x] Persist the physical folder/file graph and Git-aware per-stage revisions.
 
 ### G2 — Reliable semantic linking
 
@@ -65,16 +69,17 @@ experimental until this phase-one contract is complete. See the canonical
 
 ## Current position
 
-G0 is partially complete and G1 is the active gate. The product has a useful
-file/declaration/basic-call graph, incremental relinking and optional semantic
-refinement. It does **not** yet persist the complete variable and value-flow
-model required by the Product Contract. Historical OWASP, Juliet and real-app
+G0 is partially complete; the shared Java/Python structural core of G1 is now
+implemented. The product persists the physical repository and structural
+declaration/variable graph with exact freshness and revision metadata. G1 still
+needs broader golden/canary proof, while persistent interprocedural value flow
+belongs to G3. Historical OWASP, Juliet and real-app
 results remain valuable subsystem evidence, but they cannot promote the whole
 product or either focus language by themselves.
 
-The next micro-goal is deliberately singular: implement the shared persistent
-structural vocabulary (`contains`, parameters, locals, `defines`, `reads` and
-`writes`) for Python and Java, with the same golden scenarios and schemas.
+The next micro-goal is deliberately singular: validate the shared structural
+contract on ordinary Java/Python canaries, then close G2 semantic lifecycle and
+linking before implementing persistent `flows_to` in G3.
 
 ## Execution policy
 

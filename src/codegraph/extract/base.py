@@ -31,6 +31,8 @@ class Ref:
     dst_name: str      # alvo textual (guess) — SEMPRE preenchido
     line: int          # 1-based
     col: int = 0       # 0-based; posição do NOME do alvo (para resolvers L1)
+    confidence: str = "possible"
+    resolver: str = "l0"
 
 
 _WS = re.compile(r"\s+")

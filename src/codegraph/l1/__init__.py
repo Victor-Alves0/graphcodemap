@@ -15,6 +15,7 @@ import json
 import time
 
 from ..community import mark_dirty as mark_community_dirty
+from ..db import record_current_stage
 from ..indexer import Indexer
 from ..log import get as _get_log
 from ..rank import mark_dirty
@@ -336,6 +337,12 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (json.dumps(record, ensure_ascii=False),))
         conn.commit()
+        record_current_stage(
+            conn, "l1", "resolver-set", record["status"], {
+                "files": record["files"], "promoted": record["promoted"],
+                "errors": record["errors"], "attempted": record["attempted"],
+                "unavailable": record["unavailable"],
+            })
 
     if not resolvers:
         persist_last_run()

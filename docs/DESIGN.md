@@ -114,9 +114,9 @@ Consultas transitivas (impact, callers com depth>1) propagam a **mínima** confi
 
 Quatro defesas em camadas; a meta é que seja impossível servir um fato sem saber seu frescor:
 
-1. **Startup — diff de Merkle.** Árvore de content-hashes por diretório persistida em `meta`. No boot: recomputa (mtime+size como fast-path; hash só quando divergem), re-indexa o delta. Cobre git pull, troca de branch, edições com o daemon desligado.
+1. **Startup — diff de snapshot.** A árvore física e os content-hashes persistidos são comparados no boot; mtime+size são apenas hints e não substituem o hash exato. Re-indexa o delta e cobre git pull, troca de branch, edições com o daemon desligado e alterações que preservam tamanho/mtime.
 2. **Sessão — file watcher.** Watcher nativo com debounce de 500ms–2s; eventos enfileiram re-index L0 do arquivo. Watch em `.git/HEAD` e `.git/refs` dispara diff de Merkle completo (troca de branch muda muitos arquivos de uma vez).
-3. **Query — read-repair (a garantia final).** Toda tool, antes de responder: verifica `content_hash` dos arquivos que aparecem na resposta (fast-path mtime+size). Divergiu → re-parse L0 síncrono desses arquivos (ms) e responde com dado fresco, anotando `read_repaired`. Se >20 arquivos sujos (caso patológico), responde com os frescos + aviso `stale` explícito em vez de bloquear.
+3. **Query — read-repair (a garantia final).** Toda tool, antes de responder, verifica o `content_hash` exato dos arquivos relevantes. Divergiu → re-parse L0 síncrono e responde com dado fresco, anotando `read_repaired`. Se o orçamento de reparo for excedido, a resposta deve declarar `stale` em vez de fingir frescor.
 4. **L1/L3 — frescor declarado, nunca fingido.** Refinamento LSP é assíncrono: enquanto não chega, as arestas são L0 (`inferred`/`possible`) — corretas quanto à própria incerteza. Descrições L3 comparam `source_hash` vs `body_hash` na leitura: divergiu → servida com flag `stale: true` (e opcionalmente re-gerada sob demanda).
 
 ## 3. Contrato das tools

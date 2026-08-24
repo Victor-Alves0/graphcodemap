@@ -111,6 +111,27 @@ reason.
 
 ## Navigation
 
+### `tree`
+
+```
+codegraph tree [path] [--depth N] [--no-refresh]
+```
+
+Shows the physical repository graph: directories, files and symbolic links,
+including non-code assets. Each file carries its exact content hash, detected
+language and indexing state. By default it refreshes the repository snapshot;
+`--no-refresh` reads the last recorded snapshot.
+
+### `history`
+
+```
+codegraph history [--limit N] [--git-commit SHA]
+```
+
+Shows Git-aware graph revisions and the independently versioned analysis stages
+that produced them. Dirty worktrees are distinguished by repository snapshot
+hash; history records graph metadata/fingerprints, not copies of source bytes.
+
 ### `overview`
 
 ```

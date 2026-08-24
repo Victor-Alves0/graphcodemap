@@ -30,9 +30,10 @@ is the only writer.
 
 ## The layers
 
-- **L0 — structural.** tree-sitter parses each file; extractors emit symbols and
-  `calls`/`imports`/`inherits` edges plus conservative `framework` wiring. Runs
-  on any repo, no configuration.
+- **L0 — structural.** tree-sitter parses each file; Java/Python also persist
+  parameters, locals, fields/properties and exact `contains`/`defines`/`reads`/
+  `writes`/simple `returns` facts. Extractors emit calls, imports, inheritance
+  and conservative framework wiring. Runs locally with no semantic server.
 - **L1 — semantic.** An async LSP/jedi resolver promotes edges to `certain`.
   Optional; see [Languages & Resolvers](languages.md).
 - **L2 — graph metrics.** PageRank (centrality) and Louvain (communities),
@@ -62,6 +63,13 @@ The essential tables:
   `resolver` (`l0`/`l1`).
 - **`descriptions`** — L3 cache keyed by `(symbol_id, scope)`, with `source_hash`
   for freshness.
+- **`repository_nodes`** — the physical tree: every non-ignored directory,
+  regular file and symbolic link, including non-code assets, with parent path,
+  exact hash, language (when recognized) and indexing state.
+- **`graph_revisions`** — deterministic repository snapshots tied to the current
+  Git commit/dirty state and the aggregate graph artifact hash.
+- **`graph_stage_runs`** — independently versioned `filesystem`, `l0`, `l1`,
+  L2 metrics, `l3` and `dataflow` stage status/artifact hashes per revision.
 - **`meta`** — schema version, repo root, exclusion policy, sweep bookkeeping.
 
 A **unique index** on the resolved-edge shape is a structural guard against the
@@ -87,11 +95,11 @@ reindex-reconnects, and more.
 
 ## Freshness, in the code path
 
-1. **Boot scan** recomputes content-hashes (mtime+size fast-path) and re-indexes
-   the delta — catching branch switches and offline edits.
+1. **Boot scan** compares exact content hashes and re-indexes the delta —
+   catching branch switches, offline edits and same-size/same-mtime changes.
 2. **Watcher** queues L0 re-index on file events with a debounce.
-3. **Read-repair** runs inside every query: verify the hashes of the files in the
-   answer, re-parse on drift, then answer. New files are indexed here too.
+3. **Read-repair** runs inside every query: verify exact bytes for indexed files,
+   re-parse on drift, then answer. New and deleted files are reconciled too.
 
 In the production path (MCP server with the watcher on), the O(files) freshness
 sweep is **skipped while a live watcher already guarantees freshness** — a 30s

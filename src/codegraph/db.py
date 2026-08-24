@@ -9,11 +9,13 @@ Regras de propriedade que tornam o incremental correto:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 import time
 from pathlib import Path
 
-SCHEMA_VERSION = "5"
+SCHEMA_VERSION = "6"
 
 
 def retry_on_locked(fn, tries: int = 6, base_delay: float = 0.05):
@@ -29,6 +31,35 @@ def retry_on_locked(fn, tries: int = 6, base_delay: float = 0.05):
                 raise
             time.sleep(base_delay * (2 ** i))
 
+
+def record_current_stage(conn: sqlite3.Connection, stage: str,
+                         stage_version: str, status: str,
+                         details: dict | None = None) -> int | None:
+    """Version a derived stage against the current repository revision."""
+    row = conn.execute(
+        "SELECT r.id, r.source_snapshot_hash FROM graph_revisions r "
+        "JOIN meta m ON m.key='current_graph_revision' "
+        "AND CAST(m.value AS INTEGER)=r.id"
+    ).fetchone()
+    if row is None:
+        return None
+    payload = json.dumps(details or {}, ensure_ascii=False, sort_keys=True)
+    artifact = hashlib.blake2b(
+        f"{row['source_snapshot_hash']}\0{stage}\0{stage_version}\0{payload}"
+        .encode("utf-8"), digest_size=16).hexdigest()
+    now = int(time.time())
+    conn.execute(
+        "INSERT INTO graph_stage_runs(revision_id,stage,stage_version,status,"
+        "artifact_hash,details_json,started_at,completed_at) "
+        "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(revision_id,stage) DO UPDATE SET "
+        "stage_version=excluded.stage_version,status=excluded.status,"
+        "artifact_hash=excluded.artifact_hash,details_json=excluded.details_json,"
+        "completed_at=excluded.completed_at",
+        (row["id"], stage, stage_version, status, artifact, payload, now, now),
+    )
+    conn.commit()
+    return int(row["id"])
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
   id           INTEGER PRIMARY KEY,
@@ -40,6 +71,60 @@ CREATE TABLE IF NOT EXISTS files (
   parse_status TEXT NOT NULL DEFAULT 'ok'
                CHECK(parse_status IN ('ok','partial','failed')),
   indexed_at   INTEGER NOT NULL
+);
+
+-- Snapshot físico do repositório. Inclui diretórios e arquivos que não são
+-- código (README, configs, assets etc.); ``files`` continua sendo a projeção
+-- parseável usada pelo grafo de símbolos.
+CREATE TABLE IF NOT EXISTS repository_nodes (
+  id            TEXT PRIMARY KEY,
+  parent_id     TEXT REFERENCES repository_nodes(id) ON DELETE CASCADE,
+  path          TEXT UNIQUE NOT NULL,
+  kind          TEXT NOT NULL CHECK(kind IN ('repository','directory','file','symlink')),
+  content_hash  TEXT,
+  size          INTEGER,
+  mtime         INTEGER,
+  language      TEXT,
+  index_state   TEXT CHECK(index_state IS NULL OR index_state IN
+                  ('pending','indexed','partial','skipped','failed','not_applicable')),
+  state_reason  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_repository_nodes_parent
+  ON repository_nodes(parent_id, path);
+
+-- Uma revisão identifica o snapshot observado, mesmo quando o worktree está
+-- dirty. O commit Git dá o ancestral reproduzível; source_snapshot_hash
+-- distingue mudanças ainda não commitadas.
+CREATE TABLE IF NOT EXISTS graph_revisions (
+  id                   INTEGER PRIMARY KEY,
+  parent_revision_id   INTEGER REFERENCES graph_revisions(id),
+  trigger              TEXT NOT NULL,
+  git_commit           TEXT,
+  git_dirty            INTEGER NOT NULL DEFAULT 0,
+  source_snapshot_hash TEXT NOT NULL,
+  started_at           INTEGER NOT NULL,
+  completed_at         INTEGER,
+  status               TEXT NOT NULL,
+  changed_files        INTEGER NOT NULL DEFAULT 0,
+  removed_files        INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_graph_revisions_git
+  ON graph_revisions(git_commit, id DESC);
+CREATE INDEX IF NOT EXISTS idx_graph_revisions_snapshot
+  ON graph_revisions(source_snapshot_hash, id DESC);
+
+-- Cada camada declara qual implementação rodou sobre qual snapshot e o hash
+-- determinístico de seu artefato. Stages futuros entram sem migrar o schema.
+CREATE TABLE IF NOT EXISTS graph_stage_runs (
+  revision_id    INTEGER NOT NULL REFERENCES graph_revisions(id) ON DELETE CASCADE,
+  stage          TEXT NOT NULL,
+  stage_version  TEXT NOT NULL,
+  status         TEXT NOT NULL,
+  artifact_hash  TEXT,
+  details_json   TEXT NOT NULL DEFAULT '{}',
+  started_at     INTEGER NOT NULL,
+  completed_at   INTEGER,
+  PRIMARY KEY(revision_id, stage)
 );
 
 CREATE TABLE IF NOT EXISTS symbols (
@@ -158,7 +243,8 @@ def connect(db_path: Path) -> sqlite3.Connection:
         # nunca exige intervenção manual (docs/DESIGN.md §0.1)
         for table in ("symbols_fts", "edges", "descriptions",
                       "module_descriptions", "communities", "symbols",
-                      "files", "meta"):
+                      "graph_stage_runs", "graph_revisions",
+                      "repository_nodes", "files", "meta"):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.execute(
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")

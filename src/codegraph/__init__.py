@@ -84,6 +84,13 @@ class CodeGraph:
     def communities(self, limit: int = 20, min_size: int = 3):
         return self.query.communities(limit=limit, min_size=min_size)
 
+    def repository_tree(self, path: str = "", depth: int = 4,
+                        refresh: bool = True):
+        return self.query.repository_tree(path=path, depth=depth, refresh=refresh)
+
+    def graph_history(self, limit: int = 20, git_commit: str | None = None):
+        return self.query.graph_history(limit=limit, git_commit=git_commit)
+
     def visualize(self, mode: str | None = None, *, level: str | None = None,
                   scope: str | None = None, top: int = 250,
                   symbol: str | None = None, depth: int = 3,

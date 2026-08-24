@@ -26,7 +26,7 @@ AI agent — organized from first run to internals.
 
 - **[CLI Reference](cli.md)** — every subcommand, its flags, and the exact output
   format it prints.
-- **[Agents & MCP](mcp.md)** — the 20 MCP tools, how to register the server, and
+- **[Agents & MCP](mcp.md)** — the 22 MCP tools, how to register the server, and
   the freshness/completeness envelope every answer carries.
 - **[Library / Host API](library.md)** — embedding GraphCodeMap in a service:
   change detection, per-call LLM credentials, exclusion policy, multi-tenant

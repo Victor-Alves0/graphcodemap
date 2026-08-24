@@ -9,10 +9,20 @@ overloads existentes. Mover de arquivo continua quebrando a identidade (v1).
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 
 def content_hash(data: bytes) -> str:
     return hashlib.blake2b(data, digest_size=16).hexdigest()
+
+
+def content_hash_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """Exact streaming hash for repository snapshots, including large assets."""
+    digest = hashlib.blake2b(digest_size=16)
+    with path.open("rb") as stream:
+        while chunk := stream.read(chunk_size):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def byte_column(source: bytes, offset: int) -> int:
