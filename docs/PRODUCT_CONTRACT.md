@@ -149,11 +149,23 @@ The G3 focus-language value graph now provides:
 - per-function body + resolved-call input hashes, atomic rebuild and cross-file
   read-repair;
 - separate Java/Python heap limitations and conservative CFG may-flow status.
+- a `persistent-v2` materializer whose bounded dogfood cold build fell from the
+  historical 43.04s to 11.64s; no-change reuse is 0.109s.
+
+The first G4 vertical slice now provides:
+
+- entry-scoped CWE-22/path-traversal candidates for Java and Python;
+- source/sink locations, ordered persisted nodes/edges, confidence, rule and
+  stage evidence through identical library, CLI JSON and MCP result facts;
+- `unknown`, never `safe`, when no persisted path is found;
+- explicit non-suppression when a sanitizer transformation is not represented
+  canonically in the persisted graph.
 
 It does **not** yet satisfy the entire required product:
 
-- the existing rich `dataflow` compatibility response and `taint` engine have
-  not yet been migrated to consume only the canonical persisted graph (G4);
+- only the first entry-scoped path-traversal family consumes the canonical
+  persisted graph; the rich `dataflow` response and broader `taint` engine are
+  still compatibility paths;
 - non-focus languages retain their existing on-demand dataflow;
 - common packaged Python `src/` identity and semantic linking have one ordinary
   Flask canary, but product acceptance still requires a second Python repo;
@@ -206,14 +218,20 @@ CPG and not universal SAST parity.
   flow-sensitive engine remains available during G4 migration.
 - **Delivered:** state/heap limitations are separate in the stage receipt for
   Java and Python.
-- **Measured baseline:** the 74-file `src/codegraph` scope builds 1,129 callable
-  summaries into 20,956 nodes/30,372 edges in 43.04s; no-change reuse is 0.107s.
+- **Measured optimized baseline:** the current `src/codegraph` scope builds
+  1,150 callable summaries into 21,331 nodes/30,948 edges in 11.64s; no-change
+  reuse is 0.109s. The historical pre-optimization run was 43.04s. A same-state
+  comparison against the legacy locator produced identical result/table hashes.
   The receipt reports mapped/unmapped path events. That ratio measures structural
   mapping availability, not vulnerability recall or precision.
 
 ### G4 — Vulnerability analysis
 
-- Rules consume the persistent flow graph.
+- **First delivered family:** entry-scoped path traversal consumes only the
+  persistent flow graph and returns candidate/unknown with bounded traversal.
+- Persist external source-call results and sanitizer-return transformations
+  before claiming repo-wide path-traversal negatives.
+- Migrate the remaining rules only after equivalent focused contracts.
 - Java and Python each get labeled vulnerable/fixed and negative corpora.
 - Findings remain reproducible and inspectable through library, CLI and MCP.
 

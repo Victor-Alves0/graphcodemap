@@ -288,6 +288,22 @@ answers whether that value can reach the target; without one it lists reachable
 call arguments and returns. Paths carry confidence and are conservative
 may-flow: branch feasibility and heap aliases are explicit limitations.
 
+### `path-traversal`
+
+```
+codegraph path-traversal <entry> [--max-hops N] [--max-findings N] [--json]
+```
+
+Runs the first persistent G4 rule family: each parameter of the selected Java
+or Python entry is an explicit trust-boundary source, and ordered `flows_to`
+paths are classified against path/file API arguments. Findings include CWE-22,
+rule identity, source and sink locations, every node/edge, confidence,
+sanitization status and stage evidence. `--json` emits that complete structure.
+
+This is deliberately entry-scoped. No finding means `unknown`, not `safe`.
+External source-call returns and sanitizer-return transformations are not yet
+canonical persisted nodes, so sanitizer names never suppress a candidate.
+
 ### `taint`
 
 ```

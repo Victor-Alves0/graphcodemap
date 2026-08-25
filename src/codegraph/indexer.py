@@ -23,6 +23,7 @@ from . import community, extract, rank
 from .db import (SCHEMA_VERSION, connect, default_db_path, read_l1_lifecycle,
                  retry_on_locked, write_l1_lifecycle)
 from .extract.base import Sym
+from .flowgraph import DATAFLOW_STAGE_VERSION
 from .languages import MARKUP, get_parser, language_for
 from .log import get as _get_log
 from .structural import enrich_structural
@@ -827,7 +828,7 @@ class Indexer:
             details={"cached": self.conn.execute(
                 "SELECT COUNT(*) FROM descriptions").fetchone()[0]})
         if (not dataflow_source_changed and previous_dataflow is not None
-                and previous_dataflow["stage_version"] == "persistent-v1"
+                and previous_dataflow["stage_version"] == DATAFLOW_STAGE_VERSION
                 and previous_dataflow["status"] == "complete"):
             try:
                 dataflow_details = json.loads(previous_dataflow["details_json"])
@@ -835,12 +836,12 @@ class Indexer:
                 dataflow_details = {}
             dataflow_details.update({"cached": True, "carried_forward": True})
             self.record_stage(
-                revision_id, "dataflow", "persistent-v1", "complete",
+                revision_id, "dataflow", DATAFLOW_STAGE_VERSION, "complete",
                 artifact_hash=previous_dataflow["artifact_hash"],
                 details=dataflow_details)
         else:
             self.record_stage(
-                revision_id, "dataflow", "persistent-v1", "dirty",
+                revision_id, "dataflow", DATAFLOW_STAGE_VERSION, "dirty",
                 details={"persistent": True,
                          "reason": "l0_value_universe_changed"})
         self.current_revision_id = revision_id

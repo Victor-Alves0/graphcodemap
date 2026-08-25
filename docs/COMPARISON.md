@@ -18,7 +18,7 @@ fazemos melhor, e do que falta para superá-los.
 | Comunidades | Leiden + labels por LLM (camada "domínio") | **temos** (Louvain próprio + labels L3 opcionais, invalidados por assinatura de membros); Leiden é refinamento futuro |
 | Visualização | HTML interativo | **temos** — subgrafos de investigação semeados (neighborhood/callers/callees/impact/domains), arestas por confiança, destaque de git-diff; HTML autocontido |
 | Time/CI | PR tools, triage, HTTP multi-user, merge driver | local-first single-user; `change-impact`/`affected-modules` já respondem a um diff |
-| Ecossistema | 20+ plataformas, skills por IDE, 164 releases | MCP (25 tools) + CLI + lib |
+| Ecossistema | 20+ plataformas, skills por IDE, 164 releases | MCP (26 tools) + CLI + lib |
 
 ## Onde o CodeGraph é tecnicamente superior
 

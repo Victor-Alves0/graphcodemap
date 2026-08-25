@@ -84,7 +84,7 @@ The design intent: an agent reads `confidence: "certain"` and `fresh: true` and
 can **stop** — no re-reading files to double-check. That is where the graph turns
 into both a correctness win and a token win.
 
-## The 25 tools
+## The 26 tools
 
 ### Core navigation
 
@@ -116,6 +116,7 @@ into both a correctness win and a token win.
 | `dataflow` | Where each parameter's data flows. |
 | `build_dataflow` | Atomically materialize/reuse Java/Python `flows_to`. |
 | `flow_path` | Query persisted value reachability between stable nodes. |
+| `path_traversal` | Entry parameters → path/file APIs over persisted `flows_to`; candidate or unknown. |
 | `taint` | Untrusted input → dangerous sink (with sanitizers). |
 | `reaches` | Does a path from an entry point reach a sink? (chain + verdict) |
 
@@ -142,7 +143,8 @@ into both a correctness win and a token win.
 3. **Understand** it with `symbol_info` / `explain_symbol` / `ego_graph`.
 4. **Reason about change** with `impact` / `change_impact` / `find_related_tests`
    — and trust `certain` + `fresh` answers instead of re-reading.
-5. **Check security-sensitive flows** with `taint` / `reaches` before shipping.
+5. **Check security-sensitive flows** with `path_traversal` for entry-scoped
+   CWE-22 evidence, or `taint` / `reaches` for the broader compatibility engine.
 
 ## Notes
 

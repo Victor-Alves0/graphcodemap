@@ -380,6 +380,37 @@ def flow_path(source, data, env) -> str:
     return warnings(env) + "\n".join(lines)
 
 
+def path_traversal(entry, data, env) -> str:
+    findings = data["findings"]
+    lines = [
+        f"path traversal persistente (CWE-22) de {entry['fqn']}: "
+        f"{len(findings)} candidato(s); veredito={data['verdict']}",
+    ]
+    for index, finding in enumerate(findings, 1):
+        source = finding["source"]
+        sink = finding["sink"]
+        evidence = sink["evidence"]
+        names = " → ".join(
+            node["access_path"] or node["name"]
+            for node in finding["path"]["nodes"])
+        lines.append(
+            f"  [{index}] [{finding['confidence']}] {finding['rule_id']}: "
+            f"{source['path']}:{source['line']} {source['name']} → "
+            f"{sink['path']}:{sink['line']} "
+            f"{evidence.get('qualified') or evidence['callee']}"
+            f" arg#{evidence['argument_index']}")
+        lines.append(f"      flows_to: {names}")
+        lines.append(
+            "      sanitização: não comprovada; o candidato não foi suprimido")
+    if not findings:
+        lines.append("  nenhum caminho persistido encontrado; resultado desconhecido.")
+    limitations = data.get("completeness", {}).get("limitations", ())
+    if limitations:
+        lines.append("  limitações:")
+        lines.extend(f"    - {item}" for item in limitations)
+    return warnings(env) + "\n".join(lines)
+
+
 _TRUST = {
     "certain": "confiança ALTA — cadeia resolvida semanticamente (L1); "
                "pode confiar sem reler o código.",

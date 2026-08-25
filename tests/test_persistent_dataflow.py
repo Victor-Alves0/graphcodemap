@@ -168,7 +168,7 @@ def test_taint_query_does_not_replace_persistent_dataflow_receipt(tmp_path):
 
     graph.taint(entry="app.handle")
 
-    assert graph.doctor()["dataflow"]["stage_version"] == "persistent-v1"
+    assert graph.doctor()["dataflow"]["stage_version"] == "persistent-v2"
     stages = {row["stage"]: row["status"] for row in
               graph.indexer.conn.execute(
                   "SELECT stage,status FROM graph_stage_runs")}

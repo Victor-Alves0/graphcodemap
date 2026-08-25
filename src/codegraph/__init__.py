@@ -116,6 +116,12 @@ class CodeGraph:
         return self.query.flow_path(source, target=target, max_hops=max_hops,
                                     max_paths=max_paths)
 
+    def path_traversal(self, entry: str, max_hops: int = 64,
+                       max_findings: int = 50):
+        """CWE-22 candidates from persisted flows rooted at entry parameters."""
+        return self.query.path_traversal(
+            entry, max_hops=max_hops, max_findings=max_findings)
+
     def taint(self, scope: str | None = None, entry: str | None = None,
               depth: int | None = None, max_findings: int = 100,
               deadline_ms: int | None = None, max_steps: int | None = None,

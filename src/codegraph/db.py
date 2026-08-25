@@ -247,6 +247,8 @@ CREATE INDEX IF NOT EXISTS idx_dataflow_nodes_function
   ON dataflow_nodes(function_id, kind);
 CREATE INDEX IF NOT EXISTS idx_dataflow_nodes_symbol
   ON dataflow_nodes(symbol_id);
+CREATE INDEX IF NOT EXISTS idx_dataflow_nodes_file
+  ON dataflow_nodes(file_id);
 
 CREATE TABLE IF NOT EXISTS dataflow_edges (
   id                TEXT PRIMARY KEY,
@@ -270,6 +272,8 @@ CREATE INDEX IF NOT EXISTS idx_dataflow_edges_dst
   ON dataflow_edges(dst_node_id, relation);
 CREATE INDEX IF NOT EXISTS idx_dataflow_edges_owner
   ON dataflow_edges(owner_function_id);
+CREATE INDEX IF NOT EXISTS idx_dataflow_edges_file
+  ON dataflow_edges(file_id);
 
 CREATE TABLE IF NOT EXISTS dataflow_function_state (
   function_id  TEXT PRIMARY KEY,
@@ -280,6 +284,8 @@ CREATE TABLE IF NOT EXISTS dataflow_function_state (
   details_json TEXT NOT NULL DEFAULT '{}',
   built_at     INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_dataflow_function_state_file
+  ON dataflow_function_state(file_id);
 
 CREATE TABLE IF NOT EXISTS descriptions (
   symbol_id    TEXT NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,

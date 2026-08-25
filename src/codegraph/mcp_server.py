@@ -267,6 +267,24 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
         return guard(run)
 
     @mcp.tool()
+    def path_traversal(entry: str, max_hops: int = 64,
+                       max_findings: int = 50) -> agent.Response:
+        """Candidatos CWE-22 a partir dos parâmetros de uma função de entrada.
+
+        Os caminhos ordenados vêm exclusivamente do `flows_to` persistente de
+        Java/Python. Ausência de achado significa `unknown`, não `safe`; retornos
+        de fontes externas e transformações por sanitizer ainda são limitações
+        explícitas desta primeira família G4.
+        """
+        def run():
+            selected, data, env = engine.path_traversal(
+                entry, max_hops=max_hops, max_findings=max_findings)
+            return agent.build(
+                render.path_traversal(selected, data, env), env,
+                results=data["findings"])
+        return guard(run)
+
+    @mcp.tool()
     def taint(scope: str | None = None, entry: str | None = None,
               depth: int | None = None, max_findings: int = 100,
               deadline_ms: int | None = None, max_steps: int | None = None) -> agent.Response:

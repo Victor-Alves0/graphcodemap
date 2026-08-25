@@ -58,6 +58,7 @@ cg.semantic_coverage(sample_limit=20)       # callsite outcomes/reasons
 cg.data_flow(selector, depth=2)
 cg.build_dataflow(force=False)                 # persistent Java/Python flows_to
 cg.flow_path(source, target=None, max_hops=64, max_paths=20)
+cg.path_traversal(entry, max_hops=64, max_findings=50)
 cg.taint(scope=None, entry=None, depth=4)
 cg.reaches(selector, sink="http", via=None, depth=8)
 cg.visualize(mode=None, symbol=None, depth=3, ...)   # returns (data, envelope)
@@ -68,6 +69,11 @@ cg.compact()                                # rebuild + reclaim (VACUUM)
 ```
 
 See [CLI Reference](cli.md) for the semantics of each — the arguments line up.
+
+`path_traversal` returns `(entry, result, envelope)`. It is the first G4 family
+whose ordered value paths come only from the persisted graph. Its entry
+parameters are the explicit sources; `result["verdict"]` is `candidate` or
+`unknown` and is never a fabricated `safe` verdict.
 
 ## Closing the edit loop: `index()["changes"]`
 

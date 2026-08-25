@@ -66,16 +66,23 @@ experimental until this phase-one contract is complete. See the canonical
 - [x] Compose parameter/local/field/call/return flow across functions.
 - [x] Expose conservative CFG and separate Java/Python heap limitations in the
   versioned stage receipt. Atomic failure and concurrent-writer contracts pass.
-- [x] Record a bounded dogfood baseline: `src/codegraph` (74 files, 1,129
-  callables) publishes 20,956 nodes/30,372 edges in 43.04s and reuses the
-  snapshot in 0.107s. Structural path-event mapping is 80.1%; this is not a
-  recall score.
+- [x] Optimize the bounded dogfood baseline: current `src/codegraph` publishes
+  21,331 nodes/30,948 edges for 1,150 callables in 11.64s and reuses the
+  snapshot in 0.109s (historical cold run: 43.04s). Structural path-event
+  mapping is 80.0%; this is not a recall score.
+- [x] Reject stale L1 inputs, keep value-node identities distinct, filter a
+  directed target before path limits and index incremental file cleanup.
 
 ### G4 — Vulnerability analysis
 
-- [ ] Make rules consume the canonical persistent flow graph.
+- [x] Migrate entry-scoped path traversal as the first rule family consuming
+  canonical persisted paths, with candidate/unknown semantics.
+- [ ] Persist external source-call results and sanitizer-return transformations;
+  then add repo-wide path-traversal mode without fabricating negative proofs.
+- [ ] Migrate the remaining vulnerability families.
 - [ ] Add labeled vulnerable/fixed and negative corpora for both focus languages.
-- [ ] Preserve source, sink, path, sanitizer decision and completeness evidence.
+- [x] Preserve source, sink, ordered path, sanitizer decision and completeness
+  evidence identically in library, CLI JSON and MCP for the first family.
 
 ### G5 — Product acceptance
 
@@ -94,9 +101,9 @@ Historical OWASP, Juliet and real-app
 results remain valuable subsystem evidence, but they cannot promote the whole
 product or either focus language by themselves.
 
-The next micro-goal is deliberately singular: G4 migrates one vulnerability
-family end-to-end so its rules consume canonical persisted paths, with identical
-library/CLI/MCP evidence before broader corpus replay.
+The next micro-goal remains narrow: represent external source-call results and
+sanitizer-return transformations as canonical value nodes. That closes the
+declared boundary of the first G4 family before any repo-wide corpus replay.
 
 ## Execution policy
 

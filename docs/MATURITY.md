@@ -40,8 +40,9 @@ Generated from code inspection, focused contracts and black-box dogfooding on
 Those counts describe code breadth, not a completed product. Java and Python
 both have dedicated extraction, a shared persistent structural graph of
 parameters/locals/fields/properties/reads/writes, optional semantic linking and
-a persistent G3 value graph. Security rules still use the richer on-demand
-engine until G4 migrates them onto canonical persisted paths. Java
+a persistent G3 value graph. Entry-scoped path traversal is the first G4 rule
+family on canonical persisted paths; broader security rules still use the
+richer on-demand compatibility engine. Java
 has stronger bounded security evidence;
 Python has simpler semantic setup through Jedi. Neither is promoted as a
 complete phase-one language until G0–G5 of the Product Contract pass.
@@ -56,7 +57,7 @@ readable view.
 | Graph and freshness | Physical folders/files, exact hashes, per-file incremental relinking and Git-aware stage revisions work | Broader ordinary-repository proof and public schema versioning |
 | L0 extraction | Shared Java/Python parameters, locals, fields/properties, containment, definitions, reads/writes and simple returns persist; focused golden canaries cover Python packaging and Java lexical shadowing | Broader ordinary-repository canaries |
 | L1 resolution | Lifecycle is atomic; matrices pass 5/5 Python and 7/7 Java; Flask/PetClinic refine 78.8%/96.9% of local candidates; PetClinic warm revalidation is 37.61s and no-change L1 is 0.10s | A second ordinary repo per language and finer framework/dynamic reasons |
-| Dataflow and taint | G3 persists Java/Python def-use/interprocedural flow atomically with incremental hashes; scoped dogfood builds 20,956 nodes/30,372 edges in 43.04s and reuses them in 0.107s; the flow-sensitive taint engine remains on demand | G4 rules consume canonical paths; improve first-build throughput and validate Java/Python security separately |
+| Dataflow and taint | G3 `persistent-v2` persists Java/Python def-use/interprocedural flow atomically; scoped dogfood builds 21,331 nodes/30,948 edges in 11.64s and reuses them in 0.109s. Entry-scoped CWE-22 is the first G4 consumer; broader taint remains on demand | Persist source/sanitizer result transformations, validate the first family on labeled Java/Python corpora, then migrate more rules |
 | CLI, library and MCP | Main surfaces exist; MCP doctor crash fixed during reset, other readiness/coverage gaps remain | Installed acceptance journey and equivalent result sets |
 | Visualization | Functional; script-breakout regression covered | Large-graph performance budget and browser smoke suite |
 | L3 descriptions | Experimental and optional | Provider-neutral quality/cost evaluation; not a v0.2 blocker |

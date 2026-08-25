@@ -17,6 +17,7 @@ import time
 from ..community import mark_dirty as mark_community_dirty
 from ..db import (read_l1_lifecycle, record_current_stage,
                   write_l1_lifecycle)
+from ..flowgraph import DATAFLOW_STAGE_VERSION
 from ..indexer import Indexer
 from ..log import get as _get_log
 from ..rank import mark_dirty
@@ -223,7 +224,7 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
         # per-function input hashes will reuse unchanged summaries, but readers
         # must not treat the previous whole-stage receipt as current.
         record_current_stage(
-            conn, "dataflow", "persistent-v1", "dirty", {
+            conn, "dataflow", DATAFLOW_STAGE_VERSION, "dirty", {
                 "persistent": True, "reason": "l1_call_graph_revalidated",
             }, commit=False)
         conn.commit()

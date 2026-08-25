@@ -78,7 +78,7 @@ def test_mcp_server_tools(repo):
     names = {t.name for t in tools}
     expected = {"overview", "find_symbol", "symbol_info", "references",
                 "callers", "callees", "impact", "ego_graph", "dataflow",
-                "build_dataflow", "flow_path", "taint", "reaches",
+                "build_dataflow", "flow_path", "path_traversal", "taint", "reaches",
                 "communities", "describe", "index_status", "doctor",
                 "repository_tree", "graph_history", "semantic_coverage",
                 # tools de alto nível (Prioridade 5)

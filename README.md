@@ -83,6 +83,7 @@ codegraph callers auth.TokenService.validate  # who calls it (with confidence)
 codegraph taint --entry handle_request         # untrusted input → dangerous sink
 codegraph dataflow-build                       # persist Java/Python flows_to
 codegraph flow-path pkg.handle.request pkg.save.value  # reusable value path
+codegraph path-traversal app.download          # entry params → CWE-22 file sink
 codegraph visualize --mode impact --symbol validate_token   # investigate as HTML
 ```
 
@@ -129,6 +130,7 @@ New here? Start with **[Getting Started](docs/getting-started.md)**.
 | *What breaks if I change this?* | `impact`, `change-impact`, `affected-modules` |
 | *Which tests cover this?* | `related-tests` |
 | *Where does untrusted input flow?* | `dataflow`, `taint`, `reaches` |
+| *Can an entry parameter reach a path/file API?* | `path-traversal` (persistent CWE-22 candidate) |
 | *What are the subsystems here?* | `communities` |
 | *Where is every file, and is its graph current?* | `tree` |
 | *Which repository/analysis revision produced this graph?* | `history` |
@@ -150,15 +152,18 @@ Full reference: **[CLI](docs/cli.md)** · **[MCP tools](docs/mcp.md)** · **[Lib
   break?"* → [CLI](docs/cli.md#impact)
 - **Dataflow & taint (CPG-lite).** Java/Python def-use and interprocedural
   `flows_to` are persisted with stable nodes and per-function input hashes;
-  `flow-path` queries them without reparsing. The richer security engine remains
-  **flow-sensitive** in 18 of the 19
+  `flow-path` queries them without reparsing. The first G4 rule,
+  `path-traversal`, now consumes only those persisted paths in an explicit
+  entry-parameter mode. Absence is `unknown`, never a safety proof; persisted
+  source-call results and sanitizer transformations remain the next boundary.
+  The broader compatibility security engine remains **flow-sensitive** in 18 of the 19
   dedicated code languages: a redefinition kills the taint, so
   `x = input(); x = escape(x); sink(x)` is correctly reported clean.
   → [Concepts](docs/concepts.md#the-layers-l0l3)
 - **Semantic L1 via LSP.** Promotes edges to `certain` through one generic LSP
   client; every dedicated language has a resolver wired.
   → [Languages & Resolvers](docs/languages.md)
-- **Agent-oriented MCP layer.** 25 tools returning a structured freshness/
+- **Agent-oriented MCP layer.** 26 tools returning a structured freshness/
   completeness envelope, plus high-level tools (`change_impact`,
   `find_related_tests`, `explain_symbol`…). → [MCP](docs/mcp.md)
 - **Investigative visualization.** Seeded subgraphs (neighborhood/callers/
@@ -214,7 +219,7 @@ Dart…). Implementation presence is not a claim of product parity.
 | **[Product Contract](docs/PRODUCT_CONTRACT.md)** | Canonical scope, required graph and acceptance gates |
 | **[Core Concepts](docs/concepts.md)** | The graph model, confidence tiers, the freshness guarantee, layers L0–L3 |
 | **[CLI Reference](docs/cli.md)** | Every command, flag, and output format |
-| **[Agents & MCP](docs/mcp.md)** | The 23 MCP tools and the response envelope |
+| **[Agents & MCP](docs/mcp.md)** | The 26 MCP tools and the response envelope |
 | **[Library / Host API](docs/library.md)** | Embedding GraphCodeMap in a service |
 | **[Languages & Resolvers](docs/languages.md)** | Language tiers and L1/LSP resolution |
 | **[Semantic Linking Matrix](docs/SEMANTIC_LINKING_MATRIX.md)** | Real Jedi/JDTLS call contracts and coverage outcomes |
@@ -234,17 +239,20 @@ physical repository graph records every non-ignored folder/file, exact hashes,
 index state and Git-aware graph-stage revisions. L1 lifecycle publication is
 atomic and observable. Java/Python now persist parameter/local/field → call
 argument → callee parameter → return `flows_to` with atomic publication,
-incremental hashes and explicit CFG/heap limitations. Migrating vulnerability
-rules onto that canonical graph, semantic-link coverage across multiple ordinary
+incremental hashes and explicit CFG/heap limitations. Entry-scoped path
+traversal is the first vulnerability family on that canonical graph; its
+absence verdict stays `unknown`. Persisting external source/sanitizer results,
+migrating the remaining rules, semantic-link coverage across multiple ordinary
 repositories and broad real-world onboarding remain open. Focused real-resolver
 matrices currently pass 5/5 Python categories
 and 7/7 Java categories (including overload and method-reference resolution).
 Flask/PetClinic canaries refine 78.8%/96.9% of persisted local call candidates.
 Bounded JDTLS pipelining reduced PetClinic warm revalidation from 54.75s to
 37.61s, while unchanged `index --l1` runs reuse the snapshot in about 0.10s.
-The focused G3 dogfood (`src/codegraph`, 74 files/1,129 callables) materializes
-20,956 value nodes and 30,372 flow edges in 43.04s; a current snapshot is reused
-in 0.107s. Its 80.1% structural path-event mapping rate is an observability
+The current focused G3 dogfood (`src/codegraph`, 1,150 callables) materializes
+21,331 value nodes and 30,948 flow edges in 11.64s (historical cold run:
+43.04s); a current snapshot is reused in 0.109s. Its 80.0% structural path-event
+mapping rate is an observability
 metric, not a semantic-recall claim.
 Historical benchmark results are retained
 as bounded subsystem evidence, not as a declaration that the product is ready.

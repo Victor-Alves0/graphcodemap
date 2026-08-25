@@ -325,6 +325,19 @@ def cmd_flow_path(args) -> int:
     return 0 if data["paths"] else 1
 
 
+def cmd_path_traversal(args) -> int:
+    entry, data, env = _engine(args).path_traversal(
+        args.entry, max_hops=args.max_hops,
+        max_findings=args.max_findings)
+    if args.json:
+        import json
+
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+    else:
+        print(render.path_traversal(entry, data, env))
+    return 1 if data["findings"] else 0
+
+
 def cmd_taint(args) -> int:
     data, env = _engine(args).taint(scope=args.scope, entry=args.entry,
                                     depth=args.depth, max_findings=args.max_findings,
@@ -708,6 +721,16 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--max-hops", type=int, default=64)
     sp.add_argument("--max-paths", type=int, default=20)
     sp.set_defaults(fn=cmd_flow_path)
+
+    sp = sub.add_parser(
+        "path-traversal",
+        help="CWE-22 entry-scoped sobre flows_to persistente")
+    sp.add_argument("entry", help="função de entrada; seus parâmetros são fontes")
+    sp.add_argument("--max-hops", type=int, default=64)
+    sp.add_argument("--max-findings", type=int, default=50)
+    sp.add_argument("--json", action="store_true",
+                    help="emite a evidência estruturada integral")
+    sp.set_defaults(fn=cmd_path_traversal)
 
     sp = sub.add_parser("taint", help="análise de taint: input não-confiável → sink perigoso")
     sp.add_argument("--scope", default=None, help="restringe a um diretório")

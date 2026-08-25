@@ -14,12 +14,30 @@ import json
 import time
 from dataclasses import dataclass
 
-from .db import record_current_stage, retry_on_locked
-from .util import content_hash
+from .db import read_l1_lifecycle, record_current_stage, retry_on_locked
+from .util import byte_column, content_hash
 
-DATAFLOW_STAGE_VERSION = "persistent-v1"
+DATAFLOW_STAGE_VERSION = "persistent-v2"
 FOCUS_LANGUAGES = frozenset({"java", "python"})
 CALLABLE_KINDS = ("function", "method", "constructor", "property")
+
+_UPSERT_NODE_SQL = (
+    "INSERT INTO dataflow_nodes(id,function_id,symbol_id,file_id,kind,"
+    "name,access_path,line,col,content_hash,details_json) "
+    "VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+    "function_id=excluded.function_id,symbol_id=excluded.symbol_id,"
+    "file_id=excluded.file_id,kind=excluded.kind,name=excluded.name,"
+    "access_path=excluded.access_path,line=excluded.line,col=excluded.col,"
+    "content_hash=excluded.content_hash,details_json=excluded.details_json"
+)
+_UPSERT_EDGE_SQL = (
+    "INSERT INTO dataflow_edges(id,owner_function_id,src_node_id,"
+    "dst_node_id,file_id,relation,line,col,confidence,interprocedural,"
+    "evidence_json) VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+    "ON CONFLICT(id) DO UPDATE SET confidence=excluded.confidence,"
+    "interprocedural=excluded.interprocedural,"
+    "evidence_json=excluded.evidence_json"
+)
 
 
 def _stable_id(prefix: str, *parts) -> str:
@@ -68,6 +86,12 @@ class _FunctionBuilder:
         self.body_hash = function["body_hash"]
         self.node_ids: set[str] = set()
         self.edge_ids: set[str] = set()
+        # Building is pure with respect to the persistent value graph until
+        # ``_flush``.  Besides reducing Python/SQLite crossings, this keeps the
+        # existing transaction boundary and deterministic first-edge-wins
+        # behaviour intact.
+        self._node_rows: list[tuple] = []
+        self._edge_rows: list[tuple] = []
         self.unmapped = 0
         self.path_attempts = 0
         self.mapped_paths = 0
@@ -111,17 +135,9 @@ class _FunctionBuilder:
                      details: dict | None = None) -> str:
         if node_id in self.node_ids:
             return node_id
-        self.conn.execute(
-            "INSERT INTO dataflow_nodes(id,function_id,symbol_id,file_id,kind,"
-            "name,access_path,line,col,content_hash,details_json) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
-            "function_id=excluded.function_id,symbol_id=excluded.symbol_id,"
-            "file_id=excluded.file_id,kind=excluded.kind,name=excluded.name,"
-            "access_path=excluded.access_path,line=excluded.line,col=excluded.col,"
-            "content_hash=excluded.content_hash,details_json=excluded.details_json",
+        self._node_rows.append(
             (node_id, function_id, symbol_id, file_id or self.file_id, kind,
-             name, access_path, line, col, content, _json(details or {})),
-        )
+             name, access_path, line, col, content, _json(details or {})))
         self.node_ids.add(node_id)
         return node_id
 
@@ -142,18 +158,19 @@ class _FunctionBuilder:
             "flow", self.function_id, src, dst, relation, line, col)
         if edge_id in self.edge_ids:
             return edge_id
-        self.conn.execute(
-            "INSERT INTO dataflow_edges(id,owner_function_id,src_node_id,"
-            "dst_node_id,file_id,relation,line,col,confidence,interprocedural,"
-            "evidence_json) VALUES(?,?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(id) DO UPDATE SET confidence=excluded.confidence,"
-            "interprocedural=excluded.interprocedural,"
-            "evidence_json=excluded.evidence_json",
+        self._edge_rows.append(
             (edge_id, self.function_id, src, dst, self.file_id, relation,
-             line, col, confidence, int(interprocedural), _json(evidence or {})),
-        )
+             line, col, confidence, int(interprocedural), _json(evidence or {})))
         self.edge_ids.add(edge_id)
         return edge_id
+
+    def _flush(self) -> None:
+        # Nodes precede edges to satisfy the foreign keys even when a caller
+        # materializes a callee parameter/return before the callee is visited.
+        if self._node_rows:
+            self.conn.executemany(_UPSERT_NODE_SQL, self._node_rows)
+        if self._edge_rows:
+            self.conn.executemany(_UPSERT_EDGE_SQL, self._edge_rows)
 
     def _plain_symbol(self, name: str, line: int | None = None) -> dict | None:
         local = self.variables.get(name, ())
@@ -206,7 +223,8 @@ class _FunctionBuilder:
         for width in range(2, len(path) + 1):
             prefix = path[:width]
             dotted = ".".join(prefix)
-            node_id = _stable_id("value", self.function_id, dotted)
+            node_id = _stable_id(
+                "value", self.function_id, base["id"], dotted)
             node = self._upsert_node(
                 node_id, kind="value", name=prefix[-1], access_path=dotted,
                 line=line, col=None, content=self.body_hash,
@@ -371,12 +389,18 @@ class _FunctionBuilder:
                                     confidence=target["confidence"],
                                     evidence={"callee": target_row["fqn"]})
 
+        self._flush()
+
         # Synthetic access-path/call nodes are stable. Remove only stale nodes
         # owned by this function and no longer referenced by its rebuilt edges.
+        # Correlated anti-lookups use the src/dst indexes; the previous global
+        # UNION was rebuilt and scanned once for every function.
         self.conn.execute(
             "DELETE FROM dataflow_nodes WHERE function_id=? AND kind!='return' "
-            "AND id NOT IN (SELECT src_node_id FROM dataflow_edges UNION "
-            "SELECT dst_node_id FROM dataflow_edges)", (self.function_id,),
+            "AND NOT EXISTS (SELECT 1 FROM dataflow_edges "
+            "WHERE src_node_id=dataflow_nodes.id) "
+            "AND NOT EXISTS (SELECT 1 FROM dataflow_edges "
+            "WHERE dst_node_id=dataflow_nodes.id)", (self.function_id,),
         )
         return (len(self.node_ids), len(self.edge_ids), self.unmapped,
                 self.path_attempts, self.mapped_paths)
@@ -390,6 +414,70 @@ def _callable_rows(conn) -> list[dict]:
         "FROM symbols s JOIN files f ON f.id=s.file_id "
         f"WHERE f.language IN ('java','python') AND s.kind IN ({placeholders}) "
         "ORDER BY f.path,s.start_line,s.start_col,s.id", CALLABLE_KINDS)]
+
+
+def _file_callable_locator(data: bytes, tree, language: str) -> tuple[dict, dict]:
+    """Index callable AST positions once for all symbols in one source file.
+
+    ``QueryEngine._df_facts`` historically walks the complete tree for every
+    callable.  Large Python modules therefore paid an O(callables * AST) lookup
+    cost.  These maps preserve ``find_function_node`` semantics: an exact byte
+    column wins, while a legacy line-only position is valid only when unique.
+    """
+    from . import dataflow as df
+
+    by_position: dict[tuple[int, int], object] = {}
+    by_line: dict[int, list] = {}
+    stack = [tree.root_node]
+    callable_types = df._func_types(language)
+    while stack:
+        node = stack.pop()
+        if node.type in callable_types:
+            line = node.start_point[0] + 1
+            col = byte_column(data, node.start_byte)
+            by_position.setdefault((line, col), node)
+            by_line.setdefault(line, []).append(node)
+        stack.extend(reversed(node.named_children))
+    return by_position, by_line
+
+
+def _function_facts(engine, function: dict, parse_cache: dict,
+                    locator_cache: dict):
+    """Equivalent batched-position variant of ``QueryEngine._df_facts``."""
+    from . import dataflow as df
+
+    language = function["language"]
+    if not df.supported(language):
+        return None, language
+    key = (function["file_id"], function["file_hash"],
+           function["start_line"], function.get("start_col"))
+    missing = object()
+    facts = engine._facts_cache.get(key, missing)
+    if facts is not missing:
+        engine._facts_cache.move_to_end(key)
+        return facts, language
+
+    data, tree = engine._df_parse(function["path"], language, parse_cache)
+    if tree is None:
+        return None, language
+    locator_key = (function["path"], function["file_hash"], language)
+    locator = locator_cache.get(locator_key)
+    if locator is None:
+        locator = _file_callable_locator(data, tree, language)
+        locator_cache[locator_key] = locator
+    by_position, by_line = locator
+    start_line = function["start_line"]
+    start_col = function.get("start_col")
+    if start_col is not None:
+        node = by_position.get((start_line, start_col))
+    else:
+        candidates = by_line.get(start_line, ())
+        node = candidates[0] if len(candidates) == 1 else None
+    facts = df.extract_facts(data, node, language) if node is not None else None
+    engine._facts_cache[key] = facts
+    if len(engine._facts_cache) > engine._facts_cache_cap:
+        engine._facts_cache.popitem(last=False)
+    return facts, language
 
 
 def _input_hash(conn, function: dict) -> str:
@@ -426,6 +514,43 @@ def current_stage(conn) -> dict | None:
     return out
 
 
+def _semantic_inputs_queryable(conn) -> tuple[bool, dict]:
+    """Reject preserved L1 edges after their semantic world was invalidated.
+
+    L1 intentionally keeps its last published edges visible while a new
+    snapshot is pending. G3 may not relabel that prior snapshot as current.
+    Repositories that never published L1 remain queryable through L0.
+    """
+    has_l1 = bool(conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM edges WHERE resolver='l1')"
+    ).fetchone()[0])
+    if not has_l1:
+        return True, {"mode": "l0", "reason": "no_published_l1_edges"}
+    stage = conn.execute(
+        "SELECT g.status,g.revision_id FROM graph_stage_runs g JOIN meta m "
+        "ON m.key='current_graph_revision' "
+        "AND g.revision_id=CAST(m.value AS INTEGER) "
+        "WHERE g.stage='l1'"
+    ).fetchone()
+    lifecycle = read_l1_lifecycle(conn)
+    stage_status = stage["status"] if stage is not None else "missing"
+    lifecycle_status = lifecycle.get("status", "not_started")
+    published = bool(lifecycle.get("published"))
+    queryable = (
+        stage_status in {"complete", "partial"}
+        and lifecycle_status in {"complete", "partial"}
+        and published
+    )
+    return queryable, {
+        "mode": "l1",
+        "stage_status": stage_status,
+        "lifecycle_status": lifecycle_status,
+        "published": published,
+        "revision_id": stage["revision_id"] if stage is not None else None,
+        "reason": None if queryable else "awaiting_l1_revalidation",
+    }
+
+
 def build(engine, *, force: bool = False) -> dict:
     """Materialize or incrementally refresh the focus-language value graph."""
     conn = engine.conn
@@ -433,10 +558,40 @@ def build(engine, *, force: bool = False) -> dict:
     def write():
         counts = _Counts()
         cache: dict = {}
+        locator_cache: dict = {}
         functions = _callable_rows(conn)
         live_functions = {row["id"] for row in functions}
         conn.execute("BEGIN IMMEDIATE")
         try:
+            queryable, semantic_inputs = _semantic_inputs_queryable(conn)
+            if not queryable:
+                details = {
+                    "persistent": True,
+                    "queryable": False,
+                    "focus_languages": sorted(FOCUS_LANGUAGES),
+                    "functions": len(functions),
+                    "rebuilt": 0,
+                    "reused": 0,
+                    "nodes_written": 0,
+                    "edges_written": 0,
+                    "nodes": conn.execute(
+                        "SELECT COUNT(*) FROM dataflow_nodes").fetchone()[0],
+                    "edges": conn.execute(
+                        "SELECT COUNT(*) FROM dataflow_edges").fetchone()[0],
+                    "unmapped_paths": 0,
+                    "path_attempts": 0,
+                    "mapped_paths": 0,
+                    "mapping_coverage_pct": 0.0,
+                    "parse_failures": 0,
+                    "partial_functions": 0,
+                    "reason": "awaiting_l1_revalidation",
+                    "semantic_inputs": semantic_inputs,
+                }
+                record_current_stage(
+                    conn, "dataflow", DATAFLOW_STAGE_VERSION, "partial",
+                    details, commit=False)
+                conn.commit()
+                return {"status": "partial", **details}
             for function in functions:
                 counts.functions += 1
                 input_hash = _input_hash(conn, function)
@@ -449,7 +604,8 @@ def build(engine, *, force: bool = False) -> dict:
                         and state["status"] == "complete"):
                     counts.reused += 1
                     continue
-                facts, language = engine._df_facts(function, cache)
+                facts, language = _function_facts(
+                    engine, function, cache, locator_cache)
                 if facts is None:
                     counts.parse_failures += 1
                     conn.execute(
@@ -514,6 +670,8 @@ def build(engine, *, force: bool = False) -> dict:
                       or counts.partial_functions else "complete")
             details = {
                 "persistent": True,
+                "queryable": True,
+                "semantic_inputs": semantic_inputs,
                 "focus_languages": sorted(FOCUS_LANGUAGES),
                 "functions": counts.functions,
                 "rebuilt": counts.rebuilt,
@@ -576,8 +734,14 @@ def path(engine, source_selector: str, target_selector: str | None = None,
     # changed.  Verify the complete indexed scope before trusting a reusable
     # interprocedural artifact.
     engine._repair_all(env)
-    ensure(engine)
+    built = ensure(engine)
     source = engine._resolve_fresh(source_selector, env)
+    if not built.get("queryable", True):
+        env.warn("dataflow persistente indisponível: o snapshot L1 anterior "
+                 "foi invalidado; execute refine antes de consultar caminhos.")
+        return source, {"target": target_selector, "paths": [],
+                        "persistent": True, "stage": current_stage(engine.conn),
+                        "verdict": "unknown"}, env
     source_node = engine.conn.execute(
         "SELECT id FROM dataflow_nodes WHERE symbol_id=?",
         (source["id"],),
@@ -597,7 +761,19 @@ def path(engine, source_selector: str, target_selector: str | None = None,
             (target["id"], target["id"]),
         )}
 
-    rows = engine.conn.execute(
+    terminal_args: list[str] = []
+    if target_nodes is not None:
+        if not target_nodes:
+            rows = []
+        else:
+            target_placeholders = ",".join("?" * len(target_nodes))
+            terminal_filter = f"AND w.node_id IN ({target_placeholders})"
+            terminal_args = sorted(target_nodes)
+    else:
+        terminal_filter = "AND n.kind IN ('call_argument','return')"
+
+    if target_nodes is None or target_nodes:
+        rows = engine.conn.execute(
         "WITH RECURSIVE walk(node_id,hops,confidence,trail,edge_trail) AS ("
         " SELECT ?,0,'certain',','||?||',',''"
         " UNION ALL "
@@ -609,10 +785,12 @@ def path(engine, source_selector: str, target_selector: str | None = None,
         " w.edge_trail||CASE WHEN w.edge_trail='' THEN '' ELSE ',' END||e.id"
         " FROM walk w JOIN dataflow_edges e ON e.src_node_id=w.node_id"
         " WHERE w.hops<? AND instr(w.trail,','||e.dst_node_id||',')=0"
-        ") SELECT node_id,hops,confidence,trail,edge_trail FROM walk "
-        "WHERE hops>0 ORDER BY hops,node_id LIMIT 10000",
-        (source_node["id"], source_node["id"], max_hops),
-    ).fetchall()
+        ") SELECT w.node_id,w.hops,w.confidence,w.trail,w.edge_trail "
+        "FROM walk w JOIN dataflow_nodes n ON n.id=w.node_id "
+        f"WHERE w.hops>0 {terminal_filter} "
+        "ORDER BY w.hops,w.node_id LIMIT 10000",
+        (source_node["id"], source_node["id"], max_hops, *terminal_args),
+        ).fetchall()
 
     candidates = []
     for row in rows:
@@ -620,11 +798,6 @@ def path(engine, source_selector: str, target_selector: str | None = None,
             "SELECT * FROM dataflow_nodes WHERE id=?", (row["node_id"],)
         ).fetchone()
         if node is None:
-            continue
-        if target_nodes is not None:
-            if row["node_id"] not in target_nodes:
-                continue
-        elif node["kind"] not in {"call_argument", "return"}:
             continue
         node_ids = [item for item in row["trail"].strip(",").split(",") if item]
         placeholders = ",".join("?" * len(node_ids))
