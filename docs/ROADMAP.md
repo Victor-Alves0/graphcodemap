@@ -67,18 +67,20 @@ experimental until this phase-one contract is complete. See the canonical
 - [x] Expose conservative CFG and separate Java/Python heap limitations in the
   versioned stage receipt. Atomic failure and concurrent-writer contracts pass.
 - [x] Optimize the bounded dogfood baseline: current `src/codegraph` publishes
-  21,331 nodes/30,948 edges for 1,150 callables in 11.64s and reuses the
-  snapshot in 0.109s (historical cold run: 43.04s). Structural path-event
-  mapping is 80.0%; this is not a recall score.
+  28,171 nodes/37,959 edges for 1,165 callables in 11.446s; five cached runs are
+  0.111–0.119s (historical cold run: 43.04s). Structural path-event mapping is
+  80.7%; this is not a recall score.
 - [x] Reject stale L1 inputs, keep value-node identities distinct, filter a
   directed target before path limits and index incremental file cleanup.
 
 ### G4 — Vulnerability analysis
 
-- [x] Migrate entry-scoped path traversal as the first rule family consuming
-  canonical persisted paths, with candidate/unknown semantics.
-- [ ] Persist external source-call results and sanitizer-return transformations;
-  then add repo-wide path-traversal mode without fabricating negative proofs.
+- [x] Migrate path traversal as the first rule family consuming canonical
+  persisted paths, with entry and bounded repo-wide candidate/unknown modes.
+- [x] Persist external configured/framework source-call results, nested direct
+  sources and sanitizer-return transformations as inspectable path nodes.
+- [x] Apply source/sanitizer catalog changes at query time without rebuilding
+  the value graph; qualified sanitizer rules do not cut domain homonyms.
 - [ ] Migrate the remaining vulnerability families.
 - [ ] Add labeled vulnerable/fixed and negative corpora for both focus languages.
 - [x] Preserve source, sink, ordered path, sanitizer decision and completeness
@@ -101,9 +103,10 @@ Historical OWASP, Juliet and real-app
 results remain valuable subsystem evidence, but they cannot promote the whole
 product or either focus language by themselves.
 
-The next micro-goal remains narrow: represent external source-call results and
-sanitizer-return transformations as canonical value nodes. That closes the
-declared boundary of the first G4 family before any repo-wide corpus replay.
+The next micro-goal is evidence, not another engine front: build small labeled
+vulnerable/fixed/negative Java and Python corpora for the persistent path-
+traversal family, then compare it with the compatibility engine before any
+expensive portfolio replay or migration of a second vulnerability family.
 
 ## Execution policy
 

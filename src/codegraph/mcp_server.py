@@ -267,18 +267,21 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
         return guard(run)
 
     @mcp.tool()
-    def path_traversal(entry: str, max_hops: int = 64,
+    def path_traversal(entry: str | None = None, scope: str | None = None,
+                       max_hops: int = 64,
                        max_findings: int = 50) -> agent.Response:
-        """Candidatos CWE-22 a partir dos parâmetros de uma função de entrada.
+        """Candidatos CWE-22 por entry ou fontes externas persistidas.
 
         Os caminhos ordenados vêm exclusivamente do `flows_to` persistente de
-        Java/Python. Ausência de achado significa `unknown`, não `safe`; retornos
-        de fontes externas e transformações por sanitizer ainda são limitações
-        explícitas desta primeira família G4.
+        Java/Python. Com `entry`, os parâmetros são fontes; sem `entry`, usa
+        resultados persistidos de sources configuradas/framework. Sanitizers
+        cortam apenas através de seu nó de resultado. Ausência de achado
+        significa `unknown`, não `safe`.
         """
         def run():
             selected, data, env = engine.path_traversal(
-                entry, max_hops=max_hops, max_findings=max_findings)
+                entry, scope=scope, max_hops=max_hops,
+                max_findings=max_findings)
             return agent.build(
                 render.path_traversal(selected, data, env), env,
                 results=data["findings"])

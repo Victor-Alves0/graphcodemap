@@ -81,8 +81,11 @@ The essential tables:
 - **`graph_stage_runs`** — independently versioned `filesystem`, `l0`, `l1`,
   L2 metrics, `l3` and `dataflow` stage status/artifact hashes per revision.
 - **`dataflow_nodes` / `dataflow_edges`** — stable symbol-backed and synthetic
-  value nodes (access paths, call arguments, returns) plus typed assignment,
-  argument, parameter and return flow. Publication is one SQLite transaction.
+  value nodes (access paths, call arguments, call results/transformations,
+  returns) plus typed assignment, argument, parameter, result and return flow.
+  A source or sanitizer is classified from a persisted `call_result`, while the
+  catalog remains configurable without rebuilding the value graph. Publication
+  is one SQLite transaction.
 - **`dataflow_function_state`** — per-callable input hash and status; a body or
   resolved-call change rebuilds the affected summary while unchanged functions
   are reused.

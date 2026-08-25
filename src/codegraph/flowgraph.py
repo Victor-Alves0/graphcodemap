@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from .db import read_l1_lifecycle, record_current_stage, retry_on_locked
 from .util import byte_column, content_hash
 
-DATAFLOW_STAGE_VERSION = "persistent-v2"
+DATAFLOW_STAGE_VERSION = "persistent-v3"
 FOCUS_LANGUAGES = frozenset({"java", "python"})
 CALLABLE_KINDS = ("function", "method", "constructor", "property")
 
@@ -37,6 +37,15 @@ _UPSERT_EDGE_SQL = (
     "ON CONFLICT(id) DO UPDATE SET confidence=excluded.confidence,"
     "interprocedural=excluded.interprocedural,"
     "evidence_json=excluded.evidence_json"
+)
+_INSERT_NODE_SQL = (
+    "INSERT INTO dataflow_nodes(id,function_id,symbol_id,file_id,kind,name,"
+    "access_path,line,col,content_hash,details_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)"
+)
+_INSERT_EDGE_SQL = (
+    "INSERT INTO dataflow_edges(id,owner_function_id,src_node_id,dst_node_id,"
+    "file_id,relation,line,col,confidence,interprocedural,evidence_json) "
+    "VALUES(?,?,?,?,?,?,?,?,?,?,?)"
 )
 
 
@@ -92,12 +101,14 @@ class _FunctionBuilder:
         # behaviour intact.
         self._node_rows: list[tuple] = []
         self._edge_rows: list[tuple] = []
+        self.defer_flush = False
         self.unmapped = 0
         self.path_attempts = 0
         self.mapped_paths = 0
         self._target_rows: dict[str, dict | None] = {}
         self._target_parameters: dict[tuple[str, int], dict | None] = {}
         self._resolved_call_targets: dict[tuple, list[dict]] = {}
+        self._call_results: dict[tuple, str] = {}
         self.variables = self._variables()
         self.fields = self._fields()
 
@@ -171,6 +182,15 @@ class _FunctionBuilder:
             self.conn.executemany(_UPSERT_NODE_SQL, self._node_rows)
         if self._edge_rows:
             self.conn.executemany(_UPSERT_EDGE_SQL, self._edge_rows)
+
+    def _cleanup_stale_nodes(self) -> None:
+        self.conn.execute(
+            "DELETE FROM dataflow_nodes WHERE function_id=? AND kind!='return' "
+            "AND NOT EXISTS (SELECT 1 FROM dataflow_edges "
+            "WHERE src_node_id=dataflow_nodes.id) "
+            "AND NOT EXISTS (SELECT 1 FROM dataflow_edges "
+            "WHERE dst_node_id=dataflow_nodes.id)", (self.function_id,),
+        )
 
     def _plain_symbol(self, name: str, line: int | None = None) -> dict | None:
         local = self.variables.get(name, ())
@@ -258,6 +278,128 @@ class _FunctionBuilder:
                 "site_path": self.function["path"],
             })
 
+    @staticmethod
+    def _call_key(call) -> tuple:
+        return (call.line, call.col, call.callee,
+                tuple(call.span) if call.span else None)
+
+    @staticmethod
+    def _nested_payload(calls) -> list[dict]:
+        return [{
+            "callee": item.callee,
+            "qualified": item.qualified,
+            "receiver_type": item.receiver_type,
+            "guards": list(item.guards),
+            "arg_literals": [list(value) for value in item.arg_literals],
+            "line": item.line,
+            "col": item.col,
+            "span": list(item.span) if item.span else None,
+        } for item in calls]
+
+    def _call_result_node(self, call, *, nested_calls=(),
+                          framework_source: bool = False,
+                          rhs_paths=()) -> str:
+        key = self._call_key(call)
+        existing = self._call_results.get(key)
+        if existing is not None:
+            return existing
+        node_id = _stable_id(
+            "callresult", self.function_id, call.line, call.col,
+            call.callee, call.span)
+        matching = next((item for item in nested_calls
+                         if self._call_key(item) == key), None)
+        arg_literals = (matching.arg_literals if matching is not None
+                        else getattr(call, "arg_literals", ()))
+        qualified = (matching.qualified if matching is not None
+                     else getattr(call, "qualified", None))
+        receiver_type = (matching.receiver_type if matching is not None
+                         else getattr(call, "receiver_type", None))
+        node = self._upsert_node(
+            node_id, kind="call_result",
+            name=f"{call.callee}::$result", access_path=None,
+            line=call.line, col=call.col, content=self.body_hash,
+            function_id=self.function_id,
+            details={
+                "callee": call.callee,
+                "qualified": qualified,
+                "receiver_type": receiver_type,
+                "arg_literals": [list(value) for value in arg_literals],
+                "guards": list(getattr(call, "guards", ())),
+                "span": list(call.span) if call.span else None,
+                "site_path": self.function["path"],
+                "language": self.language,
+                "framework_source": bool(framework_source),
+                "rhs_paths": [list(_path(value)) for value in rhs_paths],
+                "nested_calls": self._nested_payload(nested_calls),
+            })
+        self._call_results[key] = node
+        return node
+
+    def _argument_flow(self, call, index: int, paths, argument: str) -> None:
+        """Materialize nested call results without hiding mixed expressions."""
+        nested = list(getattr(call, "arg_calls", {}).get(index, ()))
+        nodes = {self._call_key(item): self._call_result_node(item)
+                 for item in nested}
+        parents: dict[tuple, tuple] = {}
+        for child in nested:
+            if not child.span:
+                continue
+            containers = [
+                parent for parent in nested
+                if parent is not child and parent.span
+                and parent.span[0] <= child.span[0]
+                and child.span[1] <= parent.span[1]
+            ]
+            if containers:
+                parent = min(
+                    containers, key=lambda item: item.span[1] - item.span[0])
+                parents[self._call_key(child)] = self._call_key(parent)
+        roots = [item for item in nested
+                 if self._call_key(item) not in parents]
+        for child_key, parent_key in parents.items():
+            self._edge(
+                nodes[child_key], nodes[parent_key], "call_result",
+                line=call.line, col=call.col,
+                evidence={"nested": True, "arg_index": index})
+        for root in roots:
+            self._edge(
+                nodes[self._call_key(root)], argument, "call_argument",
+                line=call.line, col=call.col,
+                evidence={"nested_result": root.callee,
+                          "arg_index": index})
+
+        arg_span = getattr(call, "arg_spans", {}).get(index)
+        exact_roots = [root for root in roots
+                       if root.span and tuple(root.span) == tuple(arg_span or ())]
+        direct_target = (nodes[self._call_key(exact_roots[0])]
+                         if len(exact_roots) == 1 else argument)
+        for path in paths:
+            src = self._value_node(path, line=call.line)
+            if src is not None:
+                self._edge(
+                    src, direct_target,
+                    "call_result" if direct_target != argument
+                    else "call_argument",
+                    line=call.line, col=call.col,
+                    evidence={"via": ".".join(_path(path)),
+                              "arg_index": index})
+
+        for label, guards in getattr(call, "arg_sources", {}).get(index, ()):
+            if nested:
+                continue
+            synthetic = type("ExternalSource", (), {
+                "line": call.line, "col": call.col,
+                "callee": label, "qualified": label,
+                "receiver_type": None, "span": call.span,
+                "guards": guards, "arg_literals": (),
+            })()
+            source = self._call_result_node(
+                synthetic, framework_source=True)
+            self._edge(
+                source, argument, "call_argument", line=call.line,
+                col=call.col,
+                evidence={"framework_source": label, "arg_index": index})
+
     def _target_row(self, target: dict) -> dict | None:
         if target["dst"] in self._target_rows:
             return self._target_rows[target["dst"]]
@@ -319,35 +461,57 @@ class _FunctionBuilder:
                        for path in assignment.targets]
             sources = [self._value_node(path, line=assignment.line)
                        for path in assignment.rhs_ids]
-            for src in filter(None, sources):
-                for dst in filter(None, targets):
-                    self._edge(src, dst, "assignment", line=assignment.line,
-                               evidence={"span": assignment.span,
-                                         "augmented": assignment.is_aug})
-
             call = self._assignment_call(assignment)
-            if call is not None:
-                for target in self._resolved_targets(call):
+            if call is None:
+                for src in filter(None, sources):
+                    for dst in filter(None, targets):
+                        self._edge(
+                            src, dst, "assignment", line=assignment.line,
+                            evidence={"span": assignment.span,
+                                      "augmented": assignment.is_aug})
+            else:
+                result = self._call_result_node(
+                    call, nested_calls=assignment.nested_calls,
+                    framework_source=assignment.rhs_framework_source,
+                    rhs_paths=assignment.rhs_ids)
+                for dst in filter(None, targets):
+                    self._edge(
+                        result, dst, "assignment", line=assignment.line,
+                        col=call.col,
+                        evidence={"span": assignment.span,
+                                  "call_result": call.callee})
+                resolved = self._resolved_targets(call)
+                for target in resolved:
                     target_row = self._target_row(target)
                     if target_row is None:
                         continue
                     ret = self._return_node(target_row)
-                    for dst in filter(None, targets):
+                    self._edge(
+                        ret, result, "call_return", line=assignment.line,
+                        col=call.col, confidence=target["confidence"],
+                        evidence={"callee": target_row["fqn"]})
+                if not resolved:
+                    # Preserve receiver/implicit expression dependencies that
+                    # are not represented as positional call arguments.
+                    for src in filter(None, sources):
                         self._edge(
-                            ret, dst, "call_return", line=assignment.line,
-                            col=call.col, confidence=target["confidence"],
-                            evidence={"callee": target_row["fqn"]})
+                            src, result, "call_result", line=assignment.line,
+                            col=call.col,
+                            evidence={"callee": call.callee,
+                                      "dependency": "rhs_path"})
 
         for call in self.facts.calls:
             targets = self._resolved_targets(call)
+            result = self._call_results.get(self._call_key(call))
             for index, paths in call.args:
                 argument = self._call_argument_node(call, index)
-                for path in paths:
-                    src = self._value_node(path, line=call.line)
-                    if src is not None:
-                        self._edge(
-                            src, argument, "call_argument", line=call.line,
-                            col=call.col, evidence={"via": ".".join(_path(path))})
+                self._argument_flow(call, index, paths, argument)
+                if result is not None and not targets:
+                    self._edge(
+                        argument, result, "call_result", line=call.line,
+                        col=call.col,
+                        evidence={"callee": call.callee,
+                                  "arg_index": index})
                 for target in targets:
                     parameter = self._target_parameter(target, index)
                     if parameter is None:
@@ -361,11 +525,7 @@ class _FunctionBuilder:
 
         ret = self._return_node()
         for returned in self.facts.returns:
-            for path in returned.ids:
-                src = self._value_node(path)
-                if src is not None:
-                    self._edge(src, ret, "return_value",
-                               evidence={"span": returned.span})
+            consumed_call = None
             if returned.top_call and returned.span:
                 candidates = [
                     call for call in self.facts.calls
@@ -379,29 +539,45 @@ class _FunctionBuilder:
                     widest = [call for call in candidates
                               if call.span[1] - call.span[0] == width]
                     if len(widest) == 1:
-                        call = widest[0]
-                        for target in self._resolved_targets(call):
+                        consumed_call = widest[0]
+                        result = self._call_result_node(
+                            consumed_call, nested_calls=returned.nested_calls,
+                            rhs_paths=returned.ids)
+                        self._edge(
+                            result, ret, "return_value",
+                            line=consumed_call.line, col=consumed_call.col,
+                            evidence={"call_result": consumed_call.callee,
+                                      "span": returned.span})
+                        resolved = self._resolved_targets(consumed_call)
+                        for target in resolved:
                             target_row = self._target_row(target)
                             if target_row is not None:
                                 self._edge(
-                                    self._return_node(target_row), ret,
-                                    "call_return", line=call.line, col=call.col,
+                                    self._return_node(target_row), result,
+                                    "call_return", line=consumed_call.line,
+                                    col=consumed_call.col,
                                     confidence=target["confidence"],
                                     evidence={"callee": target_row["fqn"]})
+                        if not resolved:
+                            for path in returned.ids:
+                                src = self._value_node(path)
+                                if src is not None:
+                                    self._edge(
+                                        src, result, "call_result",
+                                        line=consumed_call.line,
+                                        col=consumed_call.col,
+                                        evidence={"callee": consumed_call.callee,
+                                                  "dependency": "return_path"})
+            if consumed_call is None:
+                for path in returned.ids:
+                    src = self._value_node(path)
+                    if src is not None:
+                        self._edge(src, ret, "return_value",
+                                   evidence={"span": returned.span})
 
-        self._flush()
-
-        # Synthetic access-path/call nodes are stable. Remove only stale nodes
-        # owned by this function and no longer referenced by its rebuilt edges.
-        # Correlated anti-lookups use the src/dst indexes; the previous global
-        # UNION was rebuilt and scanned once for every function.
-        self.conn.execute(
-            "DELETE FROM dataflow_nodes WHERE function_id=? AND kind!='return' "
-            "AND NOT EXISTS (SELECT 1 FROM dataflow_edges "
-            "WHERE src_node_id=dataflow_nodes.id) "
-            "AND NOT EXISTS (SELECT 1 FROM dataflow_edges "
-            "WHERE dst_node_id=dataflow_nodes.id)", (self.function_id,),
-        )
+        if not self.defer_flush:
+            self._flush()
+            self._cleanup_stale_nodes()
         return (len(self.node_ids), len(self.edge_ids), self.unmapped,
                 self.path_attempts, self.mapped_paths)
 
@@ -559,10 +735,18 @@ def build(engine, *, force: bool = False) -> dict:
         counts = _Counts()
         cache: dict = {}
         locator_cache: dict = {}
+        pending_nodes: dict[str, tuple] = {}
+        pending_edges: dict[str, tuple] = {}
         functions = _callable_rows(conn)
         live_functions = {row["id"] for row in functions}
         conn.execute("BEGIN IMMEDIATE")
         try:
+            nodes_were_empty = not bool(conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM dataflow_nodes)"
+            ).fetchone()[0])
+            edges_were_empty = not bool(conn.execute(
+                "SELECT EXISTS(SELECT 1 FROM dataflow_edges)"
+            ).fetchone()[0])
             queryable, semantic_inputs = _semantic_inputs_queryable(conn)
             if not queryable:
                 details = {
@@ -620,7 +804,12 @@ def build(engine, *, force: bool = False) -> dict:
                     )
                     continue
                 builder = _FunctionBuilder(engine, function, facts, language)
+                builder.defer_flush = True
                 nodes, edges, unmapped, attempts, mapped = builder.build()
+                pending_nodes.update(
+                    (row[0], row) for row in builder._node_rows)
+                pending_edges.update(
+                    (row[0], row) for row in builder._edge_rows)
                 counts.nodes += nodes
                 counts.edges += edges
                 counts.unmapped_paths += unmapped
@@ -649,6 +838,27 @@ def build(engine, *, force: bool = False) -> dict:
                      }),
                      int(time.time())),
                 )
+
+            # One nodes batch followed by one edges batch preserves foreign-key
+            # order while avoiding two SQLite crossings per function. Stable-id
+            # deduplication also prevents shared parameter/return nodes from
+            # being upserted once per caller.
+            if pending_nodes:
+                conn.executemany(
+                    _INSERT_NODE_SQL if nodes_were_empty else _UPSERT_NODE_SQL,
+                    pending_nodes.values())
+            if pending_edges:
+                conn.executemany(
+                    _INSERT_EDGE_SQL if edges_were_empty else _UPSERT_EDGE_SQL,
+                    pending_edges.values())
+            conn.execute(
+                "DELETE FROM dataflow_nodes WHERE function_id IS NOT NULL "
+                "AND kind!='return' "
+                "AND NOT EXISTS (SELECT 1 FROM dataflow_edges "
+                "WHERE src_node_id=dataflow_nodes.id) "
+                "AND NOT EXISTS (SELECT 1 FROM dataflow_edges "
+                "WHERE dst_node_id=dataflow_nodes.id)"
+            )
 
             if live_functions:
                 placeholders = ",".join("?" * len(live_functions))

@@ -83,7 +83,8 @@ codegraph callers auth.TokenService.validate  # who calls it (with confidence)
 codegraph taint --entry handle_request         # untrusted input → dangerous sink
 codegraph dataflow-build                       # persist Java/Python flows_to
 codegraph flow-path pkg.handle.request pkg.save.value  # reusable value path
-codegraph path-traversal app.download          # entry params → CWE-22 file sink
+codegraph path-traversal                       # external sources → CWE-22 sinks
+codegraph path-traversal app.download          # or explicit entry parameters
 codegraph visualize --mode impact --symbol validate_token   # investigate as HTML
 ```
 
@@ -130,7 +131,7 @@ New here? Start with **[Getting Started](docs/getting-started.md)**.
 | *What breaks if I change this?* | `impact`, `change-impact`, `affected-modules` |
 | *Which tests cover this?* | `related-tests` |
 | *Where does untrusted input flow?* | `dataflow`, `taint`, `reaches` |
-| *Can an entry parameter reach a path/file API?* | `path-traversal` (persistent CWE-22 candidate) |
+| *Can external input reach a path/file API?* | `path-traversal` (repo-wide or explicit entry) |
 | *What are the subsystems here?* | `communities` |
 | *Where is every file, and is its graph current?* | `tree` |
 | *Which repository/analysis revision produced this graph?* | `history` |
@@ -153,9 +154,10 @@ Full reference: **[CLI](docs/cli.md)** · **[MCP tools](docs/mcp.md)** · **[Lib
 - **Dataflow & taint (CPG-lite).** Java/Python def-use and interprocedural
   `flows_to` are persisted with stable nodes and per-function input hashes;
   `flow-path` queries them without reparsing. The first G4 rule,
-  `path-traversal`, now consumes only those persisted paths in an explicit
-  entry-parameter mode. Absence is `unknown`, never a safety proof; persisted
-  source-call results and sanitizer transformations remain the next boundary.
+  `path-traversal`, now consumes only those persisted paths. `call_result` nodes
+  let configured/framework sources seed a repo-wide scan and let sanitizer
+  transformations cut paths; an explicit entry-parameter mode remains available.
+  Absence is `unknown`, never a safety proof.
   The broader compatibility security engine remains **flow-sensitive** in 18 of the 19
   dedicated code languages: a redefinition kills the taint, so
   `x = input(); x = escape(x); sink(x)` is correctly reported clean.
@@ -239,19 +241,20 @@ physical repository graph records every non-ignored folder/file, exact hashes,
 index state and Git-aware graph-stage revisions. L1 lifecycle publication is
 atomic and observable. Java/Python now persist parameter/local/field → call
 argument → callee parameter → return `flows_to` with atomic publication,
-incremental hashes and explicit CFG/heap limitations. Entry-scoped path
-traversal is the first vulnerability family on that canonical graph; its
-absence verdict stays `unknown`. Persisting external source/sanitizer results,
-migrating the remaining rules, semantic-link coverage across multiple ordinary
+incremental hashes and explicit CFG/heap limitations. Path traversal is the
+first vulnerability family on that canonical graph: it supports both explicit
+entry parameters and repo-wide persisted source results, with sanitizer-result
+cuts and an `unknown` absence verdict. Migrating the remaining rules,
+semantic-link coverage across multiple ordinary
 repositories and broad real-world onboarding remain open. Focused real-resolver
 matrices currently pass 5/5 Python categories
 and 7/7 Java categories (including overload and method-reference resolution).
 Flask/PetClinic canaries refine 78.8%/96.9% of persisted local call candidates.
 Bounded JDTLS pipelining reduced PetClinic warm revalidation from 54.75s to
 37.61s, while unchanged `index --l1` runs reuse the snapshot in about 0.10s.
-The current focused G3 dogfood (`src/codegraph`, 1,150 callables) materializes
-21,331 value nodes and 30,948 flow edges in 11.64s (historical cold run:
-43.04s); a current snapshot is reused in 0.109s. Its 80.0% structural path-event
+The current focused G3 dogfood (`src/codegraph`, 1,165 callables) materializes
+28,171 value nodes and 37,959 flow edges in 11.446s (historical cold run:
+43.04s); five current-snapshot reuses took 0.111–0.119s. Its 80.7% structural path-event
 mapping rate is an observability
 metric, not a semantic-recall claim.
 Historical benchmark results are retained

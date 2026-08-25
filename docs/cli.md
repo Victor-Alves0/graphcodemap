@@ -291,18 +291,21 @@ may-flow: branch feasibility and heap aliases are explicit limitations.
 ### `path-traversal`
 
 ```
-codegraph path-traversal <entry> [--max-hops N] [--max-findings N] [--json]
+codegraph path-traversal [entry] [--scope PATH]
+                         [--max-hops N] [--max-findings N] [--json]
 ```
 
-Runs the first persistent G4 rule family: each parameter of the selected Java
-or Python entry is an explicit trust-boundary source, and ordered `flows_to`
-paths are classified against path/file API arguments. Findings include CWE-22,
-rule identity, source and sink locations, every node/edge, confidence,
-sanitization status and stage evidence. `--json` emits that complete structure.
+Runs the first persistent G4 rule family. With `entry`, each parameter of that
+Java/Python callable is an explicit trust-boundary source. Without `entry`, the
+bounded repo scan starts at persisted results of configured/framework source
+calls; `--scope` restricts those source files. Ordered `flows_to` paths are
+classified against path/file API arguments. Findings include CWE-22, rule
+identity, source and sink locations, every node/edge, confidence, sanitization
+status and stage evidence. `--json` emits that complete structure.
 
-This is deliberately entry-scoped. No finding means `unknown`, not `safe`.
-External source-call returns and sanitizer-return transformations are not yet
-canonical persisted nodes, so sanitizer names never suppress a candidate.
+Sanitizers cut only through a canonical `call_result` node, so a same-line name
+match cannot hide a path. No finding means `unknown`, not `safe`; dynamic calls,
+reflection, heap aliases and infeasible may-flow branches remain limitations.
 
 ### `taint`
 

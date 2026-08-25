@@ -711,6 +711,11 @@ class CallSite:
     # `list.remove(0)` / `list.get(1)`. Sem ambos, um resumo de retorno teria de
     # tratar toda coleção como propagadora ou, pior, adivinhar o índice.
     arg_values: dict[int, str] = field(default_factory=dict)
+    # Exact expression span for each argument.  G3 uses it to distinguish
+    # ``sink(sanitize(value))`` (the argument is exactly the transformation)
+    # from ``sink(prefix + sanitize(value))`` (there is another dependency that
+    # must not be hidden behind the sanitizer result).
+    arg_spans: dict[int, tuple[int, int]] = field(default_factory=dict)
     # Configured calls nested in each argument.  Receiver summaries need the
     # exact nesting/sanitizer ancestry for `capture(request.getX())`.
     arg_calls: dict[int, list[NestedCall]] = field(default_factory=dict)
@@ -2229,6 +2234,44 @@ def _assign_targets_py(source, left):
     return set()
 
 
+def _nested_calls_py(source: bytes, node, guards=()) -> list[NestedCall]:
+    """Python counterpart of ``_nested_calls`` with sanitizer ancestry."""
+    if node is None:
+        return []
+    out: list[NestedCall] = []
+    child_guards = guards
+    if node.type == "call":
+        function = node.child_by_field_name("function")
+        callee = _callee_name(source, function, "py")
+        arguments = node.child_by_field_name("arguments")
+        literals: list[tuple[int, str]] = []
+        if arguments is not None:
+            position = 0
+            for argument in arguments.named_children:
+                value = (argument.child_by_field_name("value")
+                         if argument.type == "keyword_argument" else argument)
+                index = -1 if argument.type == "keyword_argument" else position
+                if index >= 0:
+                    position += 1
+                literal = (_string_literal_value(source, value)
+                           if value is not None else None)
+                if literal is not None:
+                    literals.append((index, literal))
+        site = _callee_site(node)
+        out.append(NestedCall(
+            callee=callee,
+            qualified=_rhs_qualified(source, node, {"call"}),
+            guards=tuple(guards), arg_literals=tuple(literals),
+            line=site.start_point[0] + 1,
+            col=byte_column(source, site.start_byte),
+            span=(node.start_byte, node.end_byte),
+        ))
+        child_guards = guards + (callee,)
+    for child in node.named_children:
+        out.extend(_nested_calls_py(source, child, child_guards))
+    return out
+
+
 def _facts_py(source, fn) -> FnFacts:
     params_node = fn.child_by_field_name("parameters")
     params = []
@@ -2255,12 +2298,14 @@ def _facts_py(source, fn) -> FnFacts:
         rhs_call = (_callee_name(source, right.child_by_field_name("function"), "py")
                     if right.type == "call" else None)
         rhs_q = _rhs_qualified(source, right, {"call"})
-        facts.assigns.append(Assign(_target_paths(source, left, _PY_MEMBER), rids,
-                                    a.type == "augmented_assignment", rhs_call,
-                                    a.start_point[0] + 1,
-                                    (a.start_byte, a.end_byte), rhs_q,
-                                    _const_text(source, right),
-                                    _ternary(source, right, _py_colher_de(source))))
+        facts.assigns.append(Assign(
+            _target_paths(source, left, _PY_MEMBER), rids,
+            a.type == "augmented_assignment", rhs_call,
+            a.start_point[0] + 1, (a.start_byte, a.end_byte), rhs_q,
+            _const_text(source, right),
+            _ternary(source, right, _py_colher_de(source)),
+            nested_calls=_nested_calls_py(source, right),
+        ))
 
     calls: list = []
     _walk(body, {"call"}, stop, calls)
@@ -2283,6 +2328,7 @@ def _facts_py(source, fn) -> FnFacts:
                 pos += 1
             ids: set = set()
             if val is not None:
+                cs.arg_spans[idx] = (val.start_byte, val.end_byte)
                 _paths(source, val, ids, _PY_MEMBER)
                 reads = _source_reads(
                     source, val, lambda s, n: _chain_path(s, n, _PY_MEMBER),
@@ -2291,6 +2337,9 @@ def _facts_py(source, fn) -> FnFacts:
                         s, n.child_by_field_name("function"), "py"))
                 if reads:
                     cs.arg_sources[idx] = reads
+                nested = _nested_calls_py(source, val)
+                if nested:
+                    cs.arg_calls[idx] = nested
             cs.args.append((idx, ids))
         facts.calls.append(cs)
 
@@ -2302,7 +2351,10 @@ def _facts_py(source, fn) -> FnFacts:
         child = r.named_children[0] if r.named_children else None
         top_call = (_callee_name(source, child.child_by_field_name("function"), "py")
                     if child is not None and child.type == "call" else None)
-        facts.returns.append(ReturnExpr(ids, top_call, (r.start_byte, r.end_byte)))
+        facts.returns.append(ReturnExpr(
+            ids, top_call, (r.start_byte, r.end_byte),
+            _nested_calls_py(source, child),
+        ))
     facts.regions = _build_regions(body, "py", source, facts.assigns)
     return facts
 
@@ -3223,6 +3275,7 @@ def _facts_generic(source, fn, lang) -> FnFacts:
             for arg in args.named_children:
                 if arg.type in (",", "comment"):
                     continue
+                cs.arg_spans[pos] = (arg.start_byte, arg.end_byte)
                 ids: set = set()
                 _arg_paths(source, arg, idset, ids)
                 reads = _source_reads(

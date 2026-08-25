@@ -60,7 +60,7 @@ def test_python_entry_parameter_reaches_file_sink_with_inspectable_path(
     assert all(edge["kind"] == "flows_to"
                for edge in finding["path"]["edges"])
     assert finding["evidence"]["kind"] == "persistent-value-path"
-    assert finding["sanitization"]["status"] == "not_proven"
+    assert finding["sanitization"]["status"] == "not_present"
     assert result["completeness"]["complete"] is False
     assert envelope.dynamic_dispatch is True
     graph.close()
@@ -99,7 +99,7 @@ def download(user_path):
     graph.close()
 
 
-def test_sanitizer_shaped_assignment_never_fabricates_safe_verdict(tmp_path):
+def test_persisted_sanitizer_result_cuts_entry_path(tmp_path):
     graph = _graph(tmp_path, "app.py", """
 import os
 
@@ -110,12 +110,9 @@ def download(user_path):
 
     _entry, result, _envelope = graph.path_traversal("app.download")
 
-    # G3 currently collapses this RHS to an assignment flow without proving
-    # that basename's return is sanitized. G4 must fail open, not hide it.
-    assert result["verdict"] == "candidate"
-    finding = result["findings"][0]
-    assert finding["sanitization"]["status"] == "not_proven"
-    assert "never suppress" in finding["sanitization"]["policy"]
+    assert result["verdict"] == "unknown"
+    assert result["findings"] == []
+    assert result["completeness"]["sanitized_paths"] >= 1
     graph.close()
 
 

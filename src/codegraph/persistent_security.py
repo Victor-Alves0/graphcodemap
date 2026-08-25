@@ -88,6 +88,75 @@ def _identity(details: dict) -> tuple[str, str | None]:
     return callee, str(qualified) if qualified else None
 
 
+def _identities(details: dict) -> tuple[str, ...]:
+    callee, qualified = _identity(details)
+    receiver_type = details.get("receiver_type")
+    typed = (f"{receiver_type}.{callee}"
+             if receiver_type and callee else None)
+    values = [typed, qualified, callee]
+    return tuple(dict.fromkeys(value for value in values if value))
+
+
+def _catalog_matches(details: dict, catalog) -> tuple[str, ...]:
+    matches = []
+    for identity in _identities(details):
+        for configured in catalog:
+            if (identity == configured
+                    or ("." in identity and "." in configured and (
+                        identity.endswith("." + configured)
+                        or configured.endswith("." + identity)))):
+                matches.append(configured)
+    return tuple(dict.fromkeys(matches))
+
+
+def _trusted_source(details: dict, identity: str, rules) -> bool:
+    literals = {
+        int(index): value for index, value in details.get("arg_literals", ())
+        if isinstance(index, int) and isinstance(value, str)
+    }
+    for source, index, trusted in rules.trusted_source_literals:
+        if identity == source or identity.endswith("." + source):
+            return literals.get(index) in trusted
+    return False
+
+
+def _framework_source(details: dict) -> bool:
+    if details.get("framework_source"):
+        return True
+    try:
+        from .dataflow import is_framework_source_call, is_framework_source_path
+
+        rhs_paths = [tuple(path) for path in details.get("rhs_paths", ())
+                     if isinstance(path, (list, tuple))]
+        return (is_framework_source_call(details.get("qualified"), rhs_paths)
+                or any(is_framework_source_path(path) for path in rhs_paths))
+    except (ImportError, TypeError, ValueError):
+        return False
+
+
+def _details_are_source(details: dict, rules) -> bool:
+    if _framework_source(details):
+        return True
+    for identity in _catalog_matches(details, rules.sources):
+        if not _trusted_source(details, identity, rules):
+            return True
+    return False
+
+
+def _source_evidence(details: dict, rules) -> dict:
+    matches = _catalog_matches(details, rules.sources)
+    return {
+        "kind": "persisted external source result",
+        "matched_rules": list(matches),
+        "framework_source": _framework_source(details),
+        "identities": list(_identities(details)),
+    }
+
+
+def _details_are_sanitizer(details: dict, sanitizers) -> bool:
+    return bool(_catalog_matches(details, sanitizers))
+
+
 def _sink_rule(language: str, details: dict):
     callee, qualified = _identity(details)
     argument = details.get("arg_index", -1)
@@ -153,13 +222,45 @@ def _confidence(flow_confidence: str) -> str:
 def _entry_sources(conn, entry_id: str) -> list[dict]:
     rows = conn.execute(
         "SELECT n.id,n.function_id,n.symbol_id,n.file_id,n.kind,n.name,"
-        "n.access_path,n.line,n.col,n.details_json,f.path "
+        "n.access_path,n.line,n.col,n.details_json,f.path,f.language "
         "FROM dataflow_nodes n JOIN symbols s ON s.id=n.symbol_id "
         "JOIN files f ON f.id=n.file_id WHERE n.kind='parameter' "
         "AND s.parent_id=? ORDER BY n.id", (entry_id,)
     ).fetchall()
     return [item for item in map(_project_node, rows)
             if item["name"] not in {"self", "cls"}]
+
+
+def _repository_sources(conn, rules,
+                        scope: str | None = None) -> list[dict]:
+    args: list[object] = []
+    scope_filter = ""
+    if scope:
+        normalized = scope.replace("\\", "/").strip("/")
+        if normalized not in {"", "."}:
+            scope_filter = " AND (f.path=? OR f.path LIKE ?)"
+            args.extend((normalized, normalized + "/%"))
+    rows = conn.execute(
+        "SELECT n.id,n.function_id,n.symbol_id,n.file_id,n.kind,n.name,"
+        "n.access_path,n.line,n.col,n.details_json,f.path,f.language "
+        "FROM dataflow_nodes n JOIN files f ON f.id=n.file_id "
+        "WHERE n.kind='call_result'" + scope_filter + " ORDER BY n.id",
+        tuple(args),
+    ).fetchall()
+    return [node for node in map(_project_node, rows)
+            if _details_are_source(node["details"], rules)]
+
+
+def _sanitizer_nodes(conn, sanitizers) -> set[str]:
+    rows = conn.execute(
+        "SELECT id,details_json FROM dataflow_nodes "
+        "WHERE kind='call_result' ORDER BY id"
+    ).fetchall()
+    return {
+        row["id"] for row in rows
+        if _details_are_sanitizer(
+            _json_object(row["details_json"]), sanitizers)
+    }
 
 
 def _path_rows(conn, source_ids: list[str], max_hops: int,
@@ -181,8 +282,10 @@ def _path_rows(conn, source_ids: list[str], max_hops: int,
         " WHERE w.hops<? AND instr(w.trail,','||e.dst_node_id||',')=0"
         " ORDER BY 3,1,2,5 LIMIT ?"
         ") SELECT w.source_id,w.node_id,w.hops,w.confidence,w.trail,"
-        "w.edge_trail,n.kind,n.details_json FROM walk w JOIN dataflow_nodes n "
-        "ON n.id=w.node_id ORDER BY w.hops,w.source_id,w.node_id,w.edge_trail",
+        "w.edge_trail,n.kind,n.details_json,f.language FROM walk w "
+        "JOIN dataflow_nodes n ON n.id=w.node_id "
+        "JOIN files f ON f.id=n.file_id "
+        "ORDER BY w.hops,w.source_id,w.node_id,w.edge_trail",
         (*source_ids, max_hops, scan_limit + 1),
     ).fetchall()
 
@@ -192,7 +295,7 @@ def _materialize_path(conn, trail: str, edge_trail: str) -> tuple[list, list]:
     node_ph = ",".join("?" * len(node_ids))
     by_node = {row["id"]: _project_node(row) for row in conn.execute(
         "SELECT n.id,n.function_id,n.symbol_id,n.file_id,n.kind,n.name,"
-        "n.access_path,n.line,n.col,n.details_json,f.path "
+        "n.access_path,n.line,n.col,n.details_json,f.path,f.language "
         "FROM dataflow_nodes n JOIN files f ON f.id=n.file_id "
         f"WHERE n.id IN ({node_ph})", node_ids)}
     nodes = [by_node[node_id] for node_id in node_ids]
@@ -224,12 +327,13 @@ def _sanitizer_evidence(nodes: list[dict]) -> list[dict]:
     return found
 
 
-def path_traversal(engine, entry_selector: str, *, max_hops: int = 64,
-                   max_findings: int = 50) -> tuple[dict, dict, object]:
-    """Find entry-parameter paths to Java/Python file/path call arguments.
+def path_traversal(engine, entry_selector: str | None = None, *,
+                   scope: str | None = None, max_hops: int = 64,
+                   max_findings: int = 50) -> tuple[dict | None, dict, object]:
+    """Find persisted source paths to Java/Python file/path arguments.
 
-    The returned source, nodes and edges are projections of the persisted value
-    graph.  Symbol lookup only establishes the explicitly requested entry.
+    With ``entry_selector``, its parameters are the explicit trust boundary.
+    Without it, persisted external call-result nodes seed a bounded repo scan.
     """
     from .query import Envelope
 
@@ -239,17 +343,21 @@ def path_traversal(engine, entry_selector: str, *, max_hops: int = 64,
         raise ValueError("max_findings deve ser >= 1")
 
     env = Envelope(dynamic_dispatch=True)
-    entry = engine._resolve_fresh(entry_selector, env)
+    entry = (engine._resolve_fresh(entry_selector, env)
+             if entry_selector else None)
     if engine._repair_all(env):
         # A full scope repair is required before trusting trans-file callees.
         # Re-resolve because the selected declaration itself may have changed.
-        entry = engine._resolve_selector(entry_selector)
-    language_row = engine.conn.execute(
-        "SELECT language FROM files WHERE id=?", (entry["file_id"],)
-    ).fetchone()
-    language = language_row["language"] if language_row else None
+        if entry_selector:
+            entry = engine._resolve_selector(entry_selector)
+    language = None
+    if entry is not None:
+        language_row = engine.conn.execute(
+            "SELECT language FROM files WHERE id=?", (entry["file_id"],)
+        ).fetchone()
+        language = language_row["language"] if language_row else None
 
-    if language not in {"java", "python"}:
+    if entry is not None and language not in {"java", "python"}:
         env.warn("path traversal persistente: entry fora do foco Java/Python")
         return entry, {
             "rule_id": "path-traversal",
@@ -276,7 +384,7 @@ def path_traversal(engine, entry_selector: str, *, max_hops: int = 64,
         return entry, {
             "rule_id": "path-traversal",
             "cwe": PATH_TRAVERSAL_CWE,
-            "mode": "entry",
+            "mode": "entry" if entry is not None else "scan",
             "language": language,
             "engine": "persistent-dataflow",
             "persistent": True,
@@ -298,7 +406,23 @@ def path_traversal(engine, entry_selector: str, *, max_hops: int = 64,
             },
         }, env
 
-    sources = _entry_sources(engine.conn, entry["id"])
+    from .taint_rules import load_rules
+
+    focus_languages = {
+        row["language"] for row in engine.conn.execute(
+            "SELECT DISTINCT language FROM files "
+            "WHERE language IN ('java','python')")
+    }
+    rules = load_rules(engine.root, focus_languages)
+    sanitizers = set()
+    for item_language in focus_languages:
+        sanitizers.update(rules.sanitizers_for_context(
+            item_language, "non-xss"))
+    sanitizers.update(_SANITIZER_LABELS)
+    sources = (_entry_sources(engine.conn, entry["id"])
+               if entry is not None else _repository_sources(
+                   engine.conn, rules, scope=scope))
+    sanitizer_ids = _sanitizer_nodes(engine.conn, sanitizers)
     scan_limit = max(1000, max_findings * max_hops * 8)
     walk_rows = (_path_rows(
         engine.conn, [source["id"] for source in sources], max_hops,
@@ -310,10 +434,11 @@ def path_traversal(engine, entry_selector: str, *, max_hops: int = 64,
     source_by_id = {source["id"]: source for source in sources}
     findings = []
     candidate_count = 0
+    sanitized_paths = 0
     seen_paths: set[tuple[str, str, str]] = set()
     for row in rows:
         sink_details = _json_object(row["details_json"])
-        rule = _sink_rule(language, sink_details)
+        rule = _sink_rule(row["language"], sink_details)
         if rule is None:
             continue
         key = (row["source_id"], row["node_id"], row["edge_trail"])
@@ -325,6 +450,11 @@ def path_traversal(engine, entry_selector: str, *, max_hops: int = 64,
             continue
         nodes, edges = _materialize_path(
             engine.conn, row["trail"], row["edge_trail"])
+        sanitizer_path = [node for node in nodes[1:]
+                          if node["id"] in sanitizer_ids]
+        if sanitizer_path:
+            sanitized_paths += 1
+            continue
         source = source_by_id[row["source_id"]]
         sink = nodes[-1]
         sanitizer_candidates = _sanitizer_evidence(nodes)
@@ -336,7 +466,9 @@ def path_traversal(engine, entry_selector: str, *, max_hops: int = 64,
             "confidence": _confidence(flow_confidence),
             "source": {
                 **source,
-                "evidence": "explicit entry parameter",
+                "evidence": (
+                    "explicit entry parameter" if entry is not None
+                    else _source_evidence(source["details"], rules)),
             },
             "sink": {
                 **sink,
@@ -354,8 +486,8 @@ def path_traversal(engine, entry_selector: str, *, max_hops: int = 64,
                 "artifact_hash": stage.get("artifact_hash") if stage else None,
             },
             "sanitization": {
-                "status": "not_proven",
-                "policy": "fail-open; names alone never suppress a path",
+                "status": "not_present",
+                "policy": "persisted sanitizer-result nodes cut the path",
                 "candidates_on_path": sanitizer_candidates,
             },
         })
@@ -363,10 +495,12 @@ def path_traversal(engine, entry_selector: str, *, max_hops: int = 64,
         env.truncated = True
 
     limitations = [
-        "sources are parameters of the explicitly selected entry only",
-        "external source-call returns are not canonical persisted nodes yet",
-        "sanitizer names do not prove a transformed return value and never "
-        "suppress candidates",
+        ("sources are parameters of the explicitly selected entry"
+         if entry is not None else
+         "repo scan seeds only configured/framework sources represented by "
+         "persisted call-result nodes"),
+        "sanitizers cut only when the transformed call result is a persisted "
+        "node on the path",
         "may-flow does not prove branch feasibility, aliases, reflection, or "
         "dynamic dispatch",
     ]
@@ -378,19 +512,23 @@ def path_traversal(engine, entry_selector: str, *, max_hops: int = 64,
         "complete": False,
         "graph_stage_status": stage.get("status") if stage else "missing",
         "entry_sources": len(sources),
+        "sanitized_paths": sanitized_paths,
+        "scope": scope,
         "max_hops": max_hops,
         "max_findings": max_findings,
         "truncated": env.truncated,
         "limitations": limitations,
     }
     env.warn(
-        "path traversal persistente é entry-scoped e may-flow; ausência de "
+        "path traversal persistente é may-flow; ausência de "
         "achado é unknown, não prova de segurança.")
     return entry, {
         "rule_id": "path-traversal",
         "cwe": PATH_TRAVERSAL_CWE,
-        "mode": "entry",
+        "mode": "entry" if entry is not None else "scan",
         "language": language,
+        "languages": sorted(focus_languages),
+        "scope": scope,
         "engine": "persistent-dataflow",
         "persistent": True,
         "verdict": "candidate" if findings else "unknown",

@@ -16,6 +16,12 @@ def download(user_path):
     return open(selected)
 """
 
+REPO_SOURCE = """\
+def download():
+    selected = input()
+    return open(selected)
+"""
+
 
 def _facts(finding: dict) -> dict:
     return {
@@ -60,3 +66,30 @@ def test_library_cli_and_mcp_return_the_same_persistent_finding(
     assert _facts(structured["results"][0]) == expected
     assert structured["fresh"] is True
     assert structured["truncated"] is False
+
+
+def test_repo_wide_library_cli_and_mcp_return_the_same_source_result(
+        tmp_path, capsys, monkeypatch):
+    pytest.importorskip("mcp")
+    (tmp_path / "app.py").write_text(REPO_SOURCE, encoding="utf-8")
+
+    graph = CodeGraph(tmp_path)
+    graph.index()
+    _entry, library, _env = graph.path_traversal()
+    expected = _facts(library["findings"][0])
+    graph.close()
+
+    assert cli.main([
+        "--root", str(tmp_path), "path-traversal", "--json",
+    ]) == 1
+    cli_result = json.loads(capsys.readouterr().out)
+    assert cli_result["mode"] == "scan"
+    assert _facts(cli_result["findings"][0]) == expected
+
+    from codegraph import l1
+    from codegraph.mcp_server import build_server
+
+    monkeypatch.setattr(l1, "refine", lambda _indexer: None)
+    server = build_server(tmp_path, watch=False)
+    _content, structured = asyncio.run(server.call_tool("path_traversal", {}))
+    assert _facts(structured["results"][0]) == expected

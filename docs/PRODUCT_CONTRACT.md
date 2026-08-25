@@ -144,28 +144,33 @@ The existing product has a useful but smaller foundation:
 
 The G3 focus-language value graph now provides:
 
-- persistent Java/Python parameter/local/field/access/call-argument/return nodes;
+- persistent Java/Python parameter/local/field/access/call-argument/call-result/
+  return nodes;
 - assignment, call-parameter and call-return composition across functions;
 - per-function body + resolved-call input hashes, atomic rebuild and cross-file
   read-repair;
 - separate Java/Python heap limitations and conservative CFG may-flow status.
-- a `persistent-v2` materializer whose bounded dogfood cold build fell from the
-  historical 43.04s to 11.64s; no-change reuse is 0.109s.
+- a `persistent-v3` materializer with deduplicated batched first-build inserts;
+  bounded dogfood writes 28,171 nodes/37,959 edges in 11.446s versus the
+  historical 43.04s, while five no-change reuses take 0.111–0.119s.
 
 The first G4 vertical slice now provides:
 
-- entry-scoped CWE-22/path-traversal candidates for Java and Python;
+- entry-scoped and repo-wide CWE-22/path-traversal candidates for Java/Python;
+- configurable/framework external source calls represented by canonical
+  result nodes, including direct nested source calls;
+- sanitizer results represented on the ordered path and used as exact cuts;
 - source/sink locations, ordered persisted nodes/edges, confidence, rule and
   stage evidence through identical library, CLI JSON and MCP result facts;
 - `unknown`, never `safe`, when no persisted path is found;
-- explicit non-suppression when a sanitizer transformation is not represented
-  canonically in the persisted graph.
+- source/sanitizer catalog changes applied at query time without rebuilding the
+  value graph.
 
 It does **not** yet satisfy the entire required product:
 
-- only the first entry-scoped path-traversal family consumes the canonical
-  persisted graph; the rich `dataflow` response and broader `taint` engine are
-  still compatibility paths;
+- only path traversal consumes canonical persisted source/sanitizer results;
+  the rich `dataflow` response and broader `taint` families are still
+  compatibility paths;
 - non-focus languages retain their existing on-demand dataflow;
 - common packaged Python `src/` identity and semantic linking have one ordinary
   Flask canary, but product acceptance still requires a second Python repo;
@@ -219,18 +224,19 @@ CPG and not universal SAST parity.
 - **Delivered:** state/heap limitations are separate in the stage receipt for
   Java and Python.
 - **Measured optimized baseline:** the current `src/codegraph` scope builds
-  1,150 callable summaries into 21,331 nodes/30,948 edges in 11.64s; no-change
-  reuse is 0.109s. The historical pre-optimization run was 43.04s. A same-state
-  comparison against the legacy locator produced identical result/table hashes.
+  1,165 callable summaries into 28,171 nodes/37,959 edges in 11.446s; five
+  no-change reuses take 0.111–0.119s. The historical pre-optimization run was
+  43.04s. The larger v3 artifact includes canonical call-result transformations.
   The receipt reports mapped/unmapped path events. That ratio measures structural
   mapping availability, not vulnerability recall or precision.
 
 ### G4 — Vulnerability analysis
 
-- **First delivered family:** entry-scoped path traversal consumes only the
-  persistent flow graph and returns candidate/unknown with bounded traversal.
-- Persist external source-call results and sanitizer-return transformations
-  before claiming repo-wide path-traversal negatives.
+- **First delivered family:** path traversal consumes only the persistent flow
+  graph in explicit-entry or bounded repo-wide mode and returns
+  candidate/unknown.
+- **Delivered for that family:** configured/framework source results, nested
+  direct sources and sanitizer-result cuts are canonical inspectable nodes.
 - Migrate the remaining rules only after equivalent focused contracts.
 - Java and Python each get labeled vulnerable/fixed and negative corpora.
 - Findings remain reproducible and inspectable through library, CLI and MCP.

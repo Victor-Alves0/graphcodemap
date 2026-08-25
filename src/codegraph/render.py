@@ -382,8 +382,10 @@ def flow_path(source, data, env) -> str:
 
 def path_traversal(entry, data, env) -> str:
     findings = data["findings"]
+    origin = entry["fqn"] if entry is not None else (
+        data.get("scope") or "repositório")
     lines = [
-        f"path traversal persistente (CWE-22) de {entry['fqn']}: "
+        f"path traversal persistente (CWE-22) de {origin}: "
         f"{len(findings)} candidato(s); veredito={data['verdict']}",
     ]
     for index, finding in enumerate(findings, 1):

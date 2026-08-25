@@ -327,7 +327,7 @@ def cmd_flow_path(args) -> int:
 
 def cmd_path_traversal(args) -> int:
     entry, data, env = _engine(args).path_traversal(
-        args.entry, max_hops=args.max_hops,
+        args.entry, scope=args.scope, max_hops=args.max_hops,
         max_findings=args.max_findings)
     if args.json:
         import json
@@ -724,8 +724,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sp = sub.add_parser(
         "path-traversal",
-        help="CWE-22 entry-scoped sobre flows_to persistente")
-    sp.add_argument("entry", help="função de entrada; seus parâmetros são fontes")
+        help="CWE-22 repo-wide ou por entry sobre flows_to persistente")
+    sp.add_argument("entry", nargs="?", default=None,
+                    help="função de entrada; omitida = fontes externas do repo")
+    sp.add_argument("--scope", default=None,
+                    help="restringe as fontes repo-wide a arquivo/diretório")
     sp.add_argument("--max-hops", type=int, default=64)
     sp.add_argument("--max-findings", type=int, default=50)
     sp.add_argument("--json", action="store_true",

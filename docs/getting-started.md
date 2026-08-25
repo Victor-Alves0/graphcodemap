@@ -111,14 +111,16 @@ link. See [Core Concepts](concepts.md#confidence) for what the tiers mean.
 codegraph dataflow handle_request              # where each parameter's data goes
 codegraph dataflow-build                       # persist Java/Python value flow
 codegraph flow-path handler.request save.value # query a reusable value path
-codegraph path-traversal download              # entry params → CWE-22 file sink
+codegraph path-traversal                       # persisted external sources → CWE-22
+codegraph path-traversal download              # or explicit entry parameters
 codegraph taint --entry handle_request         # untrusted input → dangerous sink
 codegraph reaches handle_request --sink http   # does a path reach an HTTP call?
 ```
 
 Java/Python value paths are persisted and incrementally refreshed.
-`path-traversal` is the first rule family to consume only that artifact and is
-entry-scoped; no finding means unknown, not safe. The richer dataflow/taint
+`path-traversal` is the first rule family to consume only that artifact. It can
+scan persisted external source results repo-wide or seed an explicit entry;
+sanitizer-result nodes cut paths. No finding means unknown, not safe. The richer dataflow/taint
 compatibility engine remains on demand. Treat taint findings as
 *candidates to verify* — the analysis
 over-approximates by design. See [Concepts](concepts.md#dataflow--taint).

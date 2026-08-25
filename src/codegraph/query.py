@@ -1125,13 +1125,15 @@ class QueryEngine:
         return path(self, source, target, max_hops=max_hops,
                     max_paths=max_paths)
 
-    def path_traversal(self, entry: str, max_hops: int = 64,
+    def path_traversal(self, entry: str | None = None,
+                       scope: str | None = None, max_hops: int = 64,
                        max_findings: int = 50):
-        """Entry-scoped CWE-22 candidates from the persisted value graph."""
+        """CWE-22 candidates from entry params or persisted source results."""
         from .persistent_security import path_traversal
 
         return path_traversal(
-            self, entry, max_hops=max_hops, max_findings=max_findings)
+            self, entry, scope=scope, max_hops=max_hops,
+            max_findings=max_findings)
 
     def _df_parse(self, path: str, lang: str, cache: dict):
         if path not in cache:

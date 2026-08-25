@@ -15,7 +15,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-SCHEMA_VERSION = "7"
+SCHEMA_VERSION = "8"
 L1_LIFECYCLE_STATUSES = frozenset({
     "not_started", "running", "complete", "partial",
 })
@@ -235,7 +235,8 @@ CREATE TABLE IF NOT EXISTS dataflow_nodes (
   symbol_id      TEXT,
   file_id        INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   kind           TEXT NOT NULL CHECK(kind IN
-                   ('parameter','local','field','value','call_argument','return')),
+                   ('parameter','local','field','value','call_argument',
+                    'call_result','return')),
   name           TEXT NOT NULL,
   access_path    TEXT,
   line           INTEGER,
@@ -258,7 +259,7 @@ CREATE TABLE IF NOT EXISTS dataflow_edges (
   file_id           INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   relation          TEXT NOT NULL CHECK(relation IN
                       ('assignment','access','call_argument','call_parameter',
-                       'call_return','return_value')),
+                       'call_result','call_return','return_value')),
   line              INTEGER,
   col               INTEGER,
   confidence        TEXT NOT NULL CHECK(confidence IN
