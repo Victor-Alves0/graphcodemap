@@ -80,6 +80,12 @@ The essential tables:
   Git commit/dirty state and the aggregate graph artifact hash.
 - **`graph_stage_runs`** — independently versioned `filesystem`, `l0`, `l1`,
   L2 metrics, `l3` and `dataflow` stage status/artifact hashes per revision.
+- **`dataflow_nodes` / `dataflow_edges`** — stable symbol-backed and synthetic
+  value nodes (access paths, call arguments, returns) plus typed assignment,
+  argument, parameter and return flow. Publication is one SQLite transaction.
+- **`dataflow_function_state`** — per-callable input hash and status; a body or
+  resolved-call change rebuilds the affected summary while unchanged functions
+  are reused.
 - **`meta`** — schema version, repo root, exclusion policy, sweep bookkeeping.
 
 A **unique index** on the resolved-edge shape is a structural guard against the

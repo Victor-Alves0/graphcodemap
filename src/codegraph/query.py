@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 from . import explain
 from .community import ensure_communities
-from .db import read_l1_lifecycle, record_current_stage
+from .db import read_l1_lifecycle, record_current_stage, retry_on_locked
 from .indexer import (Indexer, get_index_excludes, get_index_scopes,
                       scan_source_stats, _repo_rel)
 from .languages import get_parser
@@ -277,16 +277,25 @@ class QueryEngine:
             # size/mtime são somente hints. A decisão de frescor usa conteúdo,
             # inclusive no caso adversarial de uma edição que preserva ambos.
             if content_hash(data) == row["content_hash"]:
-                self.conn.execute(
-                    "UPDATE files SET mtime=?, size=? WHERE path=?",
-                    (st.st_mtime_ns, st.st_size, rel),
-                )
-                self.conn.execute(
-                    "UPDATE repository_nodes SET mtime=?, size=?, content_hash=? "
-                    "WHERE path=?",
-                    (st.st_mtime_ns, st.st_size, row["content_hash"], rel),
-                )
-                self.conn.commit()
+                def refresh_stat_hints():
+                    try:
+                        self.conn.execute(
+                            "UPDATE files SET mtime=?, size=? WHERE path=?",
+                            (st.st_mtime_ns, st.st_size, rel),
+                        )
+                        self.conn.execute(
+                            "UPDATE repository_nodes SET mtime=?, size=?, "
+                            "content_hash=? WHERE path=?",
+                            (st.st_mtime_ns, st.st_size,
+                             row["content_hash"], rel),
+                        )
+                        self.conn.commit()
+                    except BaseException:
+                        if self.conn.in_transaction:
+                            self.conn.rollback()
+                        raise
+
+                retry_on_locked(refresh_stat_hints)
                 continue
             if self.ix.index_file(rel, data=data):
                 env.warn(f"freshness: {rel} mudou desde a indexação; re-indexado agora (L0).")
@@ -1100,6 +1109,22 @@ class QueryEngine:
 
     # -- dataflow / taint (docs/RESEARCH.md §6) -------------------------------
 
+    def build_dataflow(self, force: bool = False) -> dict:
+        """Materialize the reusable Java/Python value-flow graph."""
+        from .flowgraph import build, ensure
+
+        env = Envelope()
+        self._repair_all(env)
+        return (build(self, force=True) if force else ensure(self)), env
+
+    def flow_path(self, source: str, target: str | None = None,
+                  max_hops: int = 64, max_paths: int = 20):
+        """Query persisted value reachability between stable graph nodes."""
+        from .flowgraph import path
+
+        return path(self, source, target, max_hops=max_hops,
+                    max_paths=max_paths)
+
     def _df_parse(self, path: str, lang: str, cache: dict):
         if path not in cache:
             try:
@@ -1479,14 +1504,25 @@ class QueryEngine:
         cache: dict = {}
         receiver_summary_cache: dict = {}
         receiver_summary_building: set = set()
+        language_row = self.conn.execute(
+            "SELECT language FROM files WHERE id=?", (sym["file_id"],)
+        ).fetchone()
+        persistent = bool(
+            language_row and language_row["language"] in {"java", "python"})
+        if persistent:
+            # Interprocedural freshness is a whole-scope property: a callee can
+            # change without touching this selector's file.
+            if self._repair_all(env):
+                sym = self._resolve_selector(sym["fqn"])
+            from .flowgraph import ensure
+
+            ensure(self)
         facts, lang = self._df_facts(sym, cache)
         if facts is None:
             env.warn(f"dataflow: linguagem '{lang}' ainda sem análise de fluxo "
                      f"(suportadas: {', '.join(df.supported_langs())}).")
-            record_current_stage(
-                self.conn, "dataflow", "on-demand-v1", "unsupported",
-                {"selector": selector, "language": lang})
-            return {"function": sym, "supported": False, "params": []}, env
+            return {"function": sym, "supported": False, "params": [],
+                    "persistent": False}, env
 
         def receiver_effects(sym_row, f):
             effects = {}
@@ -1621,11 +1657,8 @@ class QueryEngine:
                 "name": p, "reaches_return": flow.reaches_return, "sinks": sinks})
         env.warn("dataflow: intra-procedural may-taint (flow-insensitive, "
                  "over-aproxima) + call graph.")
-        record_current_stage(
-            self.conn, "dataflow", "on-demand-v1", "executed",
-            {"selector": sym["fqn"], "depth": depth,
-             "parameters": len(result_params), "persistent": False})
-        return {"function": sym, "supported": True, "params": result_params}, env
+        return {"function": sym, "supported": True, "params": result_params,
+                "persistent": persistent}, env
 
     def taint(self, scope: str | None = None, entry: str | None = None,
               depth: int | None = None, max_findings: int = 100,
@@ -2349,7 +2382,7 @@ class QueryEngine:
         env.warn("taint: may-taint estático (over-aproxima) — achados são "
                  "candidatos a verificar; ajuste regras em .codegraph/taint.json.")
         record_current_stage(
-            self.conn, "dataflow", "on-demand-v1",
+            self.conn, "taint", "on-demand-v1",
             "partial" if budget.limit_hit else "executed",
             {"mode": "entry" if entry else "scan", "depth": depth,
              "findings": len(findings), "persistent": False,
@@ -2743,6 +2776,8 @@ class QueryEngine:
                     "SELECT MAX(id) FROM graph_revisions").fetchone()[0]),
             "symbols": g("SELECT COUNT(*) FROM symbols"),
             "edges": g("SELECT COUNT(*) FROM edges"),
+            "dataflow_nodes": g("SELECT COUNT(*) FROM dataflow_nodes"),
+            "dataflow_edges": g("SELECT COUNT(*) FROM dataflow_edges"),
             "edges_resolved": g("SELECT COUNT(*) FROM edges WHERE dst IS NOT NULL"),
             "edges_dangling": g("SELECT COUNT(*) FROM edges WHERE dst IS NULL"),
             "parse_partial": g("SELECT COUNT(*) FROM files WHERE parse_status!='ok'"),
@@ -2759,6 +2794,7 @@ class QueryEngine:
         Read-only e barato — pensado para o usuário inspecionar o estado antes
         de confiar nas respostas, ou depois de um `index` com erros."""
         import time as _time
+        from .flowgraph import current_stage as current_dataflow_stage
 
         g = lambda q: self.conn.execute(q).fetchone()[0]  # noqa: E731
         meta = {r["key"]: r["value"] for r in self.conn.execute(
@@ -2812,6 +2848,7 @@ class QueryEngine:
             "l1_missing": l1_missing,
             "l1_last_run": l1_last_run,
             "l1": self.l1_status(),
+            "dataflow": current_dataflow_stage(self.conn),
             "last_full_scan": int(last_scan) if last_scan else None,
             "last_full_scan_age_s": age,
             "by_language": {

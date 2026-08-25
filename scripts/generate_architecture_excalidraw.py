@@ -313,17 +313,17 @@ def build() -> dict:
 
     # 4. Dataflow and vulnerability analysis.
     d.section("section-flow", 2215, 980, 1335, 520,
-              "4. Fluxo de valores e vulnerabilidades (hoje: sob demanda)")
+              "4. Fluxo de valores persistente + vulnerabilidades")
     d.box("flow-request", 2260, 1075, 240, 125, "Query solicita fluxo",
           "data_flow / reaches\n/ taint", fill=GREEN, body_size=14)
-    d.box("facts", 2560, 1075, 270, 125, "Fatos · dataflow.py",
-          "reabre AST do arquivo\nparams/assign/calls/return", fill=YELLOW,
+    d.box("facts", 2560, 1075, 270, 125, "G3 · flowgraph.py",
+          "nós estáveis + hashes\nflows_to em SQLite", fill=GREEN,
           body_size=14)
     d.box("cfg", 2890, 1075, 270, 125, "CFG · flowsens.py",
           "branch/loop/kills\nmay-taint conservador", fill=YELLOW,
           body_size=14)
     d.box("interproc", 3220, 1075, 270, 125, "Composição interproc.",
-          "query.py combina\nsumários + call graph", fill=YELLOW,
+          "arg → parâmetro\nretorno → caller", fill=GREEN,
           body_size=14)
     d.connect("flow-facts", "flow-request", "facts")
     d.connect("facts-cfg", "facts", "cfg")
@@ -333,8 +333,8 @@ def build() -> dict:
     d.connect("repo-facts", "repository", "facts", source_side="bottom",
               target_side="left", color="#f08c00",
               via=[(250, 1470), (2190, 1470), (2190, 1137)])
-    d.text("repo-facts-label", 1590, 1435, "reparse o código: fatos ainda não persistem", size=14,
-           color="#c26500")
+    d.text("repo-facts-label", 1590, 1435, "body/call hash invalida; snapshot reutilizável", size=14,
+           color="#2b8a3e")
 
     d.box("taint-rules", 2400, 1280, 355, 145, "Regras e catálogos",
           "taint_rules.py + taint_catalog.py\nsource · propagator · sanitizer · sink",
@@ -349,7 +349,7 @@ def build() -> dict:
     d.arrow("future-persist-flow", (2560, 1450), (2110, 1220), color=FUTURE,
             style="dashed")
     d.text("future-persist-label", 2250, 1430,
-           "G3: persistir flows_to interprocedural/CFG", size=14,
+           "G4: regras de vulnerabilidade consumirem flows_to", size=14,
            color=FUTURE)
 
     # 5. Incremental correctness lifecycle.
@@ -391,7 +391,7 @@ def build() -> dict:
         ("g0", 2260, 1835, "G0 · Observabilidade", "PARCIAL\nestados/coverage completos", YELLOW),
         ("g1", 2680, 1835, "G1 · Grafo estrutural", "CORE + GOLDENS\nfaltam repos comuns", YELLOW),
         ("g2", 3100, 1835, "G2 · Linking semântico", "CORE FECHADO\nmatriz + coverage + cache", GREEN),
-        ("g3", 2260, 1995, "G3 · Dataflow persistente", "def-use + fluxo\nentre funções", RED),
+        ("g3", 2260, 1995, "G3 · Dataflow persistente", "CORE FECHADO\ndef-use + interproc.", GREEN),
         ("g4", 2680, 1995, "G4 · Vulnerabilidades", "Java/Python sobre\no mesmo flow graph", RED),
         ("g5", 3100, 1995, "G5 · Aceitação", "wheel + CLI + MCP\nrepos comuns pinados", RED),
     ]
@@ -408,7 +408,7 @@ def build() -> dict:
     d.connect("g4-g5", "g4", "g5")
 
     d.box("truth", 2260, 2170, 1220, 145, "Estado honesto em 2026-08-24",
-          "Alpha structural graph: goldens estruturais, lifecycle atômico e matriz semântica real 5/5 Python + 7/7 Java. Ainda NÃO é CPG completo: flows_to persistente e aceitação multi-repo permanecem gates.",
+          "Alpha: grafo estrutural + flows_to Java/Python persistente, lifecycle atômico e matriz semântica 5/5 Python + 7/7 Java. G4 ainda deve migrar regras de vulnerabilidade; aceitação multi-repo permanece gate.",
           fill=YELLOW, body_size=16)
 
     return {

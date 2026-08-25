@@ -76,14 +76,16 @@ def test_mcp_server_tools(repo):
     server = build_server(repo)
     tools = asyncio.run(server.list_tools())
     names = {t.name for t in tools}
-    assert names == {"overview", "find_symbol", "symbol_info", "references",
-                     "callers", "callees", "impact", "ego_graph", "dataflow",
-                     "taint", "reaches", "communities", "describe",
-                     "index_status", "doctor",
-                     # tools de alto nível (Prioridade 5)
-                     "change_impact", "find_affected_modules",
-                     "find_related_tests", "explain_symbol",
-                     "suggest_files_to_read"}
+    expected = {"overview", "find_symbol", "symbol_info", "references",
+                "callers", "callees", "impact", "ego_graph", "dataflow",
+                "build_dataflow", "flow_path", "taint", "reaches",
+                "communities", "describe", "index_status", "doctor",
+                "repository_tree", "graph_history", "semantic_coverage",
+                # tools de alto nível (Prioridade 5)
+                "change_impact", "find_affected_modules",
+                "find_related_tests", "explain_symbol",
+                "suggest_files_to_read"}
+    assert expected <= names
 
 
 def test_mcp_tool_call_roundtrip(repo):

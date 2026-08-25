@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import os
 
-import pytest
-
 from codegraph import CodeGraph
 
 SRC = "def save_user(name):\n    return name\n\n\ndef old_fn():\n    return 1\n"
@@ -33,14 +31,17 @@ def test_index_reports_added_removed_and_signature_change(tmp_path):
     (tmp_path / "u.py").write_text(SRC, encoding="utf-8")
     cg = CodeGraph(tmp_path)
     first = cg.index()
-    assert first["changes"]["counts"]["added"] == 2      # índice inicial
+    # O change set inclui os nós de valor persistentes (parâmetros/locais), não
+    # apenas callables. Callables continuam presentes sem exigir uma contagem
+    # congelada anterior ao grafo estrutural G1.
+    assert {"u.save_user", "u.old_fn"} <= set(first["changes"]["added"])
 
     (tmp_path / "u.py").write_text(SRC2, encoding="utf-8")
     _touch_newer(tmp_path / "u.py")
     ch = cg.index()["changes"]
 
-    assert ch["added"] == ["u.nova"]
-    assert ch["removed"] == ["u.old_fn"]
+    assert "u.nova" in ch["added"]
+    assert "u.old_fn" in ch["removed"]
     assert len(ch["signature_changed"]) == 1
     sig = ch["signature_changed"][0]
     assert sig["fqn"] == "u.save_user"
@@ -55,7 +56,7 @@ def test_index_reports_symbols_of_deleted_file(tmp_path):
     cg.index()
     (tmp_path / "u.py").unlink()
     ch = cg.index()["changes"]
-    assert set(ch["removed"]) == {"u.save_user", "u.old_fn"}
+    assert {"u.save_user", "u.old_fn"} <= set(ch["removed"])
     cg.close()
 
 

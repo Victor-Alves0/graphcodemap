@@ -109,12 +109,15 @@ link. See [Core Concepts](concepts.md#confidence) for what the tiers mean.
 
 ```bash
 codegraph dataflow handle_request              # where each parameter's data goes
+codegraph dataflow-build                       # persist Java/Python value flow
+codegraph flow-path handler.request save.value # query a reusable value path
 codegraph taint --entry handle_request         # untrusted input → dangerous sink
 codegraph reaches handle_request --sink http   # does a path reach an HTTP call?
 ```
 
-Dataflow and taint are interprocedural and computed on demand, so they are always
-fresh. Treat taint findings as *candidates to verify* — the analysis
+Java/Python value paths are persisted and incrementally refreshed; the richer
+dataflow/taint compatibility engine remains on demand. Treat taint findings as
+*candidates to verify* — the analysis
 over-approximates by design. See [Concepts](concepts.md#dataflow--taint).
 
 ## See it
@@ -164,7 +167,7 @@ Then register the stdio server with your agent. For Claude Code, add a
 } }
 ```
 
-The agent now has 20 graph tools, each returning a structured freshness/
+The agent now has 25 graph tools, each returning a structured freshness/
 completeness envelope. Full guide: [Agents & MCP](mcp.md).
 
 ## Next steps

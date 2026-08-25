@@ -15,7 +15,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-SCHEMA_VERSION = "6"
+SCHEMA_VERSION = "7"
 L1_LIFECYCLE_STATUSES = frozenset({
     "not_started", "running", "complete", "partial",
 })
@@ -224,6 +224,63 @@ CREATE INDEX IF NOT EXISTS idx_edges_dangling ON edges(dst_name) WHERE dst IS NU
 CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_resolved_uniq
   ON edges(kind, src, dst, dst_name, file_id, line, col) WHERE dst IS NOT NULL;
 
+-- Value graph derived from normalized dataflow facts.  Symbol-backed nodes
+-- keep the stable L0 symbol id; call arguments and callable returns receive a
+-- deterministic synthetic id.  These tables deliberately live beside, not
+-- inside, ``edges``: a value-use is not necessarily a declared symbol and its
+-- provenance/version lifecycle differs from L0/L1 reference resolution.
+CREATE TABLE IF NOT EXISTS dataflow_nodes (
+  id             TEXT PRIMARY KEY,
+  function_id    TEXT,
+  symbol_id      TEXT,
+  file_id        INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  kind           TEXT NOT NULL CHECK(kind IN
+                   ('parameter','local','field','value','call_argument','return')),
+  name           TEXT NOT NULL,
+  access_path    TEXT,
+  line           INTEGER,
+  col            INTEGER,
+  content_hash   TEXT NOT NULL,
+  details_json   TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_dataflow_nodes_function
+  ON dataflow_nodes(function_id, kind);
+CREATE INDEX IF NOT EXISTS idx_dataflow_nodes_symbol
+  ON dataflow_nodes(symbol_id);
+
+CREATE TABLE IF NOT EXISTS dataflow_edges (
+  id                TEXT PRIMARY KEY,
+  owner_function_id TEXT NOT NULL,
+  src_node_id       TEXT NOT NULL REFERENCES dataflow_nodes(id) ON DELETE CASCADE,
+  dst_node_id       TEXT NOT NULL REFERENCES dataflow_nodes(id) ON DELETE CASCADE,
+  file_id           INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  relation          TEXT NOT NULL CHECK(relation IN
+                      ('assignment','access','call_argument','call_parameter',
+                       'call_return','return_value')),
+  line              INTEGER,
+  col               INTEGER,
+  confidence        TEXT NOT NULL CHECK(confidence IN
+                      ('certain','inferred','possible')),
+  interprocedural   INTEGER NOT NULL DEFAULT 0,
+  evidence_json     TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_dataflow_edges_src
+  ON dataflow_edges(src_node_id, relation);
+CREATE INDEX IF NOT EXISTS idx_dataflow_edges_dst
+  ON dataflow_edges(dst_node_id, relation);
+CREATE INDEX IF NOT EXISTS idx_dataflow_edges_owner
+  ON dataflow_edges(owner_function_id);
+
+CREATE TABLE IF NOT EXISTS dataflow_function_state (
+  function_id  TEXT PRIMARY KEY,
+  file_id      INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  language     TEXT NOT NULL,
+  input_hash   TEXT NOT NULL,
+  status       TEXT NOT NULL CHECK(status IN ('complete','unsupported','partial')),
+  details_json TEXT NOT NULL DEFAULT '{}',
+  built_at     INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS descriptions (
   symbol_id    TEXT NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
   scope        TEXT NOT NULL CHECK(scope IN ('symbol','module','domain')),
@@ -289,7 +346,9 @@ def connect(db_path: Path) -> sqlite3.Connection:
     if row is not None and row["value"] != SCHEMA_VERSION:
         # o grafo é cache derivado: schema mudou → apaga e reconstrói,
         # nunca exige intervenção manual (docs/DESIGN.md §0.1)
-        for table in ("symbols_fts", "edges", "descriptions",
+        for table in ("symbols_fts", "dataflow_edges",
+                      "dataflow_function_state", "dataflow_nodes",
+                      "edges", "descriptions",
                       "module_descriptions", "communities", "symbols",
                       "graph_stage_runs", "graph_revisions",
                       "repository_nodes", "files", "meta"):

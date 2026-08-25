@@ -125,8 +125,9 @@ Each layer is independently useful; higher layers refine, never gate.
   [Languages & Resolvers](languages.md).
 - **L2 — graph metrics.** PageRank (structural centrality, recomputed lazily) and
   Louvain community detection (subsystems/domains). Powers `overview`, `impact`
-  ranking, and `communities`. Also the home of **dataflow/taint**, which is
-  *flow-sensitive* in 18 of the 19 dedicated code languages: the taint
+  ranking, and `communities`. Java/Python also materialize stable value nodes
+  and typed `flows_to` paths at this layer. The compatibility/security engine
+  is *flow-sensitive* in 18 of the 19 dedicated code languages: the taint
   environment travels a structured CFG, so a redefinition kills the old taint
   (`x = input(); x = escape(x); sink(x)` is clean). Findings carry two
   independent axes — `confidence` (was the call resolved?) and `flow_evidence`

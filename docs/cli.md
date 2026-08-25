@@ -263,7 +263,30 @@ codegraph dataflow <symbol> [--depth N]
 ```
 
 Traces where each parameter's data flows — the calls it reaches and the returns it
-feeds — interprocedurally along the call graph, computed on demand (always fresh).
+feeds — interprocedurally along the call graph. For Java/Python it refreshes the
+persistent value graph first; the rich summary remains the compatibility view
+while security rules migrate in G4.
+
+### `dataflow-build`
+
+```
+codegraph dataflow-build [--force]
+```
+
+Materializes Java/Python value nodes and `flows_to` edges atomically. Repeated
+builds reuse per-function summaries when the body and resolved call inputs did
+not change. `--force` rebuilds every summary.
+
+### `flow-path`
+
+```
+codegraph flow-path <source-value> [target-symbol] [--max-hops N] [--max-paths N]
+```
+
+Queries the persisted graph from a parameter, local or field. With a target it
+answers whether that value can reach the target; without one it lists reachable
+call arguments and returns. Paths carry confidence and are conservative
+may-flow: branch feasibility and heap aliases are explicit limitations.
 
 ### `taint`
 

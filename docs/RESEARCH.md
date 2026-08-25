@@ -139,10 +139,12 @@ em query-time, confiança honesta em 3 níveis):
    sumários intra-procedurais ao longo das arestas `calls`. A confiança da
    propagação herda a confiança da aresta de chamada (`certain`/`inferred`/
    `possible`) — honestidade epistêmica de graça.
-3. **Query-time, não novo índice persistente**: o fluxo intra-procedural é
-   barato e é computado sob demanda a partir do span da função (sempre fresco,
-   nunca stale, zero inchaço de storage) — mesma lógica lazy do L3. Só o call
-   graph, que já é persistido, é reusado.
+3. **Decisão histórica, substituída no G3 para Java/Python**: o fluxo
+   intra-procedural era computado somente sob demanda. O G3 passou a persistir
+   nós/arestas de valor com hash por corpo+call graph e publicação atômica;
+   `flow-path` reutiliza esse artefato. O relatório rico e o taint permanecem no
+   motor anterior durante a migração G4. As demais linguagens conservam o modo
+   on-demand.
 4. **Taint = alcançabilidade** sobre esse grafo, de sources configuráveis a
    sinks, com sanitizers cortando o fluxo. Incompletude (reflexão, dinâmico)
    **declarada**, como já fazemos no call graph.

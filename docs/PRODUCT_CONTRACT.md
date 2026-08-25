@@ -130,7 +130,8 @@ The existing product has a useful but smaller foundation:
   and many calls;
 - basic incremental delete/relink contracts;
 - callers, callees and symbol impact over the call graph;
-- Java/Python flow-sensitive dataflow and taint computed on demand;
+- persistent Java/Python may-flow plus the flow-sensitive dataflow/taint
+  compatibility engine computed on demand;
 - optional semantic linking through JDTLS and Jedi, with an observable lifecycle
   and atomic publication that preserves the previous snapshot on fatal failure;
 - focused real-resolver linking matrices passing direct, imported, typed,
@@ -141,11 +142,19 @@ The existing product has a useful but smaller foundation:
 - ordinary Flask/PetClinic canaries with separate total-callsite and persisted-
   local-candidate denominators.
 
-It does **not** yet satisfy the entire required graph:
+The G3 focus-language value graph now provides:
 
-- `flows_to` is not yet a persistent whole-repository graph, and `returns`
-  currently covers only structurally provable simple value returns;
-- dataflow reparses files on demand and is not reusable graph state;
+- persistent Java/Python parameter/local/field/access/call-argument/return nodes;
+- assignment, call-parameter and call-return composition across functions;
+- per-function body + resolved-call input hashes, atomic rebuild and cross-file
+  read-repair;
+- separate Java/Python heap limitations and conservative CFG may-flow status.
+
+It does **not** yet satisfy the entire required product:
+
+- the existing rich `dataflow` compatibility response and `taint` engine have
+  not yet been migrated to consume only the canonical persisted graph (G4);
+- non-focus languages retain their existing on-demand dataflow;
 - common packaged Python `src/` identity and semantic linking have one ordinary
   Flask canary, but product acceptance still requires a second Python repo;
 - semantic refinement can be slow and is not the default library path;
@@ -188,10 +197,19 @@ CPG and not universal SAST parity.
 
 ### G3 — Persistent dataflow graph
 
-- Persist def-use and flow facts keyed to stable nodes and content hashes.
-- Support parameter → local/field → call argument → callee parameter → return.
-- Model branch/loop/exception kills conservatively and expose uncertainty.
-- Separate state/heap limitations for Java and Python.
+- **Delivered for Java/Python:** def-use and flow facts keyed to stable nodes,
+  content/body hashes and the resolved call projection.
+- **Delivered:** parameter → local/field/access path → call argument → callee
+  parameter → return, including returned-call composition.
+- **Delivered as a conservative baseline:** CFG branches/loops/exceptions are
+  may-flow in the persisted graph and never publish a negative proof; the richer
+  flow-sensitive engine remains available during G4 migration.
+- **Delivered:** state/heap limitations are separate in the stage receipt for
+  Java and Python.
+- **Measured baseline:** the 74-file `src/codegraph` scope builds 1,129 callable
+  summaries into 20,956 nodes/30,372 edges in 43.04s; no-change reuse is 0.107s.
+  The receipt reports mapped/unmapped path events. That ratio measures structural
+  mapping availability, not vulnerability recall or precision.
 
 ### G4 — Vulnerability analysis
 

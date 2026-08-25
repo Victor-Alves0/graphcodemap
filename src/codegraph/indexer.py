@@ -726,6 +726,13 @@ class Indexer:
             "SELECT value FROM meta WHERE key='current_graph_revision'"
         ).fetchone()
         parent_id = int(parent["value"]) if parent and parent["value"] else None
+        previous_dataflow = None
+        if parent_id is not None:
+            previous_dataflow = self.conn.execute(
+                "SELECT stage_version,status,details_json,artifact_hash "
+                "FROM graph_stage_runs WHERE revision_id=? AND stage='dataflow'",
+                (parent_id,),
+            ).fetchone()
         now = int(time.time())
         partial = bool(index_stats.get("errors")) or self.conn.execute(
             "SELECT EXISTS(SELECT 1 FROM repository_nodes WHERE language IN "
@@ -770,6 +777,15 @@ class Indexer:
             or marker_changed
             or semantic_source_changed
             or index_stats.get("errors"))
+        dataflow_source_changed = bool(
+            index_stats.get("full_reindex") or marker_changed
+            or index_stats.get("errors"))
+        if semantic_delta:
+            from .languages import language_for
+
+            dataflow_source_changed = dataflow_source_changed or any(
+                language_for(path) in {"java", "python"}
+                for path in semantic_delta)
         previous_l1 = read_l1_lifecycle(self.conn)
         if semantic_invalidated:
             if previous_l1.get("status") != "not_started":
@@ -810,9 +826,23 @@ class Indexer:
             revision_id, "l3", "description-cache", "cache_only",
             details={"cached": self.conn.execute(
                 "SELECT COUNT(*) FROM descriptions").fetchone()[0]})
-        self.record_stage(
-            revision_id, "dataflow", "on-demand-v1", "on_demand",
-            details={"persistent": False})
+        if (not dataflow_source_changed and previous_dataflow is not None
+                and previous_dataflow["stage_version"] == "persistent-v1"
+                and previous_dataflow["status"] == "complete"):
+            try:
+                dataflow_details = json.loads(previous_dataflow["details_json"])
+            except (TypeError, ValueError):
+                dataflow_details = {}
+            dataflow_details.update({"cached": True, "carried_forward": True})
+            self.record_stage(
+                revision_id, "dataflow", "persistent-v1", "complete",
+                artifact_hash=previous_dataflow["artifact_hash"],
+                details=dataflow_details)
+        else:
+            self.record_stage(
+                revision_id, "dataflow", "persistent-v1", "dirty",
+                details={"persistent": True,
+                         "reason": "l0_value_universe_changed"})
         self.current_revision_id = revision_id
         return revision_id
 

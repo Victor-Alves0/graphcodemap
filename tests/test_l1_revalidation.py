@@ -120,9 +120,11 @@ def test_new_override_replaces_previous_l1_fanout(tmp_path, monkeypatch):
     graph = CodeGraph(tmp_path)
     try:
         graph.index()
+        assert graph.build_dataflow()[0]["status"] == "complete"
         _install_resolver(monkeypatch)
         first = l1.refine(graph.indexer)
         assert first["promoted"] == 1
+        assert graph.doctor()["dataflow"]["status"] == "dirty"
         assert [(row["confidence"], row["resolver"])
                 for row in _site_rows(graph)] == [("certain", "l1")]
 
@@ -202,6 +204,7 @@ def test_build_marker_full_scan_delta_invalidates_semantic_snapshot(
         graph.index()
         _install_resolver(monkeypatch, _MavenUniverseResolver)
         assert l1.refine(graph.indexer)["promoted"] == 1
+        assert graph.build_dataflow()[0]["status"] == "complete"
 
         (project / "pom.xml").write_text(
             "<project>empty</project>\n", encoding="utf-8")
@@ -209,6 +212,7 @@ def test_build_marker_full_scan_delta_invalidates_semantic_snapshot(
 
         assert indexed["semantic_delta"] == ["one/pom.xml"]
         assert graph.l1_status()["status"] == "not_started"
+        assert graph.doctor()["dataflow"]["status"] == "dirty"
         refreshed = l1.refine(
             graph.indexer, rels=indexed["semantic_delta"])
         assert refreshed.get("cached") is not True

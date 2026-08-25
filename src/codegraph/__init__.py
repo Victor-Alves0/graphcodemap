@@ -108,6 +108,14 @@ class CodeGraph:
     def data_flow(self, selector: str, depth: int = 2):
         return self.query.data_flow(selector, depth=depth)
 
+    def build_dataflow(self, force: bool = False):
+        return self.query.build_dataflow(force=force)
+
+    def flow_path(self, source: str, target: str | None = None,
+                  max_hops: int = 64, max_paths: int = 20):
+        return self.query.flow_path(source, target=target, max_hops=max_hops,
+                                    max_paths=max_paths)
+
     def taint(self, scope: str | None = None, entry: str | None = None,
               depth: int | None = None, max_findings: int = 100,
               deadline_ms: int | None = None, max_steps: int | None = None,

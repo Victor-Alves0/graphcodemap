@@ -84,7 +84,7 @@ The design intent: an agent reads `confidence: "certain"` and `fresh: true` and
 can **stop** — no re-reading files to double-check. That is where the graph turns
 into both a correctness win and a token win.
 
-## The 23 tools
+## The 25 tools
 
 ### Core navigation
 
@@ -114,6 +114,8 @@ into both a correctness win and a token win.
 | Tool | Answers |
 |---|---|
 | `dataflow` | Where each parameter's data flows. |
+| `build_dataflow` | Atomically materialize/reuse Java/Python `flows_to`. |
+| `flow_path` | Query persisted value reachability between stable nodes. |
 | `taint` | Untrusted input → dangerous sink (with sanitizers). |
 | `reaches` | Does a path from an entry point reach a sink? (chain + verdict) |
 

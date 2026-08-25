@@ -62,9 +62,14 @@ experimental until this phase-one contract is complete. See the canonical
 
 ### G3 — Persistent dataflow graph
 
-- [ ] Persist def-use and flow facts keyed by content/stable node identity.
-- [ ] Compose parameter/local/field/call/return flow across functions.
-- [ ] Expose CFG/heap limitations separately for Java and Python.
+- [x] Persist def-use and flow facts keyed by content/stable node identity.
+- [x] Compose parameter/local/field/call/return flow across functions.
+- [x] Expose conservative CFG and separate Java/Python heap limitations in the
+  versioned stage receipt. Atomic failure and concurrent-writer contracts pass.
+- [x] Record a bounded dogfood baseline: `src/codegraph` (74 files, 1,129
+  callables) publishes 20,956 nodes/30,372 edges in 43.04s and reuses the
+  snapshot in 0.107s. Structural path-event mapping is 80.1%; this is not a
+  recall score.
 
 ### G4 — Vulnerability analysis
 
@@ -82,16 +87,16 @@ experimental until this phase-one contract is complete. See the canonical
 ## Current position
 
 G0's lifecycle surface and the shared Java/Python structural core of G1 are now
-implemented. The product persists the physical repository and structural
-declaration/variable graph with exact freshness, revision metadata and focused
-golden canaries. Broader ordinary-repository proof remains, while persistent
-interprocedural value flow belongs to G3. Historical OWASP, Juliet and real-app
+implemented. The product persists the physical repository, structural graph and
+the G3 Java/Python interprocedural value graph with exact freshness, revision
+metadata and focused golden canaries. Broader ordinary-repository proof remains.
+Historical OWASP, Juliet and real-app
 results remain valuable subsystem evidence, but they cannot promote the whole
 product or either focus language by themselves.
 
-The next micro-goal is deliberately singular: replay the proven matrix against
-ordinary Java/Python repositories, quantify framework/dynamic gaps and improve
-resolver batching/cache before implementing persistent `flows_to` in G3.
+The next micro-goal is deliberately singular: G4 migrates one vulnerability
+family end-to-end so its rules consume canonical persisted paths, with identical
+library/CLI/MCP evidence before broader corpus replay.
 
 ## Execution policy
 

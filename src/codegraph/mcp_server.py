@@ -238,6 +238,35 @@ def build_server(root: str | Path, db_path: str | Path | None = None,
         return guard(run)
 
     @mcp.tool()
+    def build_dataflow(force: bool = False) -> agent.Response:
+        """Materializa o grafo de valores `flows_to` para Java/Python.
+
+        O artefato é persistente e incremental por hash de função/call graph;
+        use antes de várias consultas de alcance. `force` reconstrói inclusive
+        resumos cujas entradas não mudaram.
+        """
+        def run():
+            data, env = engine.build_dataflow(force=force)
+            return agent.build(render.dataflow_build(data, env), env,
+                               results=[data])
+        return guard(run)
+
+    @mcp.tool()
+    def flow_path(source: str, target: str | None = None,
+                  max_hops: int = 64, max_paths: int = 20) -> agent.Response:
+        """Consulta caminhos de valor persistidos entre parâmetro/local/campo
+        e outro símbolo/função. Sem `target`, lista argumentos/retornos
+        alcançáveis. O resultado é may-flow e explicita confiança/limitações.
+        """
+        def run():
+            sym, data, env = engine.flow_path(
+                source, target=target, max_hops=max_hops,
+                max_paths=max_paths)
+            return agent.build(render.flow_path(sym, data, env), env,
+                               results=data["paths"])
+        return guard(run)
+
+    @mcp.tool()
     def taint(scope: str | None = None, entry: str | None = None,
               depth: int | None = None, max_findings: int = 100,
               deadline_ms: int | None = None, max_steps: int | None = None) -> agent.Response:

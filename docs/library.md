@@ -56,6 +56,8 @@ cg.graph_history(limit=20, git_commit=None)
 cg.l1_status()                              # semantic snapshot lifecycle
 cg.semantic_coverage(sample_limit=20)       # callsite outcomes/reasons
 cg.data_flow(selector, depth=2)
+cg.build_dataflow(force=False)                 # persistent Java/Python flows_to
+cg.flow_path(source, target=None, max_hops=64, max_paths=20)
 cg.taint(scope=None, entry=None, depth=4)
 cg.reaches(selector, sink="http", via=None, depth=8)
 cg.visualize(mode=None, symbol=None, depth=3, ...)   # returns (data, envelope)

@@ -354,6 +354,32 @@ def dataflow(data, env) -> str:
     return warnings(env) + "\n".join(lines)
 
 
+def dataflow_build(data, env) -> str:
+    return warnings(env) + (
+        f"dataflow persistente [{data['status']}]: "
+        f"{data['functions']} função(ões), {data['nodes']} nós, "
+        f"{data['edges']} flows_to; reconstruídas={data['rebuilt']}, "
+        f"reutilizadas={data['reused']}, "
+        f"eventos de caminho mapeados={data.get('mapping_coverage_pct', 0)}%, "
+        f"não mapeados={data['unmapped_paths']}")
+
+
+def flow_path(source, data, env) -> str:
+    target = data.get("target")
+    heading = f"flows_to persistente de {source['fqn']}"
+    if target:
+        heading += f" até {target['fqn']}"
+    lines = [heading + f": {len(data['paths'])} caminho(s)"]
+    for index, item in enumerate(data["paths"], 1):
+        names = " → ".join(node["access_path"] or node["name"]
+                           for node in item["nodes"])
+        lines.append(
+            f"  [{index}] [{item['confidence']}] {item['hops']} aresta(s): {names}")
+    if not data["paths"]:
+        lines.append("  nenhum caminho materializado encontrado.")
+    return warnings(env) + "\n".join(lines)
+
+
 _TRUST = {
     "certain": "confiança ALTA — cadeia resolvida semanticamente (L1); "
                "pode confiar sem reler o código.",

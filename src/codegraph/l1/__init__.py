@@ -219,6 +219,13 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
                 "unavailable": stats.get("unavailable", []),
                 "coverage": final["coverage"],
             }, commit=False)
+        # Resolved call targets are inputs to interprocedural value flow.  The
+        # per-function input hashes will reuse unchanged summaries, but readers
+        # must not treat the previous whole-stage receipt as current.
+        record_current_stage(
+            conn, "dataflow", "persistent-v1", "dirty", {
+                "persistent": True, "reason": "l1_call_graph_revalidated",
+            }, commit=False)
         conn.commit()
     except BaseException as error:
         if conn.in_transaction:

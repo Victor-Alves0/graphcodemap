@@ -311,6 +311,20 @@ def cmd_dataflow(args) -> int:
     return 0
 
 
+def cmd_dataflow_build(args) -> int:
+    data, env = _engine(args).build_dataflow(force=args.force)
+    print(render.dataflow_build(data, env))
+    return 0 if data["status"] == "complete" else 1
+
+
+def cmd_flow_path(args) -> int:
+    source, data, env = _engine(args).flow_path(
+        args.source, target=args.target, max_hops=args.max_hops,
+        max_paths=args.max_paths)
+    print(render.flow_path(source, data, env))
+    return 0 if data["paths"] else 1
+
+
 def cmd_taint(args) -> int:
     data, env = _engine(args).taint(scope=args.scope, entry=args.entry,
                                     depth=args.depth, max_findings=args.max_findings,
@@ -678,6 +692,22 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("symbol", help="fqn da função")
     sp.add_argument("--depth", type=int, default=2, help="saltos inter-procedurais")
     sp.set_defaults(fn=cmd_dataflow)
+
+    sp = sub.add_parser(
+        "dataflow-build",
+        help="materializa o grafo flows_to persistente de Java/Python")
+    sp.add_argument("--force", action="store_true",
+                    help="reconstrói também resumos cujo hash não mudou")
+    sp.set_defaults(fn=cmd_dataflow_build)
+
+    sp = sub.add_parser(
+        "flow-path", help="consulta alcance de valor no flows_to persistente")
+    sp.add_argument("source", help="parâmetro/local/campo de origem")
+    sp.add_argument("target", nargs="?", default=None,
+                    help="símbolo ou função de destino; omitido lista usos/retornos")
+    sp.add_argument("--max-hops", type=int, default=64)
+    sp.add_argument("--max-paths", type=int, default=20)
+    sp.set_defaults(fn=cmd_flow_path)
 
     sp = sub.add_parser("taint", help="análise de taint: input não-confiável → sink perigoso")
     sp.add_argument("--scope", default=None, help="restringe a um diretório")

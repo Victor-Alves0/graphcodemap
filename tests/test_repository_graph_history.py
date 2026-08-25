@@ -147,7 +147,7 @@ def test_graph_revision_is_linked_to_git_commit_and_stage_versions(tmp_path):
     assert stages["filesystem"]["artifact_hash"] == revision["source_snapshot_hash"]
     assert stages["l0"]["artifact_hash"]
     assert stages["l1"]["status"] == "not_started"
-    assert stages["dataflow"]["status"] == "on_demand"
+    assert stages["dataflow"]["status"] == "dirty"
     graph.overview()
     graph.communities()
     graph.data_flow("app.run")
@@ -157,7 +157,7 @@ def test_graph_revision_is_linked_to_git_commit_and_stage_versions(tmp_path):
     )}
     assert updated["l2_rank"] == "complete"
     assert updated["l2_communities"] == "complete"
-    assert updated["dataflow"] == "executed"
+    assert updated["dataflow"] == "complete"
     history, envelope = graph.graph_history()
     assert envelope.fresh is True
     assert history[0]["git_commit"] == head
