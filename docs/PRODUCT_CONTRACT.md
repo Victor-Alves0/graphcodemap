@@ -183,6 +183,8 @@ CPG and not universal SAST parity.
 - Unresolved and ambiguous calls have actionable coverage summaries.
 - Performance is improved before large portfolio replay, using batching/cache
   where the language server permits it.
+- `index --l1` carries a complete snapshot across deltas with no supported
+  source/build marker; explicit `refine` always revalidates external state.
 
 ### G3 — Persistent dataflow graph
 

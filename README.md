@@ -233,6 +233,8 @@ coverage across multiple ordinary repositories and broad real-world onboarding
 remain open. Focused real-resolver matrices currently pass 5/5 Python categories
 and 7/7 Java categories (including overload and method-reference resolution).
 Flask/PetClinic canaries refine 78.8%/96.9% of persisted local call candidates.
+Bounded JDTLS pipelining reduced PetClinic warm revalidation from 54.75s to
+37.61s, while unchanged `index --l1` runs reuse the snapshot in about 0.10s.
 Historical benchmark results are retained
 as bounded subsystem evidence, not as a declaration that the product is ready.
 See the [Product Contract](docs/PRODUCT_CONTRACT.md) and

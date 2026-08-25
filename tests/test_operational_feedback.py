@@ -59,24 +59,30 @@ def test_cli_timeout_flags_reach_refine_without_leaking_environment(
     def fake_refine(_indexer):
         observed["ready"] = os.environ.get("CODEGRAPH_JDTLS_READY_TIMEOUT")
         observed["io"] = os.environ.get("CODEGRAPH_JDTLS_IO_TIMEOUT")
+        observed["diagnostics"] = os.environ.get(
+            "CODEGRAPH_JDTLS_DIAGNOSTICS_TIMEOUT")
         return {"promoted": 0, "files": 1, "status": "complete",
                 "partial": False, "errors": 0, "resolvers": ["java"]}
 
     monkeypatch.setattr(l1, "refine", fake_refine)
     monkeypatch.delenv("CODEGRAPH_JDTLS_READY_TIMEOUT", raising=False)
     monkeypatch.delenv("CODEGRAPH_JDTLS_IO_TIMEOUT", raising=False)
+    monkeypatch.delenv("CODEGRAPH_JDTLS_DIAGNOSTICS_TIMEOUT", raising=False)
 
     code = cli.main([
         "--root", str(tmp_path), "refine",
         "--jdtls-ready-timeout", "300",
         "--jdtls-io-timeout", "360",
+        "--jdtls-diagnostics-timeout", "90",
     ])
     capsys.readouterr()
 
     assert code == 0
-    assert observed == {"ready": "300.0", "io": "360.0"}
+    assert observed == {
+        "ready": "300.0", "io": "360.0", "diagnostics": "90.0"}
     assert "CODEGRAPH_JDTLS_READY_TIMEOUT" not in os.environ
     assert "CODEGRAPH_JDTLS_IO_TIMEOUT" not in os.environ
+    assert "CODEGRAPH_JDTLS_DIAGNOSTICS_TIMEOUT" not in os.environ
 
 
 def test_jdtls_readiness_timeout_is_partial_and_actionable(tmp_path):

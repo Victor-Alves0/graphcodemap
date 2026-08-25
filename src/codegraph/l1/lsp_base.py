@@ -108,6 +108,9 @@ class LspResolver:
     # Resolvers cujo import de projeto e parte do contrato semantico podem
     # optar por falhar fechado quando o warmup/I/O excede o orçamento.
     timeout_is_partial: bool = False
+    # JDTLS opts into a bounded JSON-RPC pipeline. Other servers stay
+    # sequential until their concurrency behavior is validated.
+    definition_batch_size: int = 1
 
     # -- descoberta / disponibilidade ----------------------------------------
 
@@ -165,6 +168,10 @@ class LspResolver:
         self._semantic_sites = 0
         self._semantic_hits = 0
         self._semantic_request_errors = 0
+        self._definition_requests = 0
+        self._definition_cache_hits = 0
+        self._definition_batches = 0
+        self._definition_request_seconds = 0.0
         self._warmup_timed_out = False
         self._io_timed_out = False
         self._active_method: str | None = None
@@ -339,9 +346,16 @@ class LspResolver:
         # erros de build e qualquer falha observada antes continuam fail-closed.
         if (severity == "error"
                 and getattr(self, "_shutdown_started_healthy", False)
-                and getattr(self, "_active_method", None) == "shutdown"
-                and "session is shut down" in text.lower()):
-            severity = "warning"
+                and getattr(self, "_active_method", None) == "shutdown"):
+            lowered = text.lower()
+            teardown_only = any(token in lowered for token in (
+                "session is shut down",
+                "m2e is shut down",
+                "jobmanager is suspended",
+                'during: "register watchers"',
+            ))
+            if teardown_only:
+                severity = "warning"
         target = (self._health_errors if severity == "error"
                   else self._health_warnings)
         if text not in target and len(target) < 20:
@@ -462,7 +476,6 @@ class LspResolver:
                               and "does not exist" in lowered
                               and self._logged_java_file_exists(text))
                 if apt_nested:
-                    self._workspace_tainted = True
                     nested = re.search(r"cannot nest '([^']+annotations)'",
                                        normalized)
                     folder = nested.group(1) if nested else (
@@ -470,7 +483,9 @@ class LspResolver:
                     self._record_health(
                         "warning",
                         "JDTLS/m2e-apt não adicionou a saída opcional aninhada "
-                        f"{folder}; fontes e diagnostics reais permanecem ativos")
+                        f"{folder}; fontes e diagnostics reais permanecem ativos. "
+                        "O workspace continua reutilizável salvo se um "
+                        "diagnostic real indicar modelo incompleto")
                 else:
                     self._record_health(
                         "warning" if stale_site else "error", params)
@@ -596,6 +611,14 @@ class LspResolver:
             "sites": sites,
             "resolved_sites": hits,
             "semantic_request_errors": request_errors,
+            "definition_requests": int(getattr(
+                self, "_definition_requests", 0)),
+            "definition_cache_hits": int(getattr(
+                self, "_definition_cache_hits", 0)),
+            "definition_batches": int(getattr(
+                self, "_definition_batches", 0)),
+            "definition_request_seconds": round(float(getattr(
+                self, "_definition_request_seconds", 0.0)), 3),
             "warmup_timed_out": timed_out,
             "io_timed_out": io_timed_out,
             "ready_timeout_s": self.ready_timeout,
@@ -862,10 +885,25 @@ class LspResolver:
         # que roda sobre um snapshot consistente do repo).
         key = (rel, line0, char0)
         if key in self._defcache:
+            self._definition_cache_hits = int(getattr(
+                self, "_definition_cache_hits", 0)) + 1
             return self._defcache[key]
+        started = time.monotonic()
+        self._definition_requests = int(getattr(
+            self, "_definition_requests", 0)) + 1
         res = self._request("textDocument/definition", {
             "textDocument": {"uri": (self.root / rel).as_uri()},
             "position": {"line": line0, "character": char0}})
+        self._definition_request_seconds = float(getattr(
+            self, "_definition_request_seconds", 0.0)
+        ) + time.monotonic() - started
+        out = self._definition_locations(res)
+        self._defcache[key] = out
+        return out
+
+    @staticmethod
+    def _definition_locations(res) -> list:
+        """Normalize Location/LocationLink results from a definition reply."""
         locs = res if isinstance(res, list) else ([res] if res else [])
         out = []
         for loc in locs:
@@ -875,8 +913,92 @@ class LspResolver:
             if uri and rng:
                 start = rng["start"]
                 out.append((uri, start["line"], start.get("character", 0)))
-        self._defcache[key] = out
         return out
+
+    def _definitions(self, rel: str,
+                     positions: list[tuple[int, int]]) -> dict:
+        """Resolve positions with an optional bounded JSON-RPC pipeline.
+
+        Replies are collected before SQLite promotion, so batching changes
+        transport latency only; graph publication remains deterministic and
+        serial.
+        """
+        ordered = list(dict.fromkeys(positions))
+        if getattr(self, "definition_batch_size", 1) <= 1:
+            return {position: self._definition(rel, *position)
+                    for position in ordered}
+
+        results = {}
+        missing = []
+        for position in ordered:
+            key = (rel, *position)
+            if key in self._defcache:
+                self._definition_cache_hits = int(getattr(
+                    self, "_definition_cache_hits", 0)) + 1
+                results[position] = self._defcache[key]
+            else:
+                missing.append(position)
+
+        size = max(1, int(self.definition_batch_size))
+        for offset in range(0, len(missing), size):
+            if self._dead or self.proc.poll() is not None:
+                break
+            chunk = missing[offset:offset + size]
+            pending = {}
+            started = time.monotonic()
+            deadline = started + self.io_timeout
+            self._definition_batches = int(getattr(
+                self, "_definition_batches", 0)) + 1
+            for line0, char0 in chunk:
+                self._seq += 1
+                rid = self._seq
+                params = {
+                    "textDocument": {"uri": (self.root / rel).as_uri()},
+                    "position": {"line": line0, "character": char0},
+                }
+                pending[rid] = ((line0, char0), params)
+                self._write({
+                    "jsonrpc": "2.0", "id": rid,
+                    "method": "textDocument/definition", "params": params,
+                })
+                self._definition_requests = int(getattr(
+                    self, "_definition_requests", 0)) + 1
+
+            try:
+                while pending and not self._dead:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        self._io_timed_out = True
+                        self._kill()
+                        break
+                    msg = self._read(remaining)
+                    if msg is None:
+                        break
+                    rid = msg.get("id")
+                    if rid in pending and "method" not in msg:
+                        position, params = pending.pop(rid)
+                        self._active_method = "textDocument/definition"
+                        self._active_params = params
+                        self._observe_message(msg)
+                        value = ([] if msg.get("error") else
+                                 self._definition_locations(msg.get("result")))
+                        self._defcache[(rel, *position)] = value
+                        results[position] = value
+                    elif "id" in msg and "method" in msg:
+                        self._observe_message(msg)
+                        self._write({
+                            "jsonrpc": "2.0", "id": msg["id"],
+                            "result": self._server_request_result(msg),
+                        })
+                    else:
+                        self._observe_message(msg)
+            finally:
+                self._active_method = None
+                self._active_params = None
+                self._definition_request_seconds = float(getattr(
+                    self, "_definition_request_seconds", 0.0)
+                ) + time.monotonic() - started
+        return results
 
     def _definition_byte_col(self, drel: str, line0: int,
                              char0: int) -> int | None:
@@ -950,13 +1072,18 @@ class LspResolver:
             return 0
         promoted = 0
         seen_sites: set[tuple[int, int]] = set()
+        work = []
         for e in edges:
             site = (e["line"], e["col"])
             if site in seen_sites:
                 continue
             seen_sites.add(site)
             col = self._query_col(rel, e["line"], e["col"], e["dst_name"])
-            locs = self._definition(rel, e["line"] - 1, col)
+            work.append((e, col))
+        definitions = self._definitions(
+            rel, [(e["line"] - 1, col) for e, col in work])
+        for e, col in work:
+            locs = definitions.get((e["line"] - 1, col), [])
             self._semantic_sites += 1
             if locs:
                 self._semantic_hits += 1

@@ -118,6 +118,37 @@ def test_refine_success_with_promotions_remains_zero_exit(tmp_path, monkeypatch,
     assert _field(output, "attempted") == ["java"]
 
 
+def test_repeated_index_l1_reuses_snapshot_without_starting_resolver(
+        tmp_path, monkeypatch, capsys):
+    _write(tmp_path, "Main.java", "class Main { void run() {} }\n")
+    starts = []
+
+    class CountedJava:
+        languages = ("java",)
+        root_markers = ()
+
+        def __init__(self, *_args, **_kwargs):
+            starts.append(1)
+
+        def refine_file(self, *_args):
+            return 0
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(l1, "all_resolvers", lambda: [CountedJava])
+    monkeypatch.setattr(l1, "available_resolvers", lambda _root: [CountedJava])
+
+    assert cli.main(["--root", str(tmp_path), "index", "--l1"]) == 0
+    capsys.readouterr()
+    assert cli.main(["--root", str(tmp_path), "index", "--l1"]) == 0
+    output = capsys.readouterr().out
+
+    assert len(starts) == 1
+    assert "snapshot semântico reutilizado" in output
+    assert _field(output, "attempted") == ["java"]
+
+
 def test_refine_real_resolver_failure_returns_nonzero(tmp_path, monkeypatch,
                                                       capsys):
     _write(tmp_path, "Main.java", "class Main {}\n")

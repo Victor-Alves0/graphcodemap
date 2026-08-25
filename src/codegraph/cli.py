@@ -30,10 +30,23 @@ def _print_l1_report(stats: dict, elapsed: float) -> None:
     partial = _l1_partial(stats)
     status = "partial" if partial else (stats.get("status") or "complete")
     resolvers = stats.get("resolvers", [])
-    print(f"L1: {stats.get('promoted', 0)} aresta(s) promovidas a 'certain' em "
-          f"{stats.get('files', 0)} arquivo(s) "
-          f"({', '.join(resolvers) or 'nenhum resolver'}) em {elapsed:.2f}s")
+    if stats.get("cached"):
+        print("L1: snapshot semântico reutilizado; nenhum arquivo/build marker "
+              f"relevante mudou ({elapsed:.2f}s)")
+    else:
+        print(f"L1: {stats.get('promoted', 0)} aresta(s) promovidas a 'certain' em "
+              f"{stats.get('files', 0)} arquivo(s) "
+              f"({', '.join(resolvers) or 'nenhum resolver'}) em {elapsed:.2f}s")
     print(f"  status: {status}; partial: {str(partial).lower()}")
+    for run in (() if stats.get("cached") else stats.get("runs", ())):
+        if run.get("definition_requests"):
+            workspace = ("reused" if run.get("workspace_reused")
+                         else "cold")
+            print(
+                f"  transport: {run['definition_requests']} definition / "
+                f"{run.get('definition_batches', 0)} lote(s) / "
+                f"{run.get('definition_request_seconds', 0):.3f}s; "
+                f"workspace={workspace}")
     # JSON válido preserva listas/objetos e acentos sem depender de repr Python.
     for key in ("applicable", "attempted", "unavailable", "warnings"):
         value = stats.get(key, [])
@@ -45,6 +58,7 @@ def _jdtls_timeout_env(args):
     mapping = {
         "jdtls_ready_timeout": "CODEGRAPH_JDTLS_READY_TIMEOUT",
         "jdtls_io_timeout": "CODEGRAPH_JDTLS_IO_TIMEOUT",
+        "jdtls_diagnostics_timeout": "CODEGRAPH_JDTLS_DIAGNOSTICS_TIMEOUT",
     }
     old = {env: os.environ.get(env) for env in mapping.values()}
     try:
@@ -80,6 +94,10 @@ def _add_jdtls_timeout_options(parser) -> None:
         "--jdtls-io-timeout", type=_positive_seconds, default=None,
         help="segundos por requisição JDTLS; deve ser >= readiness e, se "
              "omitido, acompanha readiness (env: CODEGRAPH_JDTLS_IO_TIMEOUT)")
+    parser.add_argument(
+        "--jdtls-diagnostics-timeout", type=_positive_seconds, default=None,
+        help="segundos para diagnostics JDTLS transitórios assentarem antes "
+             "do shutdown (env: CODEGRAPH_JDTLS_DIAGNOSTICS_TIMEOUT)")
 
 
 def _confirm_install(args, plans) -> bool:
@@ -159,7 +177,10 @@ def cmd_index(args) -> int:
 
         t0 = time.perf_counter()
         with _jdtls_timeout_env(args):
-            r = l1.refine(ix)
+            # A full rebuild invalidates every proof. Otherwise the exact
+            # physical delta lets L1 reuse an unchanged snapshot or reopen
+            # only affected semantic project roots.
+            r = l1.refine(ix, rels=stats.get("semantic_delta"))
         dt = time.perf_counter() - t0
         _print_l1_report(r, dt)
         return 1 if _l1_partial(r) else 0

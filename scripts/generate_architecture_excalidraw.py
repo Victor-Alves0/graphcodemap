@@ -286,7 +286,7 @@ def build() -> dict:
     d.box("toolchains", 2650, 270, 300, 135, "Toolchains externos",
           "JDK 21 + JDTLS\nJedi/Python\nsem instalação escondida", fill=GRAY)
     d.box("l1", 3030, 245, 455, 195, "L1 semântico · l1/*",
-          "JDTLS (Java) · Jedi (Python)\ndefinição/receiver/interface/overload/ref\nmatriz real: Python 5/5 · Java 7/7\ncoverage explica cada fallback", fill=PURPLE,
+          "JDTLS (Java) · Jedi (Python)\ndefinição/receiver/interface/overload/ref\nrequests em lotes · snapshot cache\nPython 5/5 · Java 7/7", fill=PURPLE,
           stroke=OPTIONAL)
     d.connect("setup-tools", "setup", "toolchains")
     d.connect("tools-l1", "toolchains", "l1")
@@ -390,7 +390,7 @@ def build() -> dict:
     gates = [
         ("g0", 2260, 1835, "G0 · Observabilidade", "PARCIAL\nestados/coverage completos", YELLOW),
         ("g1", 2680, 1835, "G1 · Grafo estrutural", "CORE + GOLDENS\nfaltam repos comuns", YELLOW),
-        ("g2", 3100, 1835, "G2 · Linking semântico", "MATRIZ + COVERAGE + CANÁRIOS\nfalta batching/cache", YELLOW),
+        ("g2", 3100, 1835, "G2 · Linking semântico", "CORE FECHADO\nmatriz + coverage + cache", GREEN),
         ("g3", 2260, 1995, "G3 · Dataflow persistente", "def-use + fluxo\nentre funções", RED),
         ("g4", 2680, 1995, "G4 · Vulnerabilidades", "Java/Python sobre\no mesmo flow graph", RED),
         ("g5", 3100, 1995, "G5 · Aceitação", "wheel + CLI + MCP\nrepos comuns pinados", RED),

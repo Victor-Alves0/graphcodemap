@@ -56,7 +56,9 @@ experimental until this phase-one contract is complete. See the canonical
   candidate outcomes.
 - [x] Replay unmodified Flask and Spring PetClinic canaries; refine 406/515
   (78.8%) and 340/351 (96.9%) persisted local candidates respectively.
-- [ ] Improve request batching/cache before another large portfolio replay.
+- [x] Pipeline bounded JDTLS definition requests and carry complete L1
+  snapshots across non-semantic/no-op index revisions. PetClinic warm full
+  revalidation improved 54.75s → 37.61s; no-change L1 takes 0.10s.
 
 ### G3 — Persistent dataflow graph
 

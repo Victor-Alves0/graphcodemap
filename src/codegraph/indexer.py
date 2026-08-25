@@ -581,16 +581,28 @@ class Indexer:
         except Exception:
             cur.execute("ROLLBACK")
             raise
-        changed = sum(
-            previous.get(path) != (item["kind"], item["content_hash"])
-            for path, item in entries.items() if path
-        )
+        changed_paths = sorted(
+            path for path, item in entries.items()
+            if (path and item["kind"] in {"file", "symlink"}
+                and previous.get(path) != (
+                    item["kind"], item["content_hash"])))
+        removed_paths = sorted(
+            path for path in removable
+            if previous[path][0] in {"file", "symlink"})
+        # Kept out of the repository/stage payload: a large first scan can
+        # contain tens of thousands of paths.  ``index_repo`` consumes this
+        # ephemeral delta to scope semantic refinement without bloating graph
+        # history.
+        self.last_repository_delta = {
+            "changed": changed_paths,
+            "removed": removed_paths,
+        }
         return {
             "nodes": len(entries),
             "directories": sum(item["kind"] == "directory"
                                for item in entries.values()),
             "files": sum(item["kind"] == "file" for item in entries.values()),
-            "changed": changed,
+            "changed": len(changed_paths),
             "removed": len(removable),
             "snapshot_hash": self._repository_snapshot_hash(),
         }
@@ -734,11 +746,32 @@ class Indexer:
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (str(revision_id),),
         )
-        semantic_invalidated = any(
-            index_stats.get(key, 0) for key in ("indexed", "removed", "errors")
-        )
+        semantic_delta = index_stats.get("semantic_delta")
+        marker_changed = False
+        semantic_source_changed = False
+        if semantic_delta:
+            # Lazy import avoids making the L0 indexer depend on resolver
+            # modules during startup. Build markers are physical files rather
+            # than parsed source rows, but they change the semantic universe.
+            from .l1 import all_resolvers, is_project_marker
+            from .languages import language_for
+
+            marker_changed = any(is_project_marker(path)
+                                 for path in semantic_delta)
+            wired_languages = {
+                language for cls in all_resolvers()
+                for language in cls.languages
+            }
+            semantic_source_changed = any(
+                language_for(path) in wired_languages
+                for path in semantic_delta)
+        semantic_invalidated = bool(
+            index_stats.get("full_reindex")
+            or marker_changed
+            or semantic_source_changed
+            or index_stats.get("errors"))
+        previous_l1 = read_l1_lifecycle(self.conn)
         if semantic_invalidated:
-            previous_l1 = read_l1_lifecycle(self.conn)
             if previous_l1.get("status") != "not_started":
                 write_l1_lifecycle(self.conn, {
                     "status": "not_started",
@@ -761,7 +794,15 @@ class Indexer:
                 key: index_stats.get(key, 0)
                 for key in ("scanned", "indexed", "removed", "errors")
             })
-        self.record_stage(revision_id, "l1", "resolver-set", "not_started")
+        if (not semantic_invalidated
+                and previous_l1.get("status") == "complete"
+                and previous_l1.get("published")):
+            self.record_stage(
+                revision_id, "l1", "resolver-set", "complete",
+                details={"cached": True, "carried_forward": True})
+        else:
+            self.record_stage(
+                revision_id, "l1", "resolver-set", "not_started")
         self.record_stage(revision_id, "l2_rank", "pagerank-v1", "dirty")
         self.record_stage(
             revision_id, "l2_communities", "louvain-v1", "dirty")
@@ -805,10 +846,12 @@ class Indexer:
                    workers: int | None = None,
                    exclude: list[str] | None = None) -> dict:
         self._changes = ChangeSet()      # ver stats["changes"] no retorno
+        full_reindex = force
         row = self.conn.execute(
             "SELECT value FROM meta WHERE key='indexer_version'").fetchone()
         if row is None or row["value"] != INDEXER_VERSION:
             force = True
+            full_reindex = True
             self.conn.execute(
                 "INSERT INTO meta(key, value) VALUES('indexer_version', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -870,6 +913,12 @@ class Indexer:
         self.conn.commit()
         self._refresh_repository_index_states()
         stats["changes"] = self._changes.as_dict()
+        repository_delta = getattr(self, "last_repository_delta", {})
+        stats["semantic_delta"] = (
+            None if full_reindex else sorted(set(
+                repository_delta.get("changed", ())
+                + repository_delta.get("removed", ()))))
+        stats["full_reindex"] = full_reindex
         stats["repository"] = repository_stats
         stats["revision_id"] = self._record_revision(
             "full_index", repository_stats, stats)
@@ -938,7 +987,9 @@ class Indexer:
                     self._record_revision(
                         "file_reindex", repository,
                         {"scanned": 1, "indexed": int(changed),
-                         "removed": 0, "errors": 0})
+                         "removed": 0, "errors": 0,
+                         "semantic_delta": [rel],
+                         "full_reindex": False})
 
     def _index_file(self, rel: str, force: bool = False, data: bytes | None = None) -> bool:
         """Re-indexa um arquivo em transação PRÓPRIA (caminho incremental:
@@ -1391,7 +1442,9 @@ class Indexer:
             self._record_revision(
                 "file_remove", repository,
                 {"scanned": 0, "indexed": 0,
-                 "removed": int(removed), "errors": 0})
+                 "removed": int(removed), "errors": 0,
+                 "semantic_delta": [rel],
+                 "full_reindex": False})
 
     def _remove_file(self, rel: str) -> bool:
         row = self.conn.execute("SELECT id FROM files WHERE path=?", (rel,)).fetchone()

@@ -42,7 +42,9 @@ is the only writer.
   no local target. Focused real-resolver matrices exercise direct, imported,
   typed, inherited and interface calls in both focus languages, plus Java
   overloads and method references. The report separates all syntactic calls
-  from callsites with a persisted local candidate. Optional; see
+  from callsites with a persisted local candidate. JDTLS definitions use a
+  bounded request pipeline; non-semantic/no-op index revisions carry the last
+  complete snapshot without restarting the resolver. Optional; see
   [Languages & Resolvers](languages.md).
 - **L2 — graph metrics.** PageRank (centrality) and Louvain (communities),
   recomputed lazily.

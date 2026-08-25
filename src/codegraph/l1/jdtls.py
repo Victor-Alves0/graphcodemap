@@ -44,8 +44,23 @@ class JdtlsResolver(LspResolver):
     # passada acabava com 0 promocoes. O deadline total de _request continua
     # limitado, agora coerente com o contrato de readiness desta subclasse.
     io_timeout = 120.0
-    shutdown_timeout = 6.0
+    # O JDTLS publica diagnostics de import/build de forma assíncrona. Alguns
+    # snapshots intermediários contêm tipos ausentes e são substituídos por uma
+    # publicação limpa quando os jobs do modelo terminam. Reserve uma janela
+    # própria para essa estabilização e outra para o handshake shutdown/exit;
+    # compartilhar apenas os antigos 6 s fazia a espera consumir todo o prazo e
+    # deixava o workspace marcado como interrompido.
+    # FitNesse real mostrou um diagnostic transitório sendo limpo ~95 s depois
+    # da primeira publicação. O default precisa cobrir uma importação Gradle
+    # lenta; projetos que prefiram outro limite podem usar o env abaixo.
+    diagnostics_settle_timeout = 120.0
+    diagnostics_quiet_period = 0.75
+    shutdown_protocol_timeout = 6.0
+    shutdown_timeout = diagnostics_settle_timeout + shutdown_protocol_timeout
     timeout_is_partial = True
+    # JDTLS accepts multiple outstanding definition requests. A bounded window
+    # removes one-process round-trip serialization without flooding the server.
+    definition_batch_size = 32
     # O classpath Maven/Gradle é importado pelo JDTLS. Executar também o
     # autobuild do Eclipse pode disparar mojos/annotation processors do repo e
     # não é necessário para textDocument/definition. Projetos Java sem build
@@ -232,6 +247,16 @@ class JdtlsResolver(LspResolver):
             raise ValueError(
                 "CODEGRAPH_JDTLS_IO_TIMEOUT deve ser maior ou igual a "
                 "CODEGRAPH_JDTLS_READY_TIMEOUT")
+        self.diagnostics_settle_timeout = self._timeout_from_env(
+            "CODEGRAPH_JDTLS_DIAGNOSTICS_TIMEOUT",
+            type(self).diagnostics_settle_timeout)
+        # ``LspResolver.close`` usa um deadline único que inclui o hook abaixo
+        # e o protocolo shutdown/exit. Mantenha sempre uma reserva independente
+        # para o protocolo, inclusive quando o budget de diagnostics for
+        # alterado via ambiente.
+        self.shutdown_timeout = (
+            self.diagnostics_settle_timeout
+            + type(self).shutdown_protocol_timeout)
         try:
             super().__init__(root, project_root)
         except Exception:
@@ -315,19 +340,64 @@ class JdtlsResolver(LspResolver):
                     clean=orderly_shutdown,
                     reusable=not (model_errors or tainted))
 
-    def _before_shutdown(self) -> None:
-        """Dá aos jobs de diagnostics uma janela para terminar após didClose.
+    def refine_file(self, conn, root: Path, rel: str, file_id: int) -> int:
+        """Refina e fecha a working copy Java assim que o arquivo termina.
 
-        A fila é drenada durante a espera, portanto erros reais publicados nesse
-        intervalo continuam fail-closed. A saída ocorre após 750 ms sem mensagens
-        e nunca consome mais de 3 s do orçamento de shutdown desta subclasse.
+        Manter centenas de ``didOpen`` até o shutdown concentra todos os
+        reconciles em uma tempestade de ``didClose`` no final. O probe de
+        readiness pode abrir outro arquivo; ele permanece aberto até a sua
+        própria passada (ou o fechamento global), pois removemos somente
+        ``rel``. O ``finally`` também evita vazar a working copy quando uma
+        consulta individual falha.
+        """
+        try:
+            return super().refine_file(conn, root, rel, file_id)
+        finally:
+            opened = getattr(self, "_opened", None)
+            if opened is not None and rel in opened:
+                try:
+                    proc = getattr(self, "proc", None)
+                    running = (not getattr(self, "_dead", False)
+                               and proc is not None and proc.poll() is None)
+                    if running:
+                        self._notify("textDocument/didClose", {"textDocument": {
+                            "uri": (self.root / rel).as_uri()}})
+                finally:
+                    opened.discard(rel)
+                    getattr(self, "_lines", {}).pop(rel, None)
+
+    def _before_shutdown(self) -> None:
+        """Espera diagnostics transitórios assentarem depois de ``didClose``.
+
+        Sem erros atuais, uma quietude curta basta. Com erros, continue drenando
+        até uma publicação posterior limpar o snapshot daquele URI; depois exija
+        a mesma quietude curta para evitar encerrar entre duas publicações. Se o
+        servidor conservar o erro até o timeout, ele permanece no health report
+        e a passada falha fechada.
         """
         started = time.monotonic()
         self._last_message_at = started
-        while time.monotonic() - started < 3.0:
-            self._drain_pending(0.1)
-            if time.monotonic() - self._last_message_at >= 0.75:
-                break
+        deadline = started + max(0.0, self.diagnostics_settle_timeout)
+        quiet = max(0.0, self.diagnostics_quiet_period)
+        while True:
+            now = time.monotonic()
+            has_errors = any(
+                current for current in
+                getattr(self, "_diagnostics_by_uri", {}).values())
+            quiet_remaining = quiet - (now - self._last_message_at)
+            if not has_errors and quiet_remaining <= 0:
+                return
+            remaining = deadline - now
+            if remaining <= 0:
+                return
+            proc = getattr(self, "proc", None)
+            if (getattr(self, "_dead", False)
+                    or (proc is not None and proc.poll() is not None)):
+                return
+            wait = min(0.1, remaining)
+            if not has_errors:
+                wait = min(wait, max(0.0, quiet_remaining))
+            self._drain_pending(wait)
 
     def health_report(self) -> dict:
         report = super().health_report()

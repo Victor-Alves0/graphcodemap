@@ -20,7 +20,7 @@ from ..db import (read_l1_lifecycle, record_current_stage,
 from ..indexer import Indexer
 from ..log import get as _get_log
 from ..rank import mark_dirty
-from .coverage import semantic_coverage
+from .coverage import current_semantic_coverage, semantic_coverage
 
 log = _get_log(__name__)
 
@@ -119,6 +119,53 @@ def is_project_marker(rel: str) -> bool:
         rel, getattr(cls, "root_markers", ())) for cls in all_resolvers())
 
 
+def _semantic_delta_is_irrelevant(rels: list[str]) -> bool:
+    """True when a physical delta cannot affect any wired L1 universe."""
+    from ..languages import language_for
+
+    languages = {language for cls in all_resolvers()
+                 for language in cls.languages}
+    return not any(
+        is_project_marker(rel) or language_for(rel) in languages
+        for rel in rels)
+
+
+def _reuse_published_snapshot(indexer: Indexer, previous: dict) -> dict:
+    """Carry a complete L1 snapshot across a non-semantic repository delta."""
+    conn = indexer.conn
+    row = conn.execute(
+        "SELECT value FROM meta WHERE key='l1_last_run'").fetchone()
+    try:
+        last = json.loads(row["value"]) if row is not None else {}
+    except (TypeError, ValueError):
+        last = {}
+    coverage = current_semantic_coverage(conn)
+    stats = {
+        "files": 0, "promoted": 0, "errors": 0, "roots": 0,
+        "servers": 0, "rolled_back": 0, "revalidated": 0,
+        "status": "complete", "partial": False, "cached": True,
+        "cache_reason": "no_semantic_changes",
+        "warnings": list(last.get("warnings", ())),
+        "runs": list(last.get("runs", ())),
+        "applicable": list(last.get("applicable", ())),
+        "attempted": list(last.get("attempted", ())),
+        "unavailable": list(last.get("unavailable", ())),
+        "resolvers": list(last.get("attempted", ())),
+        "coverage": coverage,
+    }
+    record_current_stage(
+        conn, "l1", "resolver-set", "complete", {
+            "cached": True,
+            "cache_reason": stats["cache_reason"],
+            "attempted": stats["attempted"],
+            "coverage": coverage,
+        })
+    lifecycle = dict(previous)
+    lifecycle["cached"] = True
+    stats["lifecycle"] = lifecycle
+    return stats
+
+
 def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
     """Publish one L1 snapshot atomically and expose its lifecycle.
 
@@ -131,6 +178,15 @@ def refine(indexer: Indexer, rels: list[str] | None = None) -> dict:
     conn = indexer.conn
     started_at = int(time.time())
     previous = read_l1_lifecycle(conn)
+    # ``index --l1`` supplies its exact physical delta. When it contains no
+    # source/build marker and the prior semantic snapshot completed, launching
+    # a language server cannot improve freshness. Explicit ``refine`` keeps
+    # passing ``rels=None`` and therefore always revalidates the external
+    # semantic universe.
+    if (rels is not None and previous.get("status") == "complete"
+            and previous.get("published")
+            and _semantic_delta_is_irrelevant(rels)):
+        return _reuse_published_snapshot(indexer, previous)
     running = {
         "status": "running",
         "started_at": started_at,
@@ -360,6 +416,8 @@ def _refine_candidate(indexer: Indexer,
             "resolver", "files", "promoted", "status",
             "attempted_promotions", "rolled_back",
             "sites", "resolved_sites", "warmup_timed_out", "io_timed_out",
+            "definition_requests", "definition_cache_hits",
+            "definition_batches", "definition_request_seconds",
             "ready_timeout_s", "io_timeout_s", "workspace_reused",
             "workspace_recovered", "workspace_invalidated") if key in run}
             for run in stats["runs"]]
@@ -501,6 +559,8 @@ def _refine_candidate(indexer: Indexer,
                     run.update({key: health[key] for key in (
                         "sites", "resolved_sites", "warmup_timed_out",
                         "semantic_request_errors",
+                        "definition_requests", "definition_cache_hits",
+                        "definition_batches", "definition_request_seconds",
                         "io_timed_out", "ready_timeout_s", "io_timeout_s",
                         "workspace_reused", "workspace_recovered",
                         "workspace_invalidated")

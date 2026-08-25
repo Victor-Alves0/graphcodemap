@@ -165,6 +165,61 @@ def test_changed_semantic_universe_drops_old_certainty(tmp_path, monkeypatch):
         graph.close()
 
 
+def test_nonsemantic_full_scan_delta_carries_complete_snapshot(
+        tmp_path, monkeypatch):
+    _write_initial_program(tmp_path)
+    graph = CodeGraph(tmp_path)
+    try:
+        graph.index()
+        _install_resolver(monkeypatch)
+        assert l1.refine(graph.indexer)["promoted"] == 1
+
+        (tmp_path / "README.md").write_text("docs only\n", encoding="utf-8")
+        indexed = graph.index()
+        cached = l1.refine(
+            graph.indexer, rels=indexed["semantic_delta"])
+
+        assert indexed["semantic_delta"] == ["README.md"]
+        assert cached["cached"] is True
+        assert cached["attempted"] == ["java"]
+        assert cached["promoted"] == cached["files"] == 0
+        assert graph.l1_status()["status"] == "complete"
+        stages = graph.graph_history(limit=1)[0][0]["stages"]
+        stage = next(item for item in stages if item["stage"] == "l1")
+        assert stage["status"] == "complete"
+        assert stage["details"]["cached"] is True
+        assert [(row["confidence"], row["resolver"])
+                for row in _site_rows(graph)] == [("certain", "l1")]
+    finally:
+        graph.close()
+
+
+def test_build_marker_full_scan_delta_invalidates_semantic_snapshot(
+        tmp_path, monkeypatch):
+    project = _write_maven_project(tmp_path, "one")
+    graph = CodeGraph(tmp_path)
+    try:
+        graph.index()
+        _install_resolver(monkeypatch, _MavenUniverseResolver)
+        assert l1.refine(graph.indexer)["promoted"] == 1
+
+        (project / "pom.xml").write_text(
+            "<project>empty</project>\n", encoding="utf-8")
+        indexed = graph.index()
+
+        assert indexed["semantic_delta"] == ["one/pom.xml"]
+        assert graph.l1_status()["status"] == "not_started"
+        refreshed = l1.refine(
+            graph.indexer, rels=indexed["semantic_delta"])
+        assert refreshed.get("cached") is not True
+        assert refreshed["revalidated"] == 1
+        assert all(row["resolver"] == "l0"
+                   for row in _project_site_rows(
+                       graph.indexer.conn, "one"))
+    finally:
+        graph.close()
+
+
 def test_partial_resolver_start_cannot_preserve_old_certainty(
         tmp_path, monkeypatch):
     _write_initial_program(tmp_path)

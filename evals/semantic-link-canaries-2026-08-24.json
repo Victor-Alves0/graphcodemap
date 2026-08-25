@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "measured_at": "2026-08-24",
   "scope": "unmodified ordinary-repository semantic-link canaries",
   "environment": {
@@ -41,5 +41,21 @@
       "l0_fallback": 11,
       "no_local_graph_candidate": 1178
     }
-  ]
+  ],
+  "java_transport_performance": {
+    "repository": "Spring PetClinic",
+    "baseline_cold_refine_seconds": 53.95,
+    "baseline_warm_refine_seconds": 54.75,
+    "optimized_rebuild_seconds": 37.59,
+    "optimized_warm_refine_seconds": 37.61,
+    "warm_improvement_pct": 31.3,
+    "definition_requests": 1529,
+    "definition_batches": 70,
+    "definition_request_seconds": 17.359,
+    "workspace_reused": true,
+    "no_semantic_change_l1_seconds": 0.10,
+    "no_semantic_change_end_to_end_seconds": 1.477,
+    "certain_edges_before": 340,
+    "certain_edges_after": 340
+  }
 }

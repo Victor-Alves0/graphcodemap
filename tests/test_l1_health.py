@@ -7,6 +7,8 @@ import queue
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from codegraph.l1 import lsp_base
 
 
@@ -161,6 +163,24 @@ def test_jdtls_optional_nested_annotation_output_is_warning(tmp_path):
     assert health["status"] == "complete"
     assert health["errors"] == []
     assert len(health["warnings"]) == 1
+    assert not getattr(resolver, "_workspace_tainted", False)
+
+
+def test_jdtls_shutdown_only_failures_do_not_rollback_healthy_analysis(
+        tmp_path):
+    resolver = _resolver(tmp_path)
+    resolver.cmd_name = "jdtls"
+    resolver._shutdown_started_healthy = True
+    resolver._active_method = "shutdown"
+
+    resolver._record_health(
+        "error", 'An internal error occurred during: "Register Watchers". '
+        "JobManager is suspended; m2e is shut down!")
+
+    health = resolver.health_report()
+    assert health["status"] == "complete"
+    assert health["errors"] == []
+    assert len(health["warnings"]) == 1
 
 
 def test_jdtls_unresolved_generated_type_stays_partial(tmp_path):
@@ -229,6 +249,213 @@ def test_diagnostics_new_publication_replaces_old_errors(tmp_path):
             ]},
         })
     assert resolver.health_report()["errors"] == ["new"]
+
+
+def test_jdtls_shutdown_waits_for_transient_diagnostic_to_clear(
+        tmp_path, monkeypatch):
+    from codegraph.l1 import jdtls
+
+    resolver = object.__new__(jdtls.JdtlsResolver)
+    uri = "file:///Transient.java"
+    resolver._diagnostics_by_uri = {uri: ["missing during import"]}
+    resolver.diagnostics_settle_timeout = 5.0
+    resolver.diagnostics_quiet_period = 0.75
+    clock = [10.0]
+    waits = []
+    cleared_at = []
+
+    monkeypatch.setattr(jdtls.time, "monotonic", lambda: clock[0])
+
+    def drain(timeout=0.0):
+        waits.append(timeout)
+        clock[0] += timeout
+        # A implementação antiga encerrava após 0,75 s de quietude mesmo com
+        # este erro ainda corrente. Publique o clear somente depois desse ponto
+        # para caracterizar a regressão real, sem sleeps de parede.
+        if len(waits) == 10:
+            resolver._observe_message({
+                "method": "textDocument/publishDiagnostics",
+                "params": {"uri": uri, "diagnostics": []},
+            })
+            cleared_at.append(clock[0])
+
+    resolver._drain_pending = drain
+    resolver._before_shutdown()
+
+    assert resolver._diagnostics_by_uri[uri] == []
+    assert clock[0] - cleared_at[0] >= resolver.diagnostics_quiet_period
+    assert clock[0] < 15.0
+    resolver._ok = True
+    resolver._dead = False
+    resolver._shutdown_started_healthy = True
+    health = resolver.health_report()
+    assert health["status"] == "complete"
+    assert health["errors"] == []
+
+
+def test_jdtls_shutdown_keeps_draining_while_diagnostic_is_current(
+        tmp_path, monkeypatch):
+    from codegraph.l1 import jdtls
+
+    resolver = object.__new__(jdtls.JdtlsResolver)
+    resolver._diagnostics_by_uri = {
+        "file:///Broken.java": ["real compile failure"],
+    }
+    resolver.diagnostics_settle_timeout = 2.0
+    resolver.diagnostics_quiet_period = 0.75
+    clock = [20.0]
+    waits = []
+
+    monkeypatch.setattr(jdtls.time, "monotonic", lambda: clock[0])
+
+    def drain(timeout=0.0):
+        waits.append(timeout)
+        clock[0] += timeout
+
+    resolver._drain_pending = drain
+    resolver._before_shutdown()
+
+    assert resolver._diagnostics_by_uri["file:///Broken.java"] == [
+        "real compile failure"]
+    assert abs(clock[0] - 22.0) < 1e-9
+    assert len(waits) > 1
+    resolver._ok = True
+    resolver._dead = False
+    resolver._shutdown_started_healthy = True
+    health = resolver.health_report()
+    assert health["status"] == "partial"
+    assert health["errors"] == ["real compile failure"]
+
+
+def test_jdtls_shutdown_uses_short_quiet_period_without_diagnostics(
+        tmp_path, monkeypatch):
+    from codegraph.l1 import jdtls
+
+    resolver = object.__new__(jdtls.JdtlsResolver)
+    resolver._diagnostics_by_uri = {}
+    resolver.diagnostics_settle_timeout = 30.0
+    resolver.diagnostics_quiet_period = 0.75
+    clock = [30.0]
+
+    monkeypatch.setattr(jdtls.time, "monotonic", lambda: clock[0])
+    resolver._drain_pending = lambda timeout=0.0: clock.__setitem__(
+        0, clock[0] + timeout)
+
+    resolver._before_shutdown()
+
+    assert abs(clock[0] - 30.75) < 1e-9
+
+
+def test_jdtls_diagnostic_timeout_extends_total_shutdown_budget(
+        tmp_path, monkeypatch):
+    from codegraph.l1 import jdtls
+
+    monkeypatch.setenv("CODEGRAPH_JDTLS_DIAGNOSTICS_TIMEOUT", "12.5")
+    monkeypatch.setattr(lsp_base.LspResolver, "__init__",
+                        lambda self, root, project_root=None: None)
+
+    resolver = jdtls.JdtlsResolver(tmp_path, tmp_path)
+
+    assert resolver.diagnostics_settle_timeout == 12.5
+    assert resolver.shutdown_timeout == (
+        12.5 + resolver.shutdown_protocol_timeout)
+
+
+def test_jdtls_close_reserves_protocol_budget_after_diagnostic_settle(
+        tmp_path, monkeypatch):
+    from codegraph.l1 import jdtls
+
+    resolver = object.__new__(jdtls.JdtlsResolver)
+    resolver.root = resolver.project_root = tmp_path
+    resolver._ok = True
+    resolver._dead = False
+    resolver._opened = set()
+    resolver._diagnostics_by_uri = {
+        "file:///Broken.java": ["persistent compile failure"],
+    }
+    resolver._health_errors = []
+    resolver._health_warnings = []
+    resolver.diagnostics_settle_timeout = 2.0
+    resolver.diagnostics_quiet_period = 0.75
+    resolver.shutdown_protocol_timeout = 1.0
+    resolver.shutdown_timeout = 3.0
+    resolver._shutdown_completed = False
+    clock = [40.0]
+    request_timeouts = []
+    wait_timeouts = []
+
+    monkeypatch.setattr(jdtls.time, "monotonic", lambda: clock[0])
+
+    def drain(timeout=0.0):
+        clock[0] += timeout
+
+    resolver._drain_pending = drain
+
+    class Proc:
+        done = False
+
+        def poll(self):
+            return 0 if self.done else None
+
+        def wait(self, timeout):
+            wait_timeouts.append(timeout)
+            clock[0] += timeout
+            self.done = True
+            return 0
+
+        def kill(self):
+            self.done = True
+
+    resolver.proc = Proc()
+
+    def request(method, params, **kwargs):
+        assert (method, params) == ("shutdown", None)
+        request_timeouts.append(kwargs["timeout"])
+        clock[0] += 0.4
+        return None
+
+    resolver._request = request
+    resolver._notify = lambda *_args, **_kwargs: None
+
+    resolver.close()
+
+    assert request_timeouts[0] == pytest.approx(1.0)
+    assert wait_timeouts[0] == pytest.approx(0.6)
+    assert clock[0] == pytest.approx(43.0)
+    health = resolver.health_report()
+    assert health["status"] == "partial"
+    assert health["errors"] == ["persistent compile failure"]
+
+
+def test_jdtls_refine_closes_only_current_document_in_finally(
+        tmp_path, monkeypatch):
+    from codegraph.l1 import jdtls
+
+    resolver = object.__new__(jdtls.JdtlsResolver)
+    resolver.root = tmp_path
+    resolver._dead = False
+    resolver._opened = {"Main.java", "ReadinessProbe.java"}
+    resolver._lines = {
+        "Main.java": ["class Main {}"],
+        "ReadinessProbe.java": ["class ReadinessProbe {}"],
+    }
+    resolver.proc = type("Proc", (), {"poll": lambda self: None})()
+    notifications = []
+    resolver._notify = lambda *args: notifications.append(args)
+
+    def fail_refine(*_args, **_kwargs):
+        raise RuntimeError("definition failed")
+
+    monkeypatch.setattr(lsp_base.LspResolver, "refine_file", fail_refine)
+
+    with pytest.raises(RuntimeError, match="definition failed"):
+        resolver.refine_file(None, tmp_path, "Main.java", 1)
+
+    assert notifications == [("textDocument/didClose", {"textDocument": {
+        "uri": (tmp_path / "Main.java").as_uri(),
+    }})]
+    assert resolver._opened == {"ReadinessProbe.java"}
+    assert set(resolver._lines) == {"ReadinessProbe.java"}
 
 
 def test_zero_semantic_hits_is_warning_not_error_without_failure_signal(tmp_path):

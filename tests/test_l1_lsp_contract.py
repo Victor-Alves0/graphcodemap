@@ -80,6 +80,52 @@ def test_definition_column_converts_utf16_back_to_utf8(tmp_path):
         "😀 void ".encode("utf-8"))
 
 
+def test_definition_batch_pipelines_and_correlates_out_of_order(tmp_path):
+    r = _bare_resolver(tmp_path)
+    r.definition_batch_size = 8
+    r.io_timeout = 2.0
+    r._seq = 0
+    r._active_deadline = None
+    r._definition_requests = 0
+    r._definition_cache_hits = 0
+    r._definition_batches = 0
+    r._definition_request_seconds = 0.0
+    r.proc = type("Proc", (), {"poll": lambda self: None})()
+    writes = []
+    r._write = lambda message: writes.append(message)
+    uri_a = (tmp_path / "A.java").as_uri()
+    uri_b = (tmp_path / "B.java").as_uri()
+    replies = iter([
+        {"jsonrpc": "2.0", "id": 2, "result": {
+            "uri": uri_b,
+            "range": {"start": {"line": 4, "character": 6}},
+        }},
+        {"jsonrpc": "2.0", "id": 90,
+         "method": "workspace/configuration", "params": {"items": []}},
+        {"jsonrpc": "2.0", "id": 1, "result": {
+            "targetUri": uri_a,
+            "targetSelectionRange": {
+                "start": {"line": 2, "character": 3}},
+        }},
+    ])
+    r._read = lambda _timeout: next(replies)
+    observed = []
+    r._observe_message = lambda message: observed.append(message)
+
+    result = r._definitions("Main.java", [(0, 10), (1, 20)])
+
+    assert [message["method"] for message in writes[:2]] == [
+        "textDocument/definition", "textDocument/definition"]
+    assert writes[2] == {"jsonrpc": "2.0", "id": 90, "result": []}
+    assert result == {
+        (0, 10): [(uri_a, 2, 3)],
+        (1, 20): [(uri_b, 4, 6)],
+    }
+    assert r._definition_requests == 2
+    assert r._definition_batches == 1
+    assert len(observed) == 3
+
+
 def _refine_java_edge_to_definition(graph, source_rel, target_rel,
                                     target_line0, target_char0):
     root = graph.indexer.root

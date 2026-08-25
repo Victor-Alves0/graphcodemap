@@ -67,7 +67,7 @@ These runs used unmodified local clones and separate temporary graph databases:
 | Repository | Focus calls | L1 certain | Local candidates refined | L0 fallback | No local graph candidate | Index / refine |
 |---|---:|---:|---:|---:|---:|---:|
 | Flask `36e4a824` | 3,022 Python | 406 (13.4%) | 406/515 (78.8%) | 109 | 2,507 | 8.31s / 53.86s |
-| Spring PetClinic `f182358d` | 1,529 Java | 340 (22.2%) | 340/351 (96.9%) | 11 | 1,178 | 2.04s / 60.65s |
+| Spring PetClinic `f182358d` | 1,529 Java | 340 (22.2%) | 340/351 (96.9%) | 11 | 1,178 | 2.04s / 37.61s warm |
 
 The PetClinic replay exposed two missed method-reference sites
 (`NamedEntity::getName` and `Visit::getDate`). They are now covered by a narrow
@@ -76,6 +76,26 @@ local target is promoted when JDTLS returns no definition. Ambiguous overloads
 remain L0. The structured evidence is in
 `evals/semantic-link-canaries-2026-08-24.json`.
 
+## Cache and transport performance
+
+JDTLS sends bounded windows of 32 independent `textDocument/definition`
+requests and correlates out-of-order replies before serial graph publication.
+On PetClinic this reduced a full warm revalidation from 54.75s to 37.61s
+(31.3%) while preserving exactly 340 `certain` edges. The optimized run sent
+1,529 requests in 70 per-file windows; server request time was 17.359s.
+
+`index --l1` also passes the exact physical file delta to L1. If no supported
+source or build marker changed, the already-published snapshot is carried to
+the new graph revision without launching a resolver. On PetClinic the L1 part
+took 0.10s (1.48s for scan + cache decision end to end). An explicit
+`codegraph refine` still forces semantic revalidation, covering external
+toolchain/classpath changes not represented by repository hashes.
+
+Persistent JDTLS workspaces now remain reusable after the known optional
+m2e-apt nested-output warning; real diagnostics still mark them non-reusable.
+Late `m2e is shut down`/`Register Watchers` messages are downgraded only when
+shutdown began from a healthy server. Build/import failures remain fail-closed.
+
 ## What this does not prove
 
 - framework-generated or reflection-driven calls;
@@ -83,8 +103,8 @@ remain L0. The structured evidence is in
 - Java dependency/classpath failures and generated sources across diverse build
   systems;
 - framework/dynamic reason precision beyond “no local graph candidate”;
-- acceptable JDTLS latency at portfolio scale.
+- acceptable JDTLS latency at portfolio scale or across very large monorepos.
 
-The next G2 gate is request batching/cache, measured against these canaries,
-followed by a second ordinary repository per focus language at product
-acceptance.
+The focused G2 gate is complete. The next architectural gate is G3: persist
+def-use/`flows_to` facts and compose parameter/local/field/call/return flow.
+A second ordinary repository per focus language remains part of G5 acceptance.

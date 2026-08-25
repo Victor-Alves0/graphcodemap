@@ -29,11 +29,17 @@ Commands are grouped below by what you're trying to do.
 codegraph index [path] [--force] [--l1] [--install] [--yes]
                 [--scope SCOPE] [--workers N]
                 [--exclude PATTERN] [--jdtls-ready-timeout SEC]
-                [--jdtls-io-timeout SEC]
+                [--jdtls-io-timeout SEC] [--jdtls-diagnostics-timeout SEC]
 ```
 
 Builds or incrementally updates the index. Only changed files (by content-hash)
 are re-parsed.
+
+With `--l1`, the exact physical delta scopes semantic work to affected project
+roots. If no supported source or build marker changed and the previous L1
+snapshot completed, it is carried forward without starting a resolver. Run
+`codegraph refine` explicitly to force revalidation of external toolchain or
+classpath state.
 
 | Option | Meaning |
 |---|---|
@@ -46,12 +52,13 @@ are re-parsed.
 | `--exclude PATTERN` | gitignore-style exclusion, repeatable. Stored *in the index* (nothing written to the repo); replaces the prior policy. Use `--exclude ''` to clear. |
 | `--jdtls-ready-timeout SEC` | Java project-import/readiness budget; environment equivalent: `CODEGRAPH_JDTLS_READY_TIMEOUT`. |
 | `--jdtls-io-timeout SEC` | JDTLS request budget, at least readiness; environment equivalent: `CODEGRAPH_JDTLS_IO_TIMEOUT`. |
+| `--jdtls-diagnostics-timeout SEC` | Budget for transient JDTLS diagnostics to settle before shutdown; environment equivalent: `CODEGRAPH_JDTLS_DIAGNOSTICS_TIMEOUT`. |
 
 ### `refine`
 
 ```
 codegraph refine [--install] [--yes] [--jdtls-ready-timeout SEC]
-                 [--jdtls-io-timeout SEC]
+                 [--jdtls-io-timeout SEC] [--jdtls-diagnostics-timeout SEC]
 ```
 
 Runs L1 semantic resolution over the index, promoting call edges to `certain`
